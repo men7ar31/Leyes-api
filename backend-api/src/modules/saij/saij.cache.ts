@@ -29,12 +29,12 @@ export class SaijCache {
     this.memory.set(key, response, 600);
   }
 
-  getDocument(guid: string): DocumentCacheEntry | undefined {
-    return this.memory.get<DocumentCacheEntry>(`doc:${guid}`);
-  }
-
   setDocument(entry: DocumentCacheEntry, ttlSeconds = 600) {
     logger.debug({ guid: entry.guid }, 'Caching document in memory');
     this.memory.set(`doc:${entry.guid}`, entry, ttlSeconds);
+  }
+
+  getDocument(guid: string): DocumentCacheEntry | undefined {
+    return this.memory.get<DocumentCacheEntry>(`doc:${guid}`);
   }
 }

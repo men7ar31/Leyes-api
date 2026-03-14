@@ -13,4 +13,25 @@ export const SaijController = {
       next(error);
     }
   },
+
+  async getDocument(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { guid } = req.params;
+      const debug = req.query.debug === 'true' || req.query.debug === '1';
+      const result = await SaijService.getDocumentByGuid(guid, { debug });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async debugFriendly(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { guid } = req.params;
+      const result = await SaijService.debugFriendlyUrl(guid);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
 };

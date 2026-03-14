@@ -79,6 +79,11 @@ export type SaijSearchHit = {
   fuente?: string | null;
   friendlyUrl?: string | null;
   sourceUrl?: string | null;
+  friendlyUrlParts?: {
+    raw?: any;
+    subdomain?: string;
+    description?: string;
+  };
   raw?: unknown;
 };
 
@@ -94,5 +99,67 @@ export type SaijSearchResponse = {
     contentType: string;
     rawTotalSearchResults?: number | null;
     rawDocumentResultListLength?: number | null;
+  };
+};
+
+export type SaijArticle = {
+  number: string;
+  title: string | null;
+  text: string;
+};
+
+export type SaijTocItem = {
+  label: string;
+  anchor?: string;
+};
+
+export type SaijDocumentRaw = Record<string, unknown>;
+
+export type SaijResolvedDocument = {
+  guid: string;
+  title: string;
+  subtitle?: string | null;
+  contentType: SaijContentType;
+  metadata: Record<string, unknown>;
+  contentHtml?: string | null;
+  contentText?: string | null;
+  articles: SaijArticle[];
+  toc: SaijTocItem[];
+  friendlyUrl?: string | null;
+  sourceUrl?: string | null;
+  fetchedAt: string;
+  fromCache: boolean;
+  hasRenderableContent: boolean;
+  contentUnavailableReason?: string | null;
+  friendlyUrlParts?: {
+    raw?: any;
+    subdomain?: string;
+    description?: string;
+  };
+};
+
+export type SaijDocumentResponse = {
+  ok: boolean;
+  document: SaijResolvedDocument;
+  debugInfo?: {
+    strategyUsed: 'cache' | 'view-document' | 'friendly-url-fallback' | 'view-document+friendly-url-fallback';
+    externalContentType?: string;
+    externalUrl?: string;
+    hadEmptyPrimaryContent?: boolean;
+    fallbackAttempted?: boolean;
+    fallbackSucceeded?: boolean;
+    fallbackHttpStatus?: number;
+    fallbackContentType?: string;
+    fallbackFinalUrl?: string;
+    fallbackHtmlPreview?: string;
+    fallbackReason?: string;
+    fallbackErrorName?: string;
+    fallbackErrorMessage?: string;
+    primaryHasMetadataOnly?: boolean;
+    hasRenderableContent?: boolean;
+    contentUnavailableReason?: string | null;
+    viewDocumentHadRenderableContent?: boolean;
+    viewDocumentContentSource?: string | null;
+    friendlyFallbackSkippedBecausePrimaryWasEnough?: boolean;
   };
 };
