@@ -156,10 +156,16 @@ export type SaijDocumentResponse = {
     fallbackErrorName?: string;
     fallbackErrorMessage?: string;
     primaryHasMetadataOnly?: boolean;
+    primaryTextWasRejectedAsMetadataOnly?: boolean;
+    rejectedTextReason?: string | null;
     hasRenderableContent?: boolean;
     contentUnavailableReason?: string | null;
     viewDocumentHadRenderableContent?: boolean;
     viewDocumentContentSource?: string | null;
+    articleCount?: number;
+    structuredArticleSourceUsed?: boolean;
+    structuredArticlePath?: string | null;
+    structuredArticleCount?: number;
     friendlyFallbackSkippedBecausePrimaryWasEnough?: boolean;
   };
 };

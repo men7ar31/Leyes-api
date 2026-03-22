@@ -4,7 +4,7 @@ import { CacheService } from '../cache/cache.service';
 import { SaijCache } from './saij.cache';
 import { SaijClient } from './saij.client';
 import { buildSaijQuery } from './saij.query-builder';
-import { mapSaijSearchHit, mapSaijDocument, isDocumentContentEmpty, mergeDocumentContent } from './saij.mapper';
+import { mapSaijSearchHit, mapSaijDocument, isDocumentContentEmpty, mergeDocumentContent, isLikelyLegalBodyText } from './saij.mapper';
 import { SaijSearchRequest, SaijSearchResponse, SaijDocumentResponse } from './saij.types';
 import { SEARCH_CACHE_TTL_MS, DOCUMENT_CACHE_TTL_MS } from './saij.constants';
 import { HttpError } from '../../utils/httpError';
@@ -22,6 +22,15 @@ const safeParseJson = (payload?: string | null) => {
   }
 };
 
+const stripHtmlToText = (html?: string | null) => {
+  if (!html || typeof html !== 'string') return null;
+  return html.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 const detectBlockReason = (htmlPreview?: string) => {
   if (!htmlPreview) return undefined;
   const lower = htmlPreview.toLowerCase();
@@ -32,6 +41,62 @@ const detectBlockReason = (htmlPreview?: string) => {
   if (lower.includes('cookie') || lower.includes('consent')) return 'consent_page';
   if (lower.includes('window.location') || lower.includes('redirect')) return 'redirect_page';
   return undefined;
+};
+
+const resolveUnavailableReason = (error: any) => {
+  const code = error?.code as string | undefined;
+  const status = error?.statusCode ?? error?.status ?? error?.response?.status;
+  if (code?.includes('timeout') || status === 504) return 'saij_timeout';
+  if (code?.includes('blocked') || code?.includes('html_response')) return 'saij_blocked';
+  if (status === 500) return 'saij_friendly_500';
+  return 'saij_document_only_metadata';
+};
+
+const hasRenderableDocumentContent = (doc: any) =>
+  !isDocumentContentEmpty({
+    contentHtml: doc?.contentHtml,
+    contentText: doc?.contentText,
+    articles: Array.isArray(doc?.articles) ? doc.articles : [],
+  });
+
+const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReason?: string | null; fromCache?: boolean }) => {
+  let contentHtml = typeof mongo?.contentHtml === 'string' ? mongo.contentHtml : null;
+  let contentText = typeof mongo?.contentText === 'string' ? mongo.contentText : null;
+  let articles = Array.isArray(mongo?.articles) ? mongo.articles : [];
+  const hasArticles = Array.isArray(articles) && articles.length > 0;
+  if (!hasArticles && contentText && !isLikelyLegalBodyText(contentText)) {
+    contentText = null;
+    articles = [];
+  }
+  if (!hasArticles && !contentText && contentHtml) {
+    const htmlText = stripHtmlToText(contentHtml);
+    if (htmlText && isLikelyLegalBodyText(htmlText)) {
+      contentText = htmlText;
+    } else {
+      contentHtml = null;
+      articles = [];
+    }
+  }
+  const toc = Array.isArray(mongo?.toc) ? mongo.toc : [];
+  const doc = {
+    guid: mongo.guid,
+    title: mongo.title,
+    subtitle: typeof mongo.subtitle === 'string' ? mongo.subtitle : null,
+    contentType: (mongo.contentType as any) ?? 'legislacion',
+    metadata: (mongo.metadata as any) ?? {},
+    contentHtml,
+    contentText,
+    articles,
+    toc,
+    friendlyUrl: mongo.friendlyUrl ?? null,
+    sourceUrl: mongo.sourceUrl ?? null,
+    fetchedAt: mongo.fetchedAt?.toISOString?.() ?? new Date().toISOString(),
+    fromCache: overrides?.fromCache ?? true,
+  };
+  const hasRenderableContent = !isDocumentContentEmpty(doc);
+  const contentUnavailableReason =
+    overrides?.contentUnavailableReason ?? (hasRenderableContent ? null : 'saij_document_only_metadata');
+  return { ...doc, hasRenderableContent, contentUnavailableReason };
 };
 
 const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
@@ -141,38 +206,25 @@ export const SaijService = {
     if (!debug) {
       const mem = cache.getDocument(guid);
       if (mem) {
-        return {
-          ok: true,
-          document: { ...(mem.payload as any), fromCache: true } as any,
-          debugInfo: { strategyUsed: 'cache' },
-        };
+        const payload = { ...(mem.payload as any), fromCache: true } as any;
+        if (hasRenderableDocumentContent(payload)) {
+          return {
+            ok: true,
+            document: payload,
+            debugInfo: { strategyUsed: 'cache' },
+          };
+        }
+        logger.info({ guid }, 'Ignoring memory cache without renderable content and refetching from SAIJ');
       }
 
       const mongo = await NormService.getCached(guid);
       if (mongo && mongo.expiresAt > new Date()) {
-        const doc = {
-          guid: mongo.guid,
-          title: mongo.title,
-          subtitle: mongo.subtitle ?? null,
-          contentType: mongo.contentType as any,
-          metadata: (mongo.metadata as any) ?? {},
-          contentHtml: mongo.contentHtml ?? null,
-          contentText: mongo.contentText ?? null,
-          articles: (mongo.articles as any[]) ?? [],
-          toc: (mongo.toc as any[]) ?? [],
-          friendlyUrl: mongo.friendlyUrl ?? null,
-          sourceUrl: mongo.sourceUrl ?? null,
-          fetchedAt: mongo.fetchedAt.toISOString(),
-          fromCache: true,
-          hasRenderableContent: !(
-            (!mongo.contentHtml || mongo.contentHtml.trim().length === 0) &&
-            (!mongo.contentText || mongo.contentText.trim().length === 0) &&
-            (!mongo.articles || mongo.articles.length === 0)
-          ),
-          contentUnavailableReason: null,
-        };
-        cache.setDocument({ guid, payload: doc, fetchedAt: doc.fetchedAt }, DOCUMENT_CACHE_TTL_MS / 1000);
-        return { ok: true, document: doc, debugInfo: { strategyUsed: 'cache' } };
+        const doc = buildDocumentFromMongo(mongo, { fromCache: true });
+        if (doc.hasRenderableContent) {
+          cache.setDocument({ guid, payload: doc, fetchedAt: doc.fetchedAt }, DOCUMENT_CACHE_TTL_MS / 1000);
+          return { ok: true, document: doc, debugInfo: { strategyUsed: 'cache' } };
+        }
+        logger.info({ guid }, 'Ignoring mongo cache without renderable content and refetching from SAIJ');
       }
     }
 
@@ -288,11 +340,26 @@ export const SaijService = {
     } catch (error) {
       logger.warn({ guid, error }, 'view-document failed, trying friendly-url');
       strategyUsed = 'friendly-url-fallback';
+      const fallbackReasonFromError = resolveUnavailableReason(error);
 
       // try fallback using friendly URL from cache (mongo)
       const mongo = await NormService.getCached(guid);
       const friendlyUrl = (mongo as any)?.friendlyUrl;
       if (!friendlyUrl) {
+        if (mongo) {
+          const doc = buildDocumentFromMongo(mongo, { fromCache: true, contentUnavailableReason: fallbackReasonFromError });
+          return {
+            ok: true,
+            document: doc,
+            debugInfo: debug
+              ? {
+                  strategyUsed: 'cache',
+                  hadEmptyPrimaryContent: true,
+                  contentUnavailableReason: doc.contentUnavailableReason,
+                }
+              : undefined,
+          };
+        }
         throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
       }
 
@@ -334,6 +401,23 @@ export const SaijService = {
         });
       } catch (fallbackError) {
         logger.error({ guid, fallbackError }, 'friendly-url fallback failed');
+        if (mongo) {
+          const doc = buildDocumentFromMongo(mongo, {
+            fromCache: true,
+            contentUnavailableReason: resolveUnavailableReason(fallbackError),
+          });
+          return {
+            ok: true,
+            document: doc,
+            debugInfo: debug
+              ? {
+                  strategyUsed: 'cache',
+                  hadEmptyPrimaryContent: true,
+                  contentUnavailableReason: doc.contentUnavailableReason,
+                }
+              : undefined,
+          };
+        }
         throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
       }
     }
@@ -426,10 +510,30 @@ async function finalizeDocument(
   const fetchedAt = new Date().toISOString();
   let contentUnavailableReason = debugParams.contentUnavailableReason ?? null;
   const hasRenderableContent = !isDocumentContentEmpty(mapped);
-  if (!hasRenderableContent && !contentUnavailableReason) {
-    contentUnavailableReason = 'saij_document_only_metadata';
+  const primaryTextWasRejectedAsMetadataOnly = Boolean((mapped as any)?._primaryTextWasRejectedAsMetadataOnly);
+  const rejectedTextReason = (mapped as any)?._rejectedTextReason ?? null;
+  if (!hasRenderableContent) {
+    if (primaryTextWasRejectedAsMetadataOnly) {
+      contentUnavailableReason = 'saij_metadata_only';
+    } else if (!contentUnavailableReason) {
+      contentUnavailableReason = 'saij_document_only_metadata';
+    }
   }
-  const docWithMeta = { ...mapped, fetchedAt, fromCache: false, hasRenderableContent, contentUnavailableReason };
+  const safeSubtitle = typeof mapped.subtitle === 'string' ? mapped.subtitle : null;
+  const rawViewDocumentContentSource = debugParams.viewDocumentContentSource ?? (mapped as any)?._contentSource ?? null;
+  const viewDocumentContentSource =
+    rawViewDocumentContentSource === 'view-document.articulo[]' ? 'articulo[]' : rawViewDocumentContentSource;
+  const structuredArticleSourceUsed = Boolean((mapped as any)?._structuredArticleSourceUsed);
+  const structuredArticlePath = (mapped as any)?._structuredArticlePath ?? null;
+  const structuredArticleCount = (mapped as any)?._structuredArticleCount ?? 0;
+  const docWithMeta = {
+    ...mapped,
+    subtitle: safeSubtitle,
+    fetchedAt,
+    fromCache: false,
+    hasRenderableContent,
+    contentUnavailableReason,
+  };
 
   if (!debugParams.debug) {
     cache.setDocument({ guid, payload: docWithMeta, fetchedAt }, DOCUMENT_CACHE_TTL_MS / 1000);
@@ -438,7 +542,7 @@ async function finalizeDocument(
       source: 'saij',
       contentType: mapped.contentType,
       title: mapped.title,
-      subtitle: mapped.subtitle ?? null,
+      subtitle: safeSubtitle,
       metadata: mapped.metadata,
       contentHtml: mapped.contentHtml ?? null,
       contentText: mapped.contentText ?? null,
@@ -471,10 +575,16 @@ async function finalizeDocument(
           fallbackErrorName: debugParams.fallbackErrorName,
           fallbackErrorMessage: debugParams.fallbackErrorMessage,
           primaryHasMetadataOnly: debugParams.primaryHasMetadataOnly ?? false,
+          primaryTextWasRejectedAsMetadataOnly,
+          rejectedTextReason,
           hasRenderableContent,
           contentUnavailableReason,
           viewDocumentHadRenderableContent: debugParams.viewDocumentHadRenderableContent ?? false,
-          viewDocumentContentSource: debugParams.viewDocumentContentSource ?? null,
+          viewDocumentContentSource,
+          articleCount: Array.isArray(mapped.articles) ? mapped.articles.length : 0,
+          structuredArticleSourceUsed,
+          structuredArticlePath,
+          structuredArticleCount,
           friendlyFallbackSkippedBecausePrimaryWasEnough:
             debugParams.friendlyFallbackSkippedBecausePrimaryWasEnough ?? false,
         }

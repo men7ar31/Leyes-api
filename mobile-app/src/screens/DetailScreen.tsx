@@ -1,0 +1,232 @@
+﻿import { Linking, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useLocalSearchParams } from "expo-router";
+import RenderHTML from "react-native-render-html";
+import { useSaijDocument } from "../hooks/useSaijDocument";
+import { LoadingState } from "../components/LoadingState";
+import { ErrorState } from "../components/ErrorState";
+import { DetailHeader } from "../components/DetailHeader";
+import { MetadataRow } from "../components/MetadataRow";
+import { ContentUnavailableCard } from "../components/ContentUnavailableCard";
+import { colors, radius, spacing, typography } from "../constants/theme";
+import { cleanText, formatDate } from "../utils/format";
+import { sanitizeHtml } from "../utils/content";
+
+const getMetadataDate = (metadata: any) => {
+  if (!metadata || typeof metadata !== "object") return null;
+  const keys = [
+    "fecha",
+    "fechaPublicacion",
+    "fecha_publicacion",
+    "fechaSancion",
+    "fecha_sancion",
+    "fechaPromulgacion",
+    "fecha_promulgacion",
+  ];
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
+};
+
+
+const getSubtitleText = (subtitle: unknown) => {
+  if (typeof subtitle === "string") {
+    const trimmed = subtitle.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (subtitle && typeof subtitle === "object" && typeof (subtitle as any).sumario === "string") {
+    const trimmed = (subtitle as any).sumario.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const cleanContentText = (text?: string | null) => {
+  if (!text || typeof text !== "string") return null;
+  let value = text;
+  value = value.replace(/\r\n/g, "\n");
+  value = value.replace(/\[\[\/?p\]\]|\[\/?p\]/gi, "\n");
+  value = value.replace(/\[\[\/?[a-z]+\]\]|\[\/?[a-z]+\]/gi, "\n");
+  value = value.replace(/[ \t]+\n/g, "\n");
+  value = value.replace(/\n{3,}/g, "\n\n");
+  value = value.replace(/[ \t]{2,}/g, " ");
+  return value.trim();
+};
+
+export const DetailScreen = () => {
+  const params = useLocalSearchParams<{ guid?: string }>();
+  const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
+
+  const { document, isLoading, isError, error, refetch } = useSaijDocument(guidParam);
+  const { width } = useWindowDimensions();
+
+  if (!guidParam) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ErrorState message="No se encontro el documento." />
+      </SafeAreaView>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <LoadingState message="Cargando documento..." />
+      </SafeAreaView>
+    );
+  }
+
+  if (isError || !document) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
+      </SafeAreaView>
+    );
+  }
+
+  const sourceUrl = document.sourceUrl || document.friendlyUrl;
+  const metadataDateRaw = getMetadataDate(document.metadata);
+  const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
+
+  const contentWidth = Math.max(0, width - spacing.md * 2);
+  const subtitleText = getSubtitleText(document.subtitle);
+
+  const renderContent = () => {
+    if (document.hasRenderableContent === false) {
+      return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
+    }
+
+    const html = typeof document.contentHtml === "string" ? document.contentHtml.trim() : "";
+    if (html && html.length > 200) {
+      return (
+        <RenderHTML
+          contentWidth={contentWidth}
+          source={{ html: sanitizeHtml(html) }}
+          baseStyle={styles.contentText}
+        />
+      );
+    }
+
+    const cleanedText = cleanContentText(document.contentText);
+    if (cleanedText) {
+      return <Text style={styles.contentText}>{cleanedText}</Text>;
+    }
+
+    if (document.articles && document.articles.length > 0) {
+      return (
+        <View style={styles.articles}>
+          {document.articles.map((article, index) => {
+            const articleText =
+              cleanContentText(article.text) ||
+              (typeof article.text === "string" ? article.text.trim() : String(article.text ?? ""));
+            return (
+              <View key={`${article.number || index}`} style={styles.articleCard}>
+                <Text style={styles.articleTitle}>
+                  {article.number ? `Articulo ${article.number}` : "Articulo"}
+                  {article.title ? ` - ${cleanText(article.title)}` : ""}
+                </Text>
+                <Text style={styles.articleText}>{articleText}</Text>
+              </View>
+            );
+          })}
+        </View>
+      );
+    }
+
+    if (document.hasRenderableContent === false) {
+      return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
+    }
+
+    return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <DetailHeader title={document.title} subtitle={subtitleText} />
+
+        <View style={styles.metaCard}>
+          <MetadataRow label="Tipo" value={document.contentType} />
+          <MetadataRow label="Fecha" value={metadataDate} />
+          {document.fromCache ? <MetadataRow label="Cache" value="Si" /> : null}
+        </View>
+
+        <Pressable
+          style={[styles.sourceButton, !sourceUrl ? styles.sourceButtonDisabled : null]}
+          onPress={() => (sourceUrl ? Linking.openURL(sourceUrl) : null)}
+          disabled={!sourceUrl}
+        >
+          <Text style={styles.sourceButtonText}>Abrir fuente</Text>
+        </Pressable>
+
+        {renderContent()}
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  container: {
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  metaCard: {
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  sourceButton: {
+    backgroundColor: colors.primaryStrong,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
+  sourceButtonDisabled: {
+    opacity: 0.6,
+  },
+  sourceButtonText: {
+    color: "#FFFFFF",
+    fontSize: typography.body,
+    fontWeight: "600",
+  },
+  contentText: {
+    fontSize: typography.body,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  articles: {
+    gap: spacing.sm,
+  },
+  articleCard: {
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.xs,
+  },
+  articleTitle: {
+    fontSize: typography.subtitle,
+    fontWeight: "700",
+    color: colors.text,
+  },
+  articleText: {
+    fontSize: typography.body,
+    color: colors.text,
+    lineHeight: 20,
+  },
+});
+
+
+
+
+
+

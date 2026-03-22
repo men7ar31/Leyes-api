@@ -36,6 +36,89 @@ const truncate = (text: string | undefined, max = 180) => {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 };
 
+const normalizeSubtitleValue = (value: any): string | null => {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const sumario = (value as any).sumario;
+    if (typeof sumario === 'string') return sumario;
+    const texto = (value as any).texto;
+    if (typeof texto === 'string') return texto;
+  }
+  return null;
+};
+
+const METADATA_KEYS = [
+  'sumario',
+  'resumen',
+  'abstract',
+  'descriptor',
+  'descriptores',
+  'generalidades',
+  'observaciones',
+  'observaciones-generales',
+  'observaciones_generales',
+  'tema',
+  'temas',
+  'materia',
+  'keywords',
+  'palabras-clave',
+  'palabras_clave',
+  'tags',
+];
+
+const shouldSkipKey = (key: string) => {
+  const normalized = key.toLowerCase();
+  return METADATA_KEYS.some((token) => normalized === token || normalized.includes(token));
+};
+
+type LegalBodyAnalysis = { ok: boolean; reason: string | null };
+
+const normalizeHeuristicText = (text: string) =>
+  text
+    .replace(/\[\[\/?[a-z]+\]\]/gi, ' ')
+    .replace(/\[\/?[a-z]+\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const hasArticlePattern = (text: string) => /(art[íi]culo|art\.?)\s*\d+/i.test(text);
+
+const hasLegalStructurePattern = (text: string) =>
+  /\b(cap[ií]tulo|t[íi]tulo|secci[oó]n|considerando|visto|resuelve|decreta|disp[oó]nese|sanc[ií]onase|por ello|en uso de|el senado|la c[áa]mara|el congreso|el poder ejecutivo)\b/i.test(
+    text
+  );
+
+const looksLikeDescriptorList = (text: string) => {
+  const letters = text.match(/[A-ZÁÉÍÓÚÑ]/gi) ?? [];
+  const upper = text.match(/[A-ZÁÉÍÓÚÑ]/g) ?? [];
+  const upperRatio = letters.length ? upper.length / letters.length : 0;
+  const hyphenRuns = text.match(/[A-ZÁÉÍÓÚÑ]{3,}(?:\s*-\s*[A-ZÁÉÍÓÚÑ]{3,}){3,}/g) ?? [];
+  const hyphenCount = (text.match(/-/g) ?? []).length;
+  return (upperRatio > 0.65 && hyphenCount >= 5) || hyphenRuns.length > 0;
+};
+
+const analyzeLegalBodyText = (text: string, sourcePath?: string): LegalBodyAnalysis => {
+  const cleaned = normalizeHeuristicText(text);
+  if (!cleaned) return { ok: false, reason: 'no_article_structure' };
+
+  const lower = cleaned.toLowerCase();
+  if (sourcePath && METADATA_KEYS.some((key) => sourcePath.toLowerCase().includes(key))) {
+    return { ok: false, reason: 'sumario_detected' };
+  }
+  if (lower.startsWith('sumario') || lower.startsWith('resumen') || lower.startsWith('abstract')) {
+    return { ok: false, reason: 'sumario_detected' };
+  }
+  if (looksLikeDescriptorList(cleaned)) {
+    return { ok: false, reason: 'descriptor_like_text' };
+  }
+
+  if (hasArticlePattern(cleaned)) return { ok: true, reason: null };
+  if (hasLegalStructurePattern(cleaned)) return { ok: true, reason: null };
+
+  return { ok: false, reason: 'no_article_structure' };
+};
+
+export const isLikelyLegalBodyText = (text: string): boolean => analyzeLegalBodyText(text).ok;
+
 export const mapSaijSearchHit = (
   raw: SaijSearchHitRaw,
   fallbackContentType: SaijContentType
@@ -57,15 +140,17 @@ export const mapSaijSearchHit = (
     ''
   );
 
+  const sumario = normalizeSubtitleValue(content['sumario']);
+
   const subtitle =
-    truncate(content['sumario'], 180) ??
+    truncate(sumario ?? undefined, 180) ??
     joinNonEmpty([
       content['tipo-norma']?.texto,
       content['fecha'],
       content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
     ]);
 
-  const summary = content['sumario'] ?? null;
+  const summary = sumario ?? null;
 
   const inferredContentType =
     metadata['document-content-type'] ??
@@ -167,6 +252,48 @@ export type ExtractedRenderable = {
   articles?: SaijArticle[];
   toc?: { label: string; anchor?: string }[];
   sourcePath?: string;
+  fromArticulo?: boolean;
+  structuredArticlePath?: string | null;
+  structuredArticleCount?: number;
+};
+
+const cleanStructuredText = (text: string) => {
+  let value = text.replace(/\r\n/g, '\n');
+  value = value.replace(/\[\[\/?p\]\]|\[\/?p\]/gi, '\n');
+  value = value.replace(/\[\[\/?r[^\]]*\]\]/gi, '\n');
+  value = value.replace(/\[\[\/?[a-z]+\]\]|\[\/?[a-z]+\]/gi, '\n');
+  value = value.replace(/[ \t]+\n/g, '\n');
+  value = value.replace(/\n{3,}/g, '\n\n');
+  value = value.replace(/[ \t]{2,}/g, ' ');
+  return value.trim();
+};
+
+const getStructuredArticleSources = (raw: any) => {
+  const doc = raw?.document ?? raw?.data?.document ?? null;
+  const content = doc?.content ?? raw?.content ?? raw?.data?.content ?? null;
+  const segmento = content?.segmento ?? content?.segmentos ?? null;
+  const directArticulo = content?.articulo ?? content?.articulos ?? null;
+  return { segmento, directArticulo };
+};
+
+const detectArticleNumber = (text: string, item?: any, index?: number): string => {
+  const fromItem =
+    item?.['numero-articulo'] ??
+    item?.numero ??
+    item?.nro ??
+    item?.num ??
+    item?.orden ??
+    item?.articulo ??
+    item?.numeroArticulo ??
+    item?.numero_articulo ??
+    item?.id;
+  if (typeof fromItem === 'number' || typeof fromItem === 'string') {
+    const normalized = String(fromItem).trim();
+    if (normalized.length > 0) return normalized;
+  }
+  const match = text.match(/^\s*(?:art[íi]culo|art\.?)\s*(\d+[a-zA-Z]?(?:\s*bis)?)\b/i);
+  if (match && match[1]) return match[1];
+  return typeof index === 'number' ? String(index + 1) : '';
 };
 
 const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}): ExtractedRenderable => {
@@ -190,6 +317,7 @@ const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}
   }
   if (typeof obj === 'object') {
     Object.entries(obj).forEach(([key, val]) => {
+      if (shouldSkipKey(key)) return;
       const nextPath = path ? `${path}.${key}` : key;
       deepFindRenderable(val, nextPath, found);
     });
@@ -199,6 +327,94 @@ const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}
 
 export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRenderable => {
   const result: ExtractedRenderable = {};
+  const { segmento, directArticulo } = getStructuredArticleSources(raw);
+  const articles: SaijArticle[] = [];
+  const seen = new Set<string>();
+
+  const pushArticle = (item: any, idx: number) => {
+    const rawText =
+      typeof item?.texto === 'string'
+        ? item.texto
+        : typeof item === 'string'
+          ? item
+          : null;
+    if (!rawText) return;
+    const cleaned = cleanStructuredText(rawText);
+    if (!cleaned) return;
+    if (seen.has(cleaned)) return;
+    seen.add(cleaned);
+    articles.push({
+      number: detectArticleNumber(cleaned, item, idx),
+      title: null,
+      text: cleaned,
+    });
+  };
+
+  let structuredPath: string | null = null;
+  const markStructuredPath = (path: string) => {
+    if (!structuredPath) structuredPath = path;
+  };
+
+  const walkStructured = (node: any, path: string) => {
+    if (!node) return;
+
+    if (Array.isArray(node)) {
+      node.forEach((item, idx) => walkStructured(item, `${path}[${idx}]`));
+      return;
+    }
+
+    if (typeof node === 'string') {
+      pushArticle(node, 0);
+      markStructuredPath(path);
+      return;
+    }
+
+    if (typeof node !== 'object') return;
+
+    if (typeof node?.texto === 'string') {
+      pushArticle(node, 0);
+      markStructuredPath(path);
+    }
+
+    const nestedArticulos = node?.articulo ?? node?.articulos ?? null;
+    if (nestedArticulos) {
+      if (Array.isArray(nestedArticulos)) {
+        nestedArticulos.forEach((item: any, idx: number) => {
+          if (typeof item === 'string' || typeof item?.texto === 'string') {
+            pushArticle(item, idx);
+          } else {
+            walkStructured(item, `${path}.articulo[${idx}]`);
+          }
+        });
+      } else if (typeof nestedArticulos === 'string' || typeof nestedArticulos?.texto === 'string') {
+        pushArticle(nestedArticulos, 0);
+      } else {
+        walkStructured(nestedArticulos, `${path}.articulo`);
+      }
+      markStructuredPath(`${path}.articulo[]`);
+    }
+
+    const nestedSegmentos = node?.segmento ?? node?.segmentos ?? null;
+    if (nestedSegmentos) {
+      walkStructured(nestedSegmentos, `${path}.segmento`);
+    }
+  };
+
+  walkStructured(segmento, 'data.document.content.segmento');
+  walkStructured(directArticulo, 'data.document.content.articulo');
+
+  if (articles.length) {
+    result.articles = articles;
+    result.contentText = articles.map((article) => article.text).join('\n\n');
+    result.contentHtml = null;
+    result.sourcePath = structuredPath ?? 'data.document.content.articulo[]';
+    result.fromArticulo = true;
+    result.structuredArticlePath = structuredPath;
+    result.structuredArticleCount = articles.length;
+    result.toc = [];
+    return result;
+  }
+
   const candidate = deepFindRenderable(raw, 'data');
 
   if (candidate.contentHtml) result.contentHtml = candidate.contentHtml;
@@ -230,8 +446,10 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     prettifyFriendlyDescription(description) ??
     options.guid;
 
+  const sumario = normalizeSubtitleValue(content['sumario']);
+
   const subtitle =
-    truncate(content['sumario'], 180) ??
+    truncate(sumario ?? undefined, 180) ??
     joinNonEmpty([
       content['tipo-norma']?.texto,
       content['fecha'],
@@ -250,11 +468,49 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
 
   const deep = extractRenderableContentFromViewDocument(abstractObj);
 
-  const contentHtml = contentHtmlBase || deep.contentHtml || null;
-  const contentText = contentTextBase || deep.contentText || null;
-  const articles = (articlesBase.length ? articlesBase : deep.articles) || [];
+  const fromArticulo = deep.fromArticulo === true;
+  const contentHtml = fromArticulo ? null : contentHtmlBase || deep.contentHtml || null;
+  const contentText = fromArticulo ? deep.contentText || null : contentTextBase || deep.contentText || null;
+  const articles = fromArticulo ? deep.articles || [] : (articlesBase.length ? articlesBase : deep.articles) || [];
 
   const toc = [] as { label: string; anchor?: string }[];
+
+  let primaryTextWasRejectedAsMetadataOnly = false;
+  let rejectedTextReason: string | null = null;
+
+  const textSourcePath = contentTextBase && contentHtmlBase ? 'html' : contentTextBase ? 'content.texto' : deep.sourcePath ?? undefined;
+  let contentHtmlFinal = contentHtml;
+  let contentTextFinal = contentText;
+  let articlesFinal = articles;
+
+  if (!fromArticulo && contentTextFinal) {
+    const analysis = analyzeLegalBodyText(contentTextFinal, textSourcePath);
+    if (!analysis.ok) {
+      primaryTextWasRejectedAsMetadataOnly = true;
+      rejectedTextReason = analysis.reason;
+      contentTextFinal = null;
+      articlesFinal = [];
+    }
+  }
+
+  if (!fromArticulo && !contentTextFinal && contentHtmlFinal) {
+    const htmlText =
+      htmlToText(contentHtmlFinal) ??
+      contentHtmlFinal.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (htmlText) {
+      const analysis = analyzeLegalBodyText(htmlText, 'html');
+      if (analysis.ok) {
+        contentTextFinal = htmlText;
+        articlesFinal = parseArticlesFromText(htmlText);
+      } else {
+        primaryTextWasRejectedAsMetadataOnly = true;
+        rejectedTextReason = analysis.reason;
+        contentHtmlFinal = null;
+        contentTextFinal = null;
+        articlesFinal = [];
+      }
+    }
+  }
 
   return {
     guid: options.guid,
@@ -262,14 +518,19 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     subtitle,
     contentType,
     metadata,
-    contentHtml,
-    contentText,
-    articles,
+    contentHtml: contentHtmlFinal,
+    contentText: contentTextFinal,
+    articles: articlesFinal,
     toc,
     friendlyUrl,
     sourceUrl: friendlyUrl,
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },
     _contentSource: deep.sourcePath,
+    _primaryTextWasRejectedAsMetadataOnly: primaryTextWasRejectedAsMetadataOnly,
+    _rejectedTextReason: rejectedTextReason,
+    _structuredArticleSourceUsed: fromArticulo,
+    _structuredArticlePath: deep.structuredArticlePath ?? null,
+    _structuredArticleCount: deep.structuredArticleCount ?? (fromArticulo ? articlesFinal.length : 0),
   };
 };
 
@@ -299,5 +560,10 @@ export const mergeDocumentContent = (
     toc: baseDoc.toc && baseDoc.toc.length ? baseDoc.toc : fallbackDoc.toc,
     friendlyUrl: baseDoc.friendlyUrl || fallbackDoc.friendlyUrl,
     sourceUrl: baseDoc.sourceUrl || fallbackDoc.sourceUrl,
+    _primaryTextWasRejectedAsMetadataOnly:
+      (baseDoc as any)._primaryTextWasRejectedAsMetadataOnly ??
+      (fallbackDoc as any)._primaryTextWasRejectedAsMetadataOnly ??
+      false,
+    _rejectedTextReason: (baseDoc as any)._rejectedTextReason ?? (fallbackDoc as any)._rejectedTextReason ?? null,
   };
 };
