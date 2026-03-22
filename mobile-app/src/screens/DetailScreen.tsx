@@ -55,6 +55,39 @@ const cleanContentText = (text?: string | null) => {
   return value.trim();
 };
 
+const SECTION_HEADING_PATTERN = /^(ANEXO|T[ÍI]TULO|CAP[ÍI]TULO|SECCI[ÓO]N|LIBRO|PARTE)\b/i;
+
+const parseArticleTitleContext = (title?: string | null) => {
+  if (!title || typeof title !== "string") {
+    return { headings: [] as string[], articleLabel: null as string | null };
+  }
+  const parts = title
+    .split("·")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (!parts.length) {
+    return { headings: [] as string[], articleLabel: null as string | null };
+  }
+
+  const headings = parts.filter((part) => SECTION_HEADING_PATTERN.test(part));
+  const lastPart = parts[parts.length - 1];
+  const articleLabel = SECTION_HEADING_PATTERN.test(lastPart) ? null : lastPart;
+  return { headings, articleLabel };
+};
+
+const getNewHeadingLines = (current: string[], previous: string[]) => {
+  let commonPrefix = 0;
+  while (
+    commonPrefix < current.length &&
+    commonPrefix < previous.length &&
+    current[commonPrefix].toLowerCase() === previous[commonPrefix].toLowerCase()
+  ) {
+    commonPrefix += 1;
+  }
+  return current.slice(commonPrefix);
+};
+
 export const DetailScreen = () => {
   const params = useLocalSearchParams<{ guid?: string }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
@@ -109,25 +142,31 @@ export const DetailScreen = () => {
       );
     }
 
-    const cleanedText = cleanContentText(document.contentText);
-    if (cleanedText) {
-      return <Text style={styles.contentText}>{cleanedText}</Text>;
-    }
-
     if (document.articles && document.articles.length > 0) {
+      let previousHeadings: string[] = [];
       return (
         <View style={styles.articles}>
           {document.articles.map((article, index) => {
             const articleText =
               cleanContentText(article.text) ||
               (typeof article.text === "string" ? article.text.trim() : String(article.text ?? ""));
+            const parsedTitle = parseArticleTitleContext(article.title);
+            const headingLines = getNewHeadingLines(parsedTitle.headings, previousHeadings);
+            previousHeadings = parsedTitle.headings;
             return (
-              <View key={`${article.number || index}`} style={styles.articleCard}>
-                <Text style={styles.articleTitle}>
-                  {article.number ? `Articulo ${article.number}` : "Articulo"}
-                  {article.title ? ` - ${cleanText(article.title)}` : ""}
-                </Text>
-                <Text style={styles.articleText}>{articleText}</Text>
+              <View key={`${article.number || index}`} style={styles.articleBlock}>
+                {headingLines.map((heading, headingIndex) => (
+                  <Text key={`${article.number || index}-h-${headingIndex}`} style={styles.sectionHeading}>
+                    {cleanText(heading)}
+                  </Text>
+                ))}
+                <View style={styles.articleCard}>
+                  <Text style={styles.articleTitle}>
+                    {article.number ? `Articulo ${article.number}` : "Articulo"}
+                    {parsedTitle.articleLabel ? ` - ${cleanText(parsedTitle.articleLabel)}` : ""}
+                  </Text>
+                  <Text style={styles.articleText}>{articleText}</Text>
+                </View>
               </View>
             );
           })}
@@ -135,8 +174,9 @@ export const DetailScreen = () => {
       );
     }
 
-    if (document.hasRenderableContent === false) {
-      return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
+    const cleanedText = cleanContentText(document.contentText);
+    if (cleanedText) {
+      return <Text style={styles.contentText}>{cleanedText}</Text>;
     }
 
     return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
@@ -204,6 +244,16 @@ const styles = StyleSheet.create({
   },
   articles: {
     gap: spacing.sm,
+  },
+  articleBlock: {
+    gap: spacing.sm,
+  },
+  sectionHeading: {
+    color: colors.primary,
+    fontSize: typography.subtitle + 2,
+    fontWeight: "700",
+    textAlign: "center",
+    letterSpacing: 0.4,
   },
   articleCard: {
     backgroundColor: colors.card,

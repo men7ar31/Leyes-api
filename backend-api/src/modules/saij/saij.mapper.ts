@@ -273,7 +273,8 @@ const getStructuredArticleSources = (raw: any) => {
   const content = doc?.content ?? raw?.content ?? raw?.data?.content ?? null;
   const segmento = content?.segmento ?? content?.segmentos ?? null;
   const directArticulo = content?.articulo ?? content?.articulos ?? null;
-  return { segmento, directArticulo };
+  const anexo = content?.anexo ?? content?.anexos ?? null;
+  return { segmento, directArticulo, anexo };
 };
 
 const detectArticleNumber = (text: string, item?: any, index?: number): string => {
@@ -294,6 +295,41 @@ const detectArticleNumber = (text: string, item?: any, index?: number): string =
   const match = text.match(/^\s*(?:art[íi]culo|art\.?)\s*(\d+[a-zA-Z]?(?:\s*bis)?)\b/i);
   if (match && match[1]) return match[1];
   return typeof index === 'number' ? String(index + 1) : '';
+};
+
+const normalizeHeadingText = (value: any): string | null => {
+  if (typeof value !== 'string') return null;
+  const cleaned = cleanStructuredText(value).replace(/\s+/g, ' ').trim();
+  return cleaned.length ? cleaned : null;
+};
+
+const appendUniqueHeading = (headings: string[], value: string | null) => {
+  if (!value) return headings;
+  if (headings.some((item) => item.toLowerCase() === value.toLowerCase())) return headings;
+  return [...headings, value];
+};
+
+const isLikelyArticleNode = (item: any, cleanedText: string, path: string) => {
+  const hasNumberField =
+    item?.['numero-articulo'] !== undefined ||
+    item?.numeroArticulo !== undefined ||
+    item?.numero_articulo !== undefined ||
+    item?.numero !== undefined ||
+    item?.nro !== undefined ||
+    item?.num !== undefined;
+  const pathSuggestsArticle = /(?:^|\.)(articulo|articulos)(?:\[|$)/i.test(path);
+  const textStartsWithArticle = /^\s*(?:art[íi]culo|art\.?)\s*[\da-z]/i.test(cleanedText);
+  return Boolean(hasNumberField || pathSuggestsArticle || textStartsWithArticle);
+};
+
+const buildStructuredArticleTitle = (item: any, headings: string[]) => {
+  const ownTitle =
+    normalizeHeadingText(item?.['titulo-articulo']) ??
+    normalizeHeadingText(item?.tituloArticulo) ??
+    normalizeHeadingText(item?.titulo);
+  let parts = headings;
+  if (ownTitle) parts = appendUniqueHeading(parts, ownTitle);
+  return parts.length ? parts.join(' · ') : null;
 };
 
 const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}): ExtractedRenderable => {
@@ -327,11 +363,11 @@ const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}
 
 export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRenderable => {
   const result: ExtractedRenderable = {};
-  const { segmento, directArticulo } = getStructuredArticleSources(raw);
+  const { segmento, directArticulo, anexo } = getStructuredArticleSources(raw);
   const articles: SaijArticle[] = [];
   const seen = new Set<string>();
 
-  const pushArticle = (item: any, idx: number) => {
+  const pushArticle = (item: any, idx: number, headings: string[], path: string) => {
     const rawText =
       typeof item?.texto === 'string'
         ? item.texto
@@ -341,11 +377,12 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
     if (!rawText) return;
     const cleaned = cleanStructuredText(rawText);
     if (!cleaned) return;
+    if (!isLikelyArticleNode(item, cleaned, path)) return;
     if (seen.has(cleaned)) return;
     seen.add(cleaned);
     articles.push({
       number: detectArticleNumber(cleaned, item, idx),
-      title: null,
+      title: buildStructuredArticleTitle(item, headings),
       text: cleaned,
     });
   };
@@ -355,24 +392,37 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
     if (!structuredPath) structuredPath = path;
   };
 
-  const walkStructured = (node: any, path: string) => {
+  const walkStructured = (node: any, path: string, headings: string[] = []) => {
     if (!node) return;
 
     if (Array.isArray(node)) {
-      node.forEach((item, idx) => walkStructured(item, `${path}[${idx}]`));
+      node.forEach((item, idx) => walkStructured(item, `${path}[${idx}]`, headings));
       return;
     }
 
     if (typeof node === 'string') {
-      pushArticle(node, 0);
+      pushArticle(node, 0, headings, path);
       markStructuredPath(path);
       return;
     }
 
     if (typeof node !== 'object') return;
 
+    let nextHeadings = headings;
+    nextHeadings = appendUniqueHeading(
+      nextHeadings,
+      normalizeHeadingText(node?.['titulo-anexo']) ??
+      normalizeHeadingText(node?.anexo)
+    );
+    nextHeadings = appendUniqueHeading(
+      nextHeadings,
+      normalizeHeadingText(node?.['titulo-particion']) ??
+      normalizeHeadingText(node?.['titulo-seccion']) ??
+      normalizeHeadingText(node?.['titulo-capitulo'])
+    );
+
     if (typeof node?.texto === 'string') {
-      pushArticle(node, 0);
+      pushArticle(node, 0, nextHeadings, path);
       markStructuredPath(path);
     }
 
@@ -381,27 +431,28 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
       if (Array.isArray(nestedArticulos)) {
         nestedArticulos.forEach((item: any, idx: number) => {
           if (typeof item === 'string' || typeof item?.texto === 'string') {
-            pushArticle(item, idx);
+            pushArticle(item, idx, nextHeadings, `${path}.articulo[${idx}]`);
           } else {
-            walkStructured(item, `${path}.articulo[${idx}]`);
+            walkStructured(item, `${path}.articulo[${idx}]`, nextHeadings);
           }
         });
       } else if (typeof nestedArticulos === 'string' || typeof nestedArticulos?.texto === 'string') {
-        pushArticle(nestedArticulos, 0);
+        pushArticle(nestedArticulos, 0, nextHeadings, `${path}.articulo`);
       } else {
-        walkStructured(nestedArticulos, `${path}.articulo`);
+        walkStructured(nestedArticulos, `${path}.articulo`, nextHeadings);
       }
       markStructuredPath(`${path}.articulo[]`);
     }
 
     const nestedSegmentos = node?.segmento ?? node?.segmentos ?? null;
     if (nestedSegmentos) {
-      walkStructured(nestedSegmentos, `${path}.segmento`);
+      walkStructured(nestedSegmentos, `${path}.segmento`, nextHeadings);
     }
   };
 
   walkStructured(segmento, 'data.document.content.segmento');
   walkStructured(directArticulo, 'data.document.content.articulo');
+  walkStructured(anexo, 'data.document.content.anexo');
 
   if (articles.length) {
     result.articles = articles;

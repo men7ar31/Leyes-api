@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface NormCacheDocument extends Document {
   guid: string;
   source: 'saij';
+  extractorVersion?: number;
   contentType: string;
   title: string;
   subtitle?: string | null;
@@ -22,6 +23,7 @@ export interface NormCacheDocument extends Document {
 const NormCacheSchema = new Schema<NormCacheDocument>({
   guid: { type: String, required: true, unique: true },
   source: { type: String, required: true, default: 'saij' },
+  extractorVersion: Number,
   contentType: { type: String, required: true },
   title: { type: String, required: true },
   subtitle: String,

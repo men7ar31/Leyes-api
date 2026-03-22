@@ -12,6 +12,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
+const DOCUMENT_EXTRACTOR_VERSION = 3;
 
 const safeParseJson = (payload?: string | null) => {
   if (!payload) return null;
@@ -59,6 +60,9 @@ const hasRenderableDocumentContent = (doc: any) =>
     articles: Array.isArray(doc?.articles) ? doc.articles : [],
   });
 
+const isCurrentExtractorVersion = (doc: any) =>
+  (doc?.extractorVersion ?? 0) === DOCUMENT_EXTRACTOR_VERSION;
+
 const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReason?: string | null; fromCache?: boolean }) => {
   let contentHtml = typeof mongo?.contentHtml === 'string' ? mongo.contentHtml : null;
   let contentText = typeof mongo?.contentText === 'string' ? mongo.contentText : null;
@@ -83,6 +87,7 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     title: mongo.title,
     subtitle: typeof mongo.subtitle === 'string' ? mongo.subtitle : null,
     contentType: (mongo.contentType as any) ?? 'legislacion',
+    extractorVersion: mongo.extractorVersion ?? 0,
     metadata: (mongo.metadata as any) ?? {},
     contentHtml,
     contentText,
@@ -207,24 +212,24 @@ export const SaijService = {
       const mem = cache.getDocument(guid);
       if (mem) {
         const payload = { ...(mem.payload as any), fromCache: true } as any;
-        if (hasRenderableDocumentContent(payload)) {
+        if (isCurrentExtractorVersion(payload) && hasRenderableDocumentContent(payload)) {
           return {
             ok: true,
             document: payload,
             debugInfo: { strategyUsed: 'cache' },
           };
         }
-        logger.info({ guid }, 'Ignoring memory cache without renderable content and refetching from SAIJ');
+        logger.info({ guid }, 'Ignoring outdated/empty memory cache and refetching from SAIJ');
       }
 
       const mongo = await NormService.getCached(guid);
       if (mongo && mongo.expiresAt > new Date()) {
         const doc = buildDocumentFromMongo(mongo, { fromCache: true });
-        if (doc.hasRenderableContent) {
+        if (isCurrentExtractorVersion(doc) && doc.hasRenderableContent) {
           cache.setDocument({ guid, payload: doc, fetchedAt: doc.fetchedAt }, DOCUMENT_CACHE_TTL_MS / 1000);
           return { ok: true, document: doc, debugInfo: { strategyUsed: 'cache' } };
         }
-        logger.info({ guid }, 'Ignoring mongo cache without renderable content and refetching from SAIJ');
+        logger.info({ guid }, 'Ignoring outdated/empty mongo cache and refetching from SAIJ');
       }
     }
 
@@ -529,6 +534,7 @@ async function finalizeDocument(
   const docWithMeta = {
     ...mapped,
     subtitle: safeSubtitle,
+    extractorVersion: DOCUMENT_EXTRACTOR_VERSION,
     fetchedAt,
     fromCache: false,
     hasRenderableContent,
@@ -540,6 +546,7 @@ async function finalizeDocument(
     await NormService.save({
       guid,
       source: 'saij',
+      extractorVersion: DOCUMENT_EXTRACTOR_VERSION,
       contentType: mapped.contentType,
       title: mapped.title,
       subtitle: safeSubtitle,
