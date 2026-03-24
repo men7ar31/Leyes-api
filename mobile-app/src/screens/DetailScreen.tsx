@@ -108,6 +108,26 @@ const parseFalloContent = (text?: string | null) => {
   return { headerLines, summaryText };
 };
 
+type RelatedContentItem = {
+  title: string;
+  subtitle?: string | null;
+  contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
+  guid?: string | null;
+  sourceUrl?: string | null;
+  url?: string | null;
+};
+
+const extractGuidFromUrl = (value?: string | null) => {
+  if (!value || typeof value !== "string") return "";
+  try {
+    const parsed = new URL(value);
+    const guid = parsed.searchParams.get("guid");
+    return typeof guid === "string" ? guid.trim() : "";
+  } catch {
+    return "";
+  }
+};
+
 const SECTION_HEADING_PATTERN = /^(ANEXO|T[ÍI]TULO|CAP[ÍI]TULO|SECCI[ÓO]N|LIBRO|PARTE)\b/i;
 
 const parseArticleTitleContext = (title?: string | null) => {
@@ -178,6 +198,7 @@ export const DetailScreen = () => {
     ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
     : "Ver archivo adjunto";
   const relatedFallos = Array.isArray(document.relatedFallos) ? document.relatedFallos : [];
+  const relatedContentsFromApi = Array.isArray(document.relatedContents) ? document.relatedContents : [];
   const metadataDateRaw = getMetadataDate(document.metadata);
   const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
 
@@ -188,11 +209,23 @@ export const DetailScreen = () => {
     document.contentType === "sumario"
       ? extractRelatedContentBlock(cleanedContentText)
       : { mainText: cleanedContentText, relatedItems: [] as string[] };
-  const relatedContentItems = extractedRelated.relatedItems;
-  const openRelatedFallo = async (fallo: { title: string; guid?: string | null }) => {
+  const relatedContentItems: RelatedContentItem[] =
+    relatedContentsFromApi.length > 0
+      ? relatedContentsFromApi
+      : extractedRelated.relatedItems.map((item) => ({
+          title: item,
+          subtitle: null,
+          contentTypeHint: "legislacion",
+          guid: null,
+          sourceUrl: null,
+          url: null,
+        }));
+  const openRelatedFallo = async (fallo: { title: string; guid?: string | null; sourceUrl?: string | null; url?: string | null }) => {
     const directGuid = typeof fallo.guid === "string" ? fallo.guid.trim() : "";
-    if (directGuid) {
-      router.push({ pathname: "/detail/[guid]", params: { guid: directGuid } });
+    const fallbackGuidFromUrl = extractGuidFromUrl(fallo.sourceUrl || fallo.url || null);
+    const resolvedGuid = directGuid || fallbackGuidFromUrl;
+    if (resolvedGuid) {
+      router.push({ pathname: "/detail/[guid]", params: { guid: resolvedGuid } });
       return;
     }
 
@@ -248,15 +281,30 @@ export const DetailScreen = () => {
     Alert.alert("No se pudo abrir el fallo", "No encontramos el fallo relacionado en SAIJ en este momento.");
   };
 
-  const openRelatedContent = async (line: string) => {
+  const openRelatedContent = async (item: RelatedContentItem) => {
+    const directGuid = typeof item.guid === "string" ? item.guid.trim() : "";
+    const fallbackGuidFromUrl = extractGuidFromUrl(item.sourceUrl || item.url || null);
+    const resolvedGuid = directGuid || fallbackGuidFromUrl;
+    if (resolvedGuid) {
+      router.push({ pathname: "/detail/[guid]", params: { guid: resolvedGuid } });
+      return;
+    }
+
+    const line = item.title;
     const leyMatch = line.match(/ley\s+(\d{2,7})/i);
+    const cccnMatch = line.match(/\bCCCN\b\D*(\d{1,5})/i);
     const numeroNorma = leyMatch?.[1]?.trim();
     const cleanedLine = line.replace(/\s+/g, " ").trim();
     const tokens = cleanedLine.split(" ").filter((token) => token.length > 2);
+    const hint =
+      item.contentTypeHint && item.contentTypeHint !== "unknown"
+        ? item.contentTypeHint
+        : "todo";
     const attempts = Array.from(
       new Set(
         [
           cleanedLine,
+          cccnMatch?.[1] ? `Codigo Civil y Comercial de la Nacion articulo ${cccnMatch[1]}` : null,
           tokens[0],
           tokens[1],
           tokens[0] && tokens[1] ? `${tokens[0]} ${tokens[1]}` : null,
@@ -265,11 +313,12 @@ export const DetailScreen = () => {
     );
 
     try {
-      if (numeroNorma) {
+      if ((numeroNorma || cccnMatch?.[1]) && (hint === "legislacion" || hint === "todo")) {
+        const numeroNormaFinal = numeroNorma || "26994";
         const byNumber = await searchSaij({
           contentType: "legislacion",
           filters: {
-            numeroNorma,
+            numeroNorma: numeroNormaFinal,
             jurisdiccion: { kind: "todas" },
           },
           offset: 0,
@@ -283,21 +332,30 @@ export const DetailScreen = () => {
         }
       }
 
-      for (const term of attempts) {
-        const response = await searchSaij({
-          contentType: "legislacion",
-          filters: {
-            textoEnNorma: term,
-            jurisdiccion: { kind: "todas" },
-          },
-          offset: 0,
-          pageSize: 10,
-        });
-        const first = response.hits.find((hit) => hit.contentType === "legislacion") || response.hits[0];
-        const guid = typeof first?.guid === "string" ? first.guid.trim() : "";
-        if (guid) {
-          router.push({ pathname: "/detail/[guid]", params: { guid } });
-          return;
+      const contentTypeOrder = (
+        hint === "todo" ? ["todo"] : [hint, "todo"]
+      ) as Array<"legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo">;
+
+      for (const contentType of contentTypeOrder) {
+        for (const term of attempts) {
+          const response = await searchSaij({
+            contentType,
+            filters: {
+              textoEnNorma: term,
+              jurisdiccion: { kind: "todas" },
+            },
+            offset: 0,
+            pageSize: 10,
+          });
+          const first =
+            contentType !== "todo"
+              ? response.hits.find((hit) => hit.contentType === contentType) || response.hits[0]
+              : response.hits[0];
+          const guid = typeof first?.guid === "string" ? first.guid.trim() : "";
+          if (guid) {
+            router.push({ pathname: "/detail/[guid]", params: { guid } });
+            return;
+          }
         }
       }
     } catch {
@@ -423,16 +481,19 @@ export const DetailScreen = () => {
 
         {renderContent()}
 
-        {document.contentType === "sumario" && relatedContentItems.length > 0 ? (
+        {relatedContentItems.length > 0 ? (
           <View style={styles.relatedSection}>
             <Text style={styles.relatedTitle}>Contenido relacionado</Text>
             {relatedContentItems.map((item, index) => (
               <Pressable
-                key={`${index}-${item}`}
+                key={`${index}-${item.title}-${item.guid || "na"}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedContent(item)}
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(item)}</Text>
+                <Text style={styles.relatedLinkTitle}>{cleanText(item.title)}</Text>
+                {item.subtitle ? (
+                  <Text style={styles.relatedLinkSubtitle}>{cleanText(item.subtitle)}</Text>
+                ) : null}
               </Pressable>
             ))}
           </View>

@@ -36,7 +36,7 @@ export const useSaijSearch = ({
 
   const itemsRaw = query.data?.pages.flatMap((page) => page.hits) ?? [];
   const items = useMemo(() => {
-    if (contentType !== "sumario") return itemsRaw;
+    if (contentType !== "sumario" && contentType !== "doctrina" && contentType !== "dictamen") return itemsRaw;
     return [...itemsRaw].sort((a, b) => {
       const ta = a.fecha ? Date.parse(a.fecha) : Number.NEGATIVE_INFINITY;
       const tb = b.fecha ? Date.parse(b.fecha) : Number.NEGATIVE_INFINITY;

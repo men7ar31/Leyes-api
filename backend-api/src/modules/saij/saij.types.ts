@@ -140,6 +140,14 @@ export type SaijResolvedDocument = {
     sourceUrl?: string | null;
     url: string;
   }>;
+  relatedContents?: Array<{
+    title: string;
+    subtitle?: string | null;
+    contentTypeHint?: SaijContentType | 'todo' | 'unknown';
+    guid?: string | null;
+    sourceUrl?: string | null;
+    url: string;
+  }>;
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;

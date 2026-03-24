@@ -38,7 +38,7 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
     const field =
       input.contentType === 'fallo'
         ? 'titulo'
-        : input.contentType === 'sumario'
+        : input.contentType === 'sumario' || input.contentType === 'doctrina' || input.contentType === 'dictamen'
           ? 'tema'
           : 'texto';
     rParts.push(`${field}:${searchTerm}`);

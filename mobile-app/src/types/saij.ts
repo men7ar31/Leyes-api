@@ -80,6 +80,14 @@ export type SaijDocument = {
     sourceUrl?: string | null;
     url: string;
   }>;
+  relatedContents?: Array<{
+    title: string;
+    subtitle?: string | null;
+    contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
+    guid?: string | null;
+    sourceUrl?: string | null;
+    url: string;
+  }>;
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;

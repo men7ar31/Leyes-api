@@ -101,6 +101,36 @@ const buildFalloSearchUrl = (title: string) => {
   return `https://www.saij.gob.ar/busqueda?${params.toString()}`;
 };
 
+type RelatedContentHint = SaijContentType | 'todo' | 'unknown';
+
+const buildGenericSearchUrl = (title: string) => {
+  const normalized = title.trim().replace(/\s+/g, '?');
+  const params = new URLSearchParams();
+  params.set('r', `titulo:${normalized}`);
+  params.set('o', '0');
+  params.set('p', '25');
+  params.set('s', '');
+  params.set('v', 'colapsada');
+  return `https://www.saij.gob.ar/busqueda?${params.toString()}`;
+};
+
+const buildSearchUrlByHint = (title: string, hint?: RelatedContentHint) => {
+  if (hint === 'fallo') return buildFalloSearchUrl(title);
+  return buildGenericSearchUrl(title);
+};
+
+const normalizeRelatedHint = (value: any, fallback: RelatedContentHint = 'unknown'): RelatedContentHint => {
+  const raw = String(value || '').toLowerCase().trim();
+  if (!raw) return fallback;
+  if (raw.includes('jurisprudencia') || raw.includes('sentencia') || raw.includes('fallo')) return 'fallo';
+  if (raw.includes('sumario')) return 'sumario';
+  if (raw.includes('dictamen')) return 'dictamen';
+  if (raw.includes('doctrina')) return 'doctrina';
+  if (raw.includes('legisl')) return 'legislacion';
+  if (raw.includes('todo')) return 'todo';
+  return fallback;
+};
+
 const normalizeTagText = (value?: string | null) => {
   if (!value || typeof value !== 'string') return null;
   return value
@@ -128,6 +158,115 @@ const pickFirstString = (...values: any[]): string | null => {
     if (normalized && normalized.trim().length > 0) return normalized;
   }
   return null;
+};
+
+const extractDoctrinaAuthor = (value: any): string | null => {
+  if (!value) return null;
+  if (typeof value === 'string') return normalizeTagText(value);
+  if (Array.isArray(value)) {
+    const names = value
+      .map((item) => extractDoctrinaAuthor(item))
+      .filter((item): item is string => Boolean(item && item.trim().length > 0));
+    return names.length ? Array.from(new Set(names)).join(', ') : null;
+  }
+  if (typeof value === 'object') {
+    return (
+      normalizeLooseString((value as any).autor) ??
+      normalizeLooseString((value as any).nombre) ??
+      normalizeLooseString((value as any).texto) ??
+      null
+    );
+  }
+  return null;
+};
+
+const toIsoDateFromSaij = (value: any): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+    if (/^\d{4}$/.test(trimmed)) return `${trimmed}-01-01`;
+    return null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 1000 && value <= 3000) {
+    return `${Math.trunc(value)}-01-01`;
+  }
+  return null;
+};
+
+const formatDoctrinaDate = (value: any): string | null => {
+  const iso = toIsoDateFromSaij(value);
+  if (iso) {
+    const short = formatDateShort(iso);
+    if (short) {
+      if (/-01-01$/.test(iso)) return iso.slice(0, 4);
+      return short;
+    }
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+  return null;
+};
+
+const normalizeNumberValue = (value: any): string | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+  return null;
+};
+
+const buildDictamenNumberLabel = (content: Record<string, any>): string | null => {
+  const numero =
+    normalizeNumberValue(content['numero-dictamen']) ??
+    normalizeNumberValue((content as any)?.numero_dictamen) ??
+    null;
+  const mecanografico = pickFirstString(content['mecanografico'], (content as any)?.mecanografico);
+  const fechaIso = toIsoDateFromSaij(content['fecha'] ?? (content as any)?.fecha);
+  const year = fechaIso ? fechaIso.slice(0, 4) : null;
+
+  if (numero && year) return `Dictamen Nro. ${numero}/${year}`;
+  if (numero) return `Dictamen Nro. ${numero}`;
+  if (mecanografico) return `Dictamen ${mecanografico}`;
+  return null;
+};
+
+const extractDictamenOrganismo = (content: Record<string, any>): string | null =>
+  pickFirstString(
+    content?.['organismo-emisor']?.organismo,
+    content?.organismo_emisor?.organismo,
+    content?.['organismo-remitente'],
+    content?.organismo_remitente
+  );
+
+const buildDictamenDetailText = (content: Record<string, any>): string | null => {
+  const numberLabel = buildDictamenNumberLabel(content);
+  const fecha = formatDateLongEs(pickFirstString(content['fecha'], (content as any)?.fecha)) ??
+    formatDateShort(pickFirstString(content['fecha'], (content as any)?.fecha));
+  const organismo = extractDictamenOrganismo(content);
+  const procurador = pickFirstString(content['procurador'], (content as any)?.procurador);
+  const expediente = pickFirstString(content['nro-expediente'], (content as any)?.nro_expediente);
+  const sintesis = normalizeTagText(pickFirstString(content['sintesis'], (content as any)?.sintesis));
+  const sumario = normalizeTagText(normalizeSubtitleValue(content['sumario']) ?? pickFirstString(content['sumario']));
+
+  const header = [
+    numberLabel,
+    fecha,
+    organismo,
+    procurador ? `Firmante: ${procurador}` : null,
+    expediente ? `Expediente: ${expediente}` : null,
+  ].filter((line): line is string => Boolean(line && line.trim().length > 0));
+
+  const sections: string[] = [];
+  if (header.length) sections.push(header.join('\n'));
+  if (sintesis) sections.push(`SINTESIS\n${sintesis}`);
+  if (sumario && (!sintesis || sumario !== sintesis)) sections.push(`SUMARIO\n${sumario}`);
+
+  return sections.length ? sections.join('\n\n') : null;
 };
 
 const buildFalloDetailText = (content: Record<string, any>, metadata: Record<string, any>): string | null => {
@@ -237,9 +376,16 @@ const parseNormativeRefCode = (raw?: string | null): string | null => {
   return null;
 };
 
+const isShorthandNormReference = (value?: string | null): boolean => {
+  if (!value || typeof value !== 'string') return false;
+  const line = value.trim().toUpperCase();
+  return /^(CCCN|CCN|CPCCN|CPN|CN|CC)\s*\.?\s*\d{1,5}[A-Z]?\b/.test(line);
+};
+
 const isHumanReadableRelatedLine = (value: string): boolean => {
   const line = value.trim();
   if (!line) return false;
+  if (isShorthandNormReference(line)) return false;
   if (/^REFERENCIAS?_NORMATIVAS?/i.test(line)) return false;
   if (line.includes('_')) return false;
   if (line.length > 220) return false;
@@ -249,13 +395,116 @@ const isHumanReadableRelatedLine = (value: string): boolean => {
   return true;
 };
 
-const extractRelatedContentLines = (content: any): string[] => {
-  const lines: string[] = [];
-  const pushLine = (value?: string | null) => {
-    const cleaned = normalizeTagText(value);
-    if (!cleaned) return;
-    if (!isHumanReadableRelatedLine(cleaned)) return;
-    lines.push(cleaned);
+const normalizeRelatedKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, ' ').trim();
+
+const dedupeRelatedItems = <T extends { title: string; contentTypeHint?: RelatedContentHint }>(items: T[]) => {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of items) {
+    const key = `${normalizeRelatedKey(item.title)}::${item.contentTypeHint ?? 'unknown'}`;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+};
+
+const extractRelatedFalloEntries = (content: any) => {
+  const results: Array<{
+    title: string;
+    subtitle?: string | null;
+    contentTypeHint: 'fallo';
+    guid?: string | null;
+    sourceUrl?: string | null;
+  }> = [];
+
+  const pushEntry = (entry: {
+    title?: string | null;
+    subtitle?: string | null;
+    guid?: string | null;
+    sourceUrl?: string | null;
+  }) => {
+    const title = normalizeTagText(entry.title ?? null);
+    if (!title || !isHumanReadableRelatedLine(title)) return;
+    results.push({
+      title,
+      subtitle: entry.subtitle ?? null,
+      contentTypeHint: 'fallo',
+      guid: entry.guid ?? null,
+      sourceUrl: entry.sourceUrl ?? null,
+    });
+  };
+
+  const walk = (node: any) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      pushEntry({ title: node });
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const title =
+      normalizeLooseString(node.caratula) ??
+      normalizeLooseString(node.titulo) ??
+      normalizeLooseString(node.nombre) ??
+      normalizeLooseString(node.descripcion);
+
+    const subtitle = joinNonEmpty(
+      [
+        normalizeLooseString(node['tipo-fallo'] ?? node.tipo_fallo),
+        normalizeLooseString(node.tribunal),
+        formatDateShort(normalizeLooseString(node.fecha)),
+      ],
+      '. '
+    );
+
+    const guid =
+      normalizeLooseString(node.guid) ??
+      normalizeLooseString(node.uuid) ??
+      normalizeLooseString(node.id) ??
+      null;
+
+    const sourceUrl = normalizeLooseString(node.url) ?? normalizeLooseString(node.sourceUrl) ?? null;
+    if (title) pushEntry({ title, subtitle, guid, sourceUrl });
+
+    Object.values(node).forEach(walk);
+  };
+
+  walk(content?.['fallos-a-los-que-aplica'] ?? content?.fallos_a_los_que_aplica ?? null);
+  walk(content?.['fallos-relacionados'] ?? content?.fallos_relacionados ?? null);
+
+  return dedupeRelatedItems(results);
+};
+
+const extractRelatedContentEntries = (content: any) => {
+  const results: Array<{
+    title: string;
+    subtitle?: string | null;
+    contentTypeHint: RelatedContentHint;
+    guid?: string | null;
+    sourceUrl?: string | null;
+  }> = [];
+
+  const pushEntry = (entry: {
+    title?: string | null;
+    subtitle?: string | null;
+    contentTypeHint?: RelatedContentHint;
+    guid?: string | null;
+    sourceUrl?: string | null;
+  }) => {
+    const title = normalizeTagText(entry.title ?? null);
+    if (!title || !isHumanReadableRelatedLine(title)) return;
+    results.push({
+      title,
+      subtitle: entry.subtitle ?? null,
+      contentTypeHint: entry.contentTypeHint ?? 'unknown',
+      guid: entry.guid ?? null,
+      sourceUrl: entry.sourceUrl ?? null,
+    });
   };
 
   const walkReferences = (node: any) => {
@@ -266,52 +515,82 @@ const extractRelatedContentLines = (content: any): string[] => {
     }
     if (typeof node !== 'object') return;
 
-    if (typeof node.cr === 'string') {
-      pushLine(node.cr);
+    const parsedRef = typeof node.ref === 'string' ? parseNormativeRefCode(node.ref) : null;
+
+    if (typeof node.cr === 'string' && !(parsedRef && isShorthandNormReference(node.cr))) {
+      pushEntry({ title: node.cr, contentTypeHint: 'legislacion' });
     }
-    if (typeof node.ref === 'string') {
-      const parsed = parseNormativeRefCode(node.ref);
-      if (parsed) pushLine(parsed);
+    if (parsedRef) {
+      pushEntry({ title: parsedRef, contentTypeHint: 'legislacion' });
     }
 
     Object.values(node).forEach(walkReferences);
   };
 
-  const walkLabeledNodes = (node: any) => {
+  const walkLabeled = (node: any, defaultHint: RelatedContentHint = 'unknown') => {
     if (!node) return;
+    if (typeof node === 'string') {
+      pushEntry({ title: node, contentTypeHint: defaultHint });
+      return;
+    }
     if (Array.isArray(node)) {
-      node.forEach(walkLabeledNodes);
+      node.forEach((child) => walkLabeled(child, defaultHint));
       return;
     }
     if (typeof node !== 'object') return;
 
-    if (typeof node.titulo === 'string') pushLine(node.titulo);
-    if (typeof node.caratula === 'string') pushLine(node.caratula);
-    if (typeof node.descripcion === 'string') pushLine(node.descripcion);
-    if (typeof node.nombre === 'string') pushLine(node.nombre);
+    const hintedType = normalizeRelatedHint(
+      node['document-content-type'] ??
+      node.document_content_type ??
+      node['tipo-documento'] ??
+      node.tipo_documento ??
+      node.tipo ??
+      (node['tipo-fallo'] || node.tipo_fallo ? 'fallo' : null),
+      defaultHint
+    );
 
-    Object.values(node).forEach(walkLabeledNodes);
+    const title =
+      normalizeLooseString(node.titulo) ??
+      normalizeLooseString(node.caratula) ??
+      normalizeLooseString(node.nombre) ??
+      normalizeLooseString(node.descripcion) ??
+      normalizeLooseString(node.texto) ??
+      normalizeLooseString(node.sumario);
+    const subtitle = joinNonEmpty(
+      [
+        normalizeLooseString(node['tipo-fallo'] ?? node.tipo_fallo),
+        normalizeLooseString(node.tribunal),
+        formatDateShort(normalizeLooseString(node.fecha)),
+      ],
+      '. '
+    );
+    const guid =
+      normalizeLooseString(node.guid) ??
+      normalizeLooseString(node.uuid) ??
+      normalizeLooseString(node.id) ??
+      null;
+    const sourceUrl = normalizeLooseString(node.url) ?? normalizeLooseString(node.sourceUrl) ?? null;
+
+    if (title) {
+      pushEntry({
+        title,
+        subtitle,
+        contentTypeHint: hintedType,
+        guid,
+        sourceUrl,
+      });
+    }
+
+    Object.values(node).forEach((child) => walkLabeled(child, defaultHint));
   };
 
   walkReferences(content?.['referencias-normativas'] ?? content?.referencias_normativas ?? null);
-  walkLabeledNodes(content?.['contenido-relacionado'] ?? content?.contenido_relacionado ?? content?.contenidoRelacionados ?? null);
-  walkLabeledNodes(content?.['fallos-a-los-que-aplica'] ?? content?.fallos_a_los_que_aplica ?? null);
-  walkLabeledNodes(content?.['fallos-relacionados'] ?? content?.fallos_relacionados ?? null);
-  extractInlineReferenceLabels(content?.texto).forEach(pushLine);
+  walkLabeled(content?.['contenido-relacionado'] ?? content?.contenido_relacionado ?? content?.contenidoRelacionados ?? null);
+  extractInlineReferenceLabels(content?.texto).forEach((label) =>
+    pushEntry({ title: label, contentTypeHint: 'legislacion' })
+  );
 
-  const unique = Array.from(new Set(lines.filter((line) => line.length > 0)));
-  const normalized = (value: string) => value.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, ' ').trim();
-  const compact = unique.filter((candidate, idx) => {
-    const candNorm = normalized(candidate);
-    if (!candNorm) return false;
-    return !unique.some((other, j) => {
-      if (j === idx) return false;
-      const otherNorm = normalized(other);
-      if (!otherNorm) return false;
-      return otherNorm.length > candNorm.length && otherNorm.includes(candNorm);
-    });
-  });
-  return compact;
+  return dedupeRelatedItems(results);
 };
 
 const normalizeSubtitleValue = (value: any): string | null => {
@@ -421,13 +700,30 @@ export const mapSaijSearchHit = (
   const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
   const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
   const tituloSumario = normalizeTagText(typeof content['titulo'] === 'string' ? content['titulo'] : null);
+  const tituloDoctrina = pickFirstString(content['titulo-doctrina'], (content as any)?.titulo_doctrina);
+  const autorDoctrina = extractDoctrinaAuthor(content['autor-doctrina'] ?? (content as any)?.autor_doctrina);
+  const publicacionDoctrina = pickFirstString(content['publicacion'], (content as any)?.publicacion);
+  const fechaPublicacionRaw = content['fecha-publicacion'] ?? (content as any)?.fecha_publicacion ?? null;
+  const fechaDoctrinaIso = toIsoDateFromSaij(fechaPublicacionRaw);
+  const fechaDoctrinaLabel = formatDoctrinaDate(fechaPublicacionRaw);
+  const partesDictamen = pickFirstString(content['partes'], (content as any)?.partes);
+  const dictamenNumberLabel = buildDictamenNumberLabel(content as Record<string, any>);
+  const dictamenOrganismo = extractDictamenOrganismo(content as Record<string, any>);
+  const dictamenSintesis = normalizeTagText(pickFirstString(content['sintesis'], (content as any)?.sintesis));
+  const fechaDictamenIso = toIsoDateFromSaij(content['fecha'] ?? (content as any)?.fecha);
   const caratula =
     normalizeSubtitleValue(content['caratula']) ??
     (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
     (contentType === 'fallo' ? buildFalloCaratula(actor, demandado, sobre) : null);
 
   const title = (
-    (contentType === 'sumario' ? tituloSumario ?? caratula : caratula) ??
+    (contentType === 'sumario'
+      ? tituloSumario ?? caratula
+      : contentType === 'dictamen'
+        ? partesDictamen ?? caratula
+      : contentType === 'doctrina'
+        ? tituloDoctrina ?? caratula
+        : caratula) ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
     prettifyFriendlyDescription(description) ??
@@ -455,6 +751,15 @@ export const mapSaijSearchHit = (
       ? falloSubtitle
       : contentType === 'sumario'
         ? sumarioSubtitle
+      : contentType === 'dictamen'
+        ? joinNonEmpty([dictamenNumberLabel, dictamenOrganismo], '. ')
+      : contentType === 'doctrina'
+        ? joinNonEmpty([
+            'Doctrina',
+            autorDoctrina,
+            publicacionDoctrina,
+            fechaDoctrinaLabel,
+          ], '. ')
       : truncate(sumario ?? undefined, 180) ??
         joinNonEmpty([
           content['tipo-norma']?.texto,
@@ -466,6 +771,10 @@ export const mapSaijSearchHit = (
   const summary =
     contentType === 'sumario'
       ? rawSummaryText ?? sumario
+      : contentType === 'dictamen'
+        ? dictamenSintesis ?? sumario ?? rawSummaryText
+      : contentType === 'doctrina'
+        ? sumario ?? truncate(rawSummaryText ?? undefined, 400)
       : sumario ?? rawSummaryText;
 
   return {
@@ -474,7 +783,12 @@ export const mapSaijSearchHit = (
     subtitle,
     summary,
     contentType,
-    fecha: content['fecha'] ?? null,
+    fecha:
+      contentType === 'doctrina'
+        ? (fechaDoctrinaIso ?? null)
+        : contentType === 'dictamen'
+          ? (fechaDictamenIso ?? null)
+          : content['fecha'] ?? null,
     estado: content['estado'] ?? null,
     jurisdiccion:
       content['jurisdiccion']?.provincia ??
@@ -804,6 +1118,14 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
   const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
   const tituloSumario = normalizeTagText(typeof content['titulo'] === 'string' ? content['titulo'] : null);
+  const tituloDoctrina = pickFirstString(content['titulo-doctrina'], (content as any)?.titulo_doctrina);
+  const autorDoctrina = extractDoctrinaAuthor(content['autor-doctrina'] ?? (content as any)?.autor_doctrina);
+  const publicacionDoctrina = pickFirstString(content['publicacion'], (content as any)?.publicacion);
+  const fechaPublicacionRaw = content['fecha-publicacion'] ?? (content as any)?.fecha_publicacion ?? null;
+  const fechaDoctrinaLabel = formatDoctrinaDate(fechaPublicacionRaw);
+  const partesDictamen = pickFirstString(content['partes'], (content as any)?.partes);
+  const dictamenNumberLabel = buildDictamenNumberLabel(content as Record<string, any>);
+  const dictamenOrganismo = extractDictamenOrganismo(content as Record<string, any>);
   const caratula =
     normalizeSubtitleValue(content['caratula']) ??
     (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
@@ -821,7 +1143,13 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
       : null;
 
   const title =
-    (inferredDocContentType === 'sumario' ? tituloSumario ?? caratula : caratula) ??
+    (inferredDocContentType === 'sumario'
+      ? tituloSumario ?? caratula
+      : inferredDocContentType === 'dictamen'
+        ? partesDictamen ?? caratula
+      : inferredDocContentType === 'doctrina'
+        ? tituloDoctrina ?? caratula
+        : caratula) ??
     resolvedFalloCaratula ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
@@ -841,6 +1169,15 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
               ? `Id SAIJ: ${content['numero-sumario']}`
               : null,
         ], ' · ')
+      : inferredDocContentType === 'doctrina'
+        ? joinNonEmpty([
+            'Doctrina',
+            autorDoctrina,
+            publicacionDoctrina,
+            fechaDoctrinaLabel,
+          ], '. ')
+      : inferredDocContentType === 'dictamen'
+        ? joinNonEmpty([dictamenNumberLabel, dictamenOrganismo], '. ')
       : truncate(sumario ?? undefined, 180) ??
         joinNonEmpty([
           content['tipo-norma']?.texto,
@@ -851,7 +1188,12 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
 
   const contentType = inferredDocContentType;
 
-  const textoDoc = (content as any)?.['texto-doc'] ?? (content as any)?.texto_doc ?? null;
+  const textoDoc =
+    (content as any)?.['texto-doc'] ??
+    (content as any)?.texto_doc ??
+    (content as any)?.['texto-original'] ??
+    (content as any)?.texto_original ??
+    null;
   const attachmentGuid =
     typeof textoDoc?.uuid === 'string'
       ? textoDoc.uuid
@@ -888,9 +1230,27 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
         }
       : null;
 
-  const relatedReferenceLines = extractRelatedContentLines(content);
+  const relatedContents = extractRelatedContentEntries(content).map((item) => ({
+    title: item.title,
+    subtitle: item.subtitle ?? null,
+    contentTypeHint: item.contentTypeHint,
+    guid: item.guid ?? null,
+    sourceUrl: item.sourceUrl ?? null,
+    url: item.sourceUrl ?? buildSearchUrlByHint(item.title, item.contentTypeHint),
+  }));
+  const extractedRelatedFallos = extractRelatedFalloEntries(content).map((item) => ({
+    title: item.title,
+    subtitle: item.subtitle ?? null,
+    guid: item.guid ?? null,
+    sourceUrl: item.sourceUrl ?? null,
+    url: item.sourceUrl ?? buildFalloSearchUrl(item.title),
+  }));
   const rawHtml = (abstractObj as any)?.html ?? options.fallbackHtml ?? null;
   const contentHtmlBase = extractMainHtml(rawHtml);
+  const rawSintesis =
+    normalizeTagText(typeof content['sintesis'] === 'string' ? content['sintesis'] : null) ??
+    normalizeTagText(typeof (content as any)?.sintesis === 'string' ? (content as any).sintesis : null) ??
+    null;
   const rawTexto =
     normalizeTagText(typeof content['texto'] === 'string' ? content['texto'] : null) ??
     normalizeTagText(typeof content['texto-fallo'] === 'string' ? content['texto-fallo'] : null) ??
@@ -903,6 +1263,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   let contentTextBase =
     htmlToText(contentHtmlBase) ??
     rawTexto ??
+    rawSintesis ??
     rawSumario ??
     null;
   if (inferredDocContentType === 'fallo') {
@@ -911,6 +1272,14 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
       contentTextBase = falloDetailText;
     } else {
       contentTextBase = rawTexto ?? rawSumario ?? contentTextBase;
+    }
+  }
+  if (inferredDocContentType === 'dictamen') {
+    const dictamenDetailText = buildDictamenDetailText(content as Record<string, any>);
+    if (dictamenDetailText) {
+      contentTextBase = dictamenDetailText;
+    } else {
+      contentTextBase = rawTexto ?? rawSintesis ?? rawSumario ?? contentTextBase;
     }
   }
   const fuenteSumario =
@@ -925,19 +1294,11 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   ) {
     contentTextBase = `${contentTextBase}\n\nFuente del sumario: ${fuenteSumario}`;
   }
-  if (
-    inferredDocContentType === 'sumario' &&
-    typeof contentTextBase === 'string' &&
-    contentTextBase.trim().length > 0 &&
-    relatedReferenceLines.length > 0
-  ) {
-    contentTextBase = `${contentTextBase}\n\nCONTENIDO RELACIONADO\n${relatedReferenceLines.map((line) => `- ${line}`).join('\n')}`;
-  }
-  const falloAplicaCaratula =
+  const fallbackFalloAplicaCaratula =
     inferredDocContentType === 'sumario' && typeof content['caratula'] === 'string'
       ? normalizeTagText(content['caratula'])
       : null;
-  const falloAplicaMeta =
+  const fallbackFalloAplicaMeta =
     inferredDocContentType === 'sumario'
       ? joinNonEmpty([
           typeof content['tipo-fallo'] === 'string' ? normalizeTagText(content['tipo-fallo']) : null,
@@ -946,17 +1307,19 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
         ], '. ')
       : null;
   const relatedFallos =
-    inferredDocContentType === 'sumario' && falloAplicaCaratula
-      ? [
-          {
-            title: falloAplicaCaratula,
-            subtitle: falloAplicaMeta,
-            guid: null,
-            sourceUrl: null,
-            url: buildFalloSearchUrl(falloAplicaCaratula),
-          },
-        ]
-      : [];
+    extractedRelatedFallos.length > 0
+      ? extractedRelatedFallos
+      : fallbackFalloAplicaCaratula
+        ? [
+            {
+              title: fallbackFalloAplicaCaratula,
+              subtitle: fallbackFalloAplicaMeta,
+              guid: null,
+              sourceUrl: null,
+              url: buildFalloSearchUrl(fallbackFalloAplicaCaratula),
+            },
+          ]
+        : [];
   const shouldRenderArticleBlocks = inferredDocContentType === 'legislacion';
   const articlesBase = shouldRenderArticleBlocks ? parseArticlesFromText(contentTextBase) : [];
 
@@ -1027,6 +1390,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },
     attachment,
     relatedFallos,
+    relatedContents,
     _contentSource: deep.sourcePath,
     _primaryTextWasRejectedAsMetadataOnly: primaryTextWasRejectedAsMetadataOnly,
     _rejectedTextReason: rejectedTextReason,
@@ -1063,6 +1427,18 @@ export const mergeDocumentContent = (
     friendlyUrl: baseDoc.friendlyUrl || fallbackDoc.friendlyUrl,
     sourceUrl: baseDoc.sourceUrl || fallbackDoc.sourceUrl,
     attachment: (baseDoc as any).attachment || (fallbackDoc as any).attachment || null,
+    relatedFallos:
+      Array.isArray((baseDoc as any).relatedFallos) && (baseDoc as any).relatedFallos.length
+        ? (baseDoc as any).relatedFallos
+        : Array.isArray((fallbackDoc as any).relatedFallos)
+          ? (fallbackDoc as any).relatedFallos
+          : [],
+    relatedContents:
+      Array.isArray((baseDoc as any).relatedContents) && (baseDoc as any).relatedContents.length
+        ? (baseDoc as any).relatedContents
+        : Array.isArray((fallbackDoc as any).relatedContents)
+          ? (fallbackDoc as any).relatedContents
+          : [],
     _primaryTextWasRejectedAsMetadataOnly:
       (baseDoc as any)._primaryTextWasRejectedAsMetadataOnly ??
       (fallbackDoc as any)._primaryTextWasRejectedAsMetadataOnly ??

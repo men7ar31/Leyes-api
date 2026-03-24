@@ -12,7 +12,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 16;
+const DOCUMENT_EXTRACTOR_VERSION = 19;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
@@ -108,6 +108,7 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     sourceUrl: mongo.sourceUrl ?? null,
     attachment: (mongo.attachment as any) ?? null,
     relatedFallos: Array.isArray(mongo?.relatedFallos) ? mongo.relatedFallos : [],
+    relatedContents: Array.isArray(mongo?.relatedContents) ? mongo.relatedContents : [],
     fetchedAt: mongo.fetchedAt?.toISOString?.() ?? new Date().toISOString(),
     fromCache: overrides?.fromCache ?? true,
   };
@@ -309,7 +310,6 @@ const pickBestFalloMatch = (targetTitle: string, candidates: ReturnType<typeof m
 };
 
 const resolveRelatedFallos = async (mappedDoc: any) => {
-  if (mappedDoc?.contentType !== 'sumario') return mappedDoc;
   const related = Array.isArray(mappedDoc?.relatedFallos) ? mappedDoc.relatedFallos : [];
   if (!related.length) return mappedDoc;
 
@@ -317,6 +317,18 @@ const resolveRelatedFallos = async (mappedDoc: any) => {
     related.map(async (item: any) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (!title) return item;
+      const directGuid = typeof item?.guid === 'string' ? item.guid.trim() : '';
+      if (directGuid) {
+        const sourceUrl =
+          (typeof item?.sourceUrl === 'string' && item.sourceUrl.trim()) ||
+          `https://www.saij.gob.ar/view-document?guid=${directGuid}`;
+        return {
+          ...item,
+          guid: directGuid,
+          sourceUrl,
+          url: sourceUrl,
+        };
+      }
       try {
         const { raw } = await client.search({
           r: `titulo:${normalizeSearchTerm(title)}`,
@@ -413,7 +425,7 @@ export const SaijService = {
 
     const mappedHits = rawHits.map((item: any) => mapSaijSearchHit(item, input.contentType));
     const hits =
-      input.contentType === 'sumario'
+      input.contentType === 'sumario' || input.contentType === 'doctrina' || input.contentType === 'dictamen'
         ? [...mappedHits].sort((a, b) => parseIsoDate(b.fecha ?? null) - parseIsoDate(a.fecha ?? null))
         : mappedHits;
     const response: SaijSearchResponse = {
@@ -823,6 +835,7 @@ async function finalizeDocument(
       sourceUrl: mapped.sourceUrl ?? null,
       attachment: (mapped as any).attachment ?? null,
       relatedFallos: Array.isArray((mapped as any).relatedFallos) ? (mapped as any).relatedFallos : [],
+      relatedContents: Array.isArray((mapped as any).relatedContents) ? (mapped as any).relatedContents : [],
       friendlyUrl: mapped.friendlyUrl ?? null,
       rawPayload,
       fetchedAt: new Date(fetchedAt),
