@@ -1,4 +1,4 @@
-import { logger } from '../../utils/logger';
+﻿import { logger } from '../../utils/logger';
 import { hashString } from '../../utils/hash';
 import { CacheService } from '../cache/cache.service';
 import { SaijCache } from './saij.cache';
@@ -12,9 +12,11 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 6;
+const DOCUMENT_EXTRACTOR_VERSION = 16;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
+const JURIS_FALLO_FACET =
+  'Total|Tipo de Documento/Jurisprudencia/Fallo|Fecha|Organismo|Tribunal|Tema|Publicación|Estado de Vigencia|Autor|Jurisdicción';
 
 const safeParseJson = (payload?: string | null) => {
   if (!payload) return null;
@@ -62,6 +64,12 @@ const hasRenderableDocumentContent = (doc: any) =>
     articles: Array.isArray(doc?.articles) ? doc.articles : [],
   });
 
+const parseIsoDate = (value?: string | null): number => {
+  if (!value || typeof value !== 'string') return Number.NEGATIVE_INFINITY;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+};
+
 const isCurrentExtractorVersion = (doc: any) =>
   (doc?.extractorVersion ?? 0) === DOCUMENT_EXTRACTOR_VERSION;
 
@@ -99,6 +107,7 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     friendlyUrl: mongo.friendlyUrl ?? null,
     sourceUrl: mongo.sourceUrl ?? null,
     attachment: (mongo.attachment as any) ?? null,
+    relatedFallos: Array.isArray(mongo?.relatedFallos) ? mongo.relatedFallos : [],
     fetchedAt: mongo.fetchedAt?.toISOString?.() ?? new Date().toISOString(),
     fromCache: overrides?.fromCache ?? true,
   };
@@ -155,15 +164,17 @@ const getRawHits = (raw: any): any[] =>
   [];
 
 const resolveRelatedSumarioFallback = async (
-  rawPayload: any
+  rawPayload: any,
+  options?: { maxCodes?: number }
 ): Promise<{ contentType: 'sumario'; contentText: string; subtitle: string | null } | null> => {
   const codes = extractRelatedSumarioCodes(rawPayload);
   if (!codes.length) return null;
 
   const snippets: string[] = [];
   let subtitle: string | null = null;
+  const maxCodes = Math.max(1, options?.maxCodes ?? 3);
 
-  for (const code of codes.slice(0, 3)) {
+  for (const code of codes.slice(0, maxCodes)) {
     try {
       const { raw } = await client.search({
         r: `numero-sumario:${code}`,
@@ -174,7 +185,23 @@ const resolveRelatedSumarioFallback = async (
       const first = getRawHits(raw)[0];
       if (!first) continue;
       const mapped = mapSaijSearchHit(first, 'sumario');
-      const text = typeof mapped.summary === 'string' ? mapped.summary.trim() : '';
+      let text = typeof mapped.summary === 'string' ? mapped.summary.trim() : '';
+
+      const relatedGuid = typeof mapped.guid === 'string' ? mapped.guid.trim() : '';
+      if (relatedGuid) {
+        try {
+          const full = await client.fetchSaijDocumentByGuid(relatedGuid);
+          const fullMapped = mapSaijDocument(full.raw, { guid: relatedGuid });
+          const fullText = typeof fullMapped.contentText === 'string' ? fullMapped.contentText.trim() : '';
+          if (fullText && fullText.length > text.length) {
+            text = fullText;
+          }
+          if (!subtitle && fullMapped.subtitle) subtitle = fullMapped.subtitle;
+        } catch (err) {
+          logger.warn({ err, relatedGuid, code }, 'Related sumario full document fetch failed');
+        }
+      }
+
       if (text && !snippets.includes(text)) snippets.push(text);
       if (!subtitle && mapped.subtitle) subtitle = mapped.subtitle;
     } catch (err) {
@@ -190,6 +217,134 @@ const resolveRelatedSumarioFallback = async (
   };
 };
 
+const stripSecondarySummarySections = (text?: string | null): string => {
+  if (!text || typeof text !== 'string') return '';
+  const normalized = text.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return '';
+
+  const markers = [
+    /\n\s*OTROS\s+SUMARIOS\b[\s\S]*$/i,
+    /\n\s*CONTENIDO\s+RELACIONADO\b[\s\S]*$/i,
+    /\n\s*FALLOS\s+A\s+LOS\s+QUE\s+APLICA\b[\s\S]*$/i,
+    /\n\s*\[ir\s+arriba\][\s\S]*$/i,
+  ];
+
+  let cleaned = normalized;
+  for (const marker of markers) {
+    cleaned = cleaned.replace(marker, '').trim();
+  }
+  return cleaned;
+};
+
+const hasFalloSummaryBlock = (contentText?: string | null): boolean => {
+  if (!contentText || typeof contentText !== 'string') return false;
+  const normalized = contentText.replace(/\r\n/g, '\n');
+  return /^SUMARIO\b/i.test(normalized) || /\n\s*SUMARIO\b/i.test(normalized);
+};
+
+const appendFalloSummary = (contentText: string | null | undefined, summaryText: string): string => {
+  const base = typeof contentText === 'string' ? contentText.trim() : '';
+  const cleanedSummary = stripSecondarySummarySections(summaryText)
+    .replace(/^sumario\s*(de\s*fallo)?\s*:?\s*/i, '')
+    .trim();
+  if (!cleanedSummary) return base;
+  if (hasFalloSummaryBlock(base)) return base;
+  if (!base) return `SUMARIO\n${cleanedSummary}`;
+  return `${base}\n\nSUMARIO\n${cleanedSummary}`;
+};
+
+const enrichFalloWithRelatedSummary = async (mapped: any, rawPayload: any) => {
+  if (mapped?.contentType !== 'fallo') return mapped;
+  if (hasFalloSummaryBlock(mapped?.contentText)) return mapped;
+
+  const relatedSumario = await resolveRelatedSumarioFallback(rawPayload, { maxCodes: 1 });
+  if (!relatedSumario?.contentText) return mapped;
+
+  const mergedText = appendFalloSummary(mapped.contentText ?? null, relatedSumario.contentText);
+  if (!mergedText) return mapped;
+
+  return {
+    ...mapped,
+    contentText: mergedText,
+    _contentSource: 'view-document.fallo+sumarios-relacionados',
+  };
+};
+
+const normalizeSearchTerm = (value: string) => value.trim().replace(/\s+/g, '?');
+
+const normalizeLooseText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const pickBestFalloMatch = (targetTitle: string, candidates: ReturnType<typeof mapSaijSearchHit>[]) => {
+  const target = normalizeLooseText(targetTitle);
+  if (!target) return candidates.find((c) => c.contentType === 'fallo') ?? null;
+  let best: ReturnType<typeof mapSaijSearchHit> | null = null;
+  let bestScore = -1;
+
+  for (const candidate of candidates) {
+    if (candidate.contentType !== 'fallo') continue;
+    const title = normalizeLooseText(candidate.title ?? '');
+    if (!title) continue;
+    let score = 0;
+    if (title === target) score = 100;
+    else if (title.includes(target)) score = 85;
+    else if (target.includes(title)) score = 75;
+    else {
+      const targetTokens = target.split(' ').filter((t) => t.length > 2);
+      const overlap = targetTokens.filter((token) => title.includes(token)).length;
+      score = overlap;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  return best ?? candidates.find((c) => c.contentType === 'fallo') ?? null;
+};
+
+const resolveRelatedFallos = async (mappedDoc: any) => {
+  if (mappedDoc?.contentType !== 'sumario') return mappedDoc;
+  const related = Array.isArray(mappedDoc?.relatedFallos) ? mappedDoc.relatedFallos : [];
+  if (!related.length) return mappedDoc;
+
+  const resolved = await Promise.all(
+    related.map(async (item: any) => {
+      const title = typeof item?.title === 'string' ? item.title.trim() : '';
+      if (!title) return item;
+      try {
+        const { raw } = await client.search({
+          r: `titulo:${normalizeSearchTerm(title)}`,
+          f: JURIS_FALLO_FACET,
+          offset: 0,
+          pageSize: 10,
+        });
+        const candidates = getRawHits(raw).map((hit: any) => mapSaijSearchHit(hit, 'fallo'));
+        const best = pickBestFalloMatch(title, candidates);
+        if (!best || !best.guid) return item;
+        const sourceUrl = best.sourceUrl ?? best.friendlyUrl ?? `https://www.saij.gob.ar/view-document?guid=${best.guid}`;
+        return {
+          ...item,
+          title: item.title || best.title,
+          subtitle: item.subtitle || best.subtitle || null,
+          guid: best.guid,
+          sourceUrl,
+          url: sourceUrl,
+        };
+      } catch (err) {
+        logger.warn({ err, title }, 'Related fallo resolution failed');
+        return item;
+      }
+    })
+  );
+
+  return { ...mappedDoc, relatedFallos: resolved };
+};
 const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
   const unimplemented: Array<keyof typeof filters> = [
     'tipoNorma',
@@ -203,7 +358,7 @@ const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
   ];
   const provided = unimplemented.filter((f) => filters[f]);
   if (provided.length) {
-    logger.warn({ filters: provided }, 'Filtros aún no implementados, se ignoran en query');
+    logger.warn({ filters: provided }, 'Filtros aÃºn no implementados, se ignoran en query');
   }
 };
 
@@ -213,7 +368,7 @@ export const SaijService = {
     console.log('DEBUG FLAG:', input.debug);
 
     const query = buildSaijQuery(input);
-    const cacheKey = `saij-search:v2:${hashString(JSON.stringify(query))}`;
+    const cacheKey = `saij-search:v4:${hashString(JSON.stringify(query))}`;
 
     if (!input.debug) {
       const cachedMem = cache.getSearch(query);
@@ -231,7 +386,7 @@ export const SaijService = {
       }
       console.log('search cache miss');
     } else {
-      console.log('search cache skipped בגלל debug');
+      console.log('search cache skipped ×‘×’×œ×œ debug');
     }
 
     logger.info({ query }, 'Executing SAIJ search');
@@ -256,7 +411,11 @@ export const SaijService = {
       raw.results ??
       [];
 
-    const hits = rawHits.map((item: any) => mapSaijSearchHit(item, input.contentType));
+    const mappedHits = rawHits.map((item: any) => mapSaijSearchHit(item, input.contentType));
+    const hits =
+      input.contentType === 'sumario'
+        ? [...mappedHits].sort((a, b) => parseIsoDate(b.fecha ?? null) - parseIsoDate(a.fecha ?? null))
+        : mappedHits;
     const response: SaijSearchResponse = {
       ok: true,
       query,
@@ -331,6 +490,8 @@ export const SaijService = {
       externalContentType = debugInfo.contentType;
       externalUrl = debugInfo.url;
       let mapped = mapSaijDocument(raw, { guid });
+      mapped = await resolveRelatedFallos(mapped);
+      mapped = await enrichFalloWithRelatedSummary(mapped, raw);
       if (isDocumentContentEmpty(mapped)) {
         const relatedSumario = await resolveRelatedSumarioFallback(raw);
         if (relatedSumario) {
@@ -372,12 +533,14 @@ export const SaijService = {
           externalUrl = dbg.finalUrl ?? dbg.url;
           const fallbackDoc = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl: fallbackUrl });
           mapped = mergeDocumentContent(mapped, fallbackDoc);
+          mapped = await resolveRelatedFallos(mapped);
+          mapped = await enrichFalloWithRelatedSummary(mapped, raw);
           fallbackSucceeded = !isDocumentContentEmpty(mapped);
           strategyUsed = 'view-document+friendly-url-fallback';
           const fallbackReason: string | undefined =
             fallbackSucceeded ? undefined : detectBlockReason(dbg.htmlPreview) ?? 'html_without_extractable_main_content';
           if (fallbackReason) {
-            logger.warn({ guid, fallbackReason }, 'Fallback HTML sin contenido útil');
+            logger.warn({ guid, fallbackReason }, 'Fallback HTML sin contenido Ãºtil');
           }
         return await finalizeDocument(guid, mapped, raw, {
           debug,
@@ -472,7 +635,9 @@ export const SaijService = {
         const { html, debug: dbg } = await client.fetchFriendlyUrl(friendlyUrl);
         externalContentType = dbg.contentType;
         externalUrl = dbg.finalUrl ?? dbg.url;
-        const mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
+        let mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
+        mapped = await resolveRelatedFallos(mapped);
+        mapped = await enrichFalloWithRelatedSummary(mapped, null);
         const mergedDoc = mapped;
         const fbSucceeded = !isDocumentContentEmpty(mergedDoc);
         const fbReason: string | undefined = fbSucceeded
@@ -657,6 +822,7 @@ async function finalizeDocument(
       toc: mapped.toc,
       sourceUrl: mapped.sourceUrl ?? null,
       attachment: (mapped as any).attachment ?? null,
+      relatedFallos: Array.isArray((mapped as any).relatedFallos) ? (mapped as any).relatedFallos : [],
       friendlyUrl: mapped.friendlyUrl ?? null,
       rawPayload,
       fetchedAt: new Date(fetchedAt),
@@ -699,3 +865,6 @@ async function finalizeDocument(
       : undefined,
   };
 }
+
+
+

@@ -32,7 +32,7 @@ export class SaijClient {
   constructor() {
     this.http = axios.create({
       baseURL: env.saijBaseUrl,
-      timeout: 8000,
+      timeout: 15000,
       headers: {
         'User-Agent': 'backend-api/0.1 (+github.com/)',
         'X-Requested-With': 'XMLHttpRequest',

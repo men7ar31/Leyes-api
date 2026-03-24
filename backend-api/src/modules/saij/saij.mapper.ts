@@ -46,6 +46,30 @@ const formatDateShort = (value?: string | null) => {
   return `${Number(m[3])}/${Number(m[2])}/${m[1]}`;
 };
 
+const formatDateLongEs = (value?: string | null) => {
+  if (!value || typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return value;
+  const months = [
+    'Enero',
+    'Febrero',
+    'Marzo',
+    'Abril',
+    'Mayo',
+    'Junio',
+    'Julio',
+    'Agosto',
+    'Septiembre',
+    'Octubre',
+    'Noviembre',
+    'Diciembre',
+  ];
+  const monthIndex = Number(m[2]) - 1;
+  const month = months[monthIndex] ?? null;
+  if (!month) return value;
+  return `${Number(m[3])} de ${month} de ${m[1]}`;
+};
+
 const buildFalloCaratula = (actor?: string | null, demandado?: string | null, sobre?: string | null) => {
   const actorClean = actor?.trim() || null;
   const demandadoClean = demandado?.trim() || null;
@@ -60,6 +84,234 @@ const buildFalloCaratula = (actor?: string | null, demandado?: string | null, so
     base = base ? `${base} s/ ${sobreClean}` : sobreClean;
   }
   return base.trim() || null;
+};
+
+const FALLO_SEARCH_FACET =
+  'Total|Tipo de Documento/Jurisprudencia/Fallo|Fecha|Organismo|Tribunal|Tema|Publicación|Estado de Vigencia|Autor|Jurisdicción';
+
+const buildFalloSearchUrl = (title: string) => {
+  const normalized = title.trim().replace(/\s+/g, '?');
+  const params = new URLSearchParams();
+  params.set('r', `titulo:${normalized}`);
+  params.set('o', '0');
+  params.set('p', '25');
+  params.set('f', FALLO_SEARCH_FACET);
+  params.set('s', '');
+  params.set('v', 'colapsada');
+  return `https://www.saij.gob.ar/busqueda?${params.toString()}`;
+};
+
+const normalizeTagText = (value?: string | null) => {
+  if (!value || typeof value !== 'string') return null;
+  return value
+    .replace(/\[\[\/?p\]\]|\[\/?p\]/gi, '\n')
+    .replace(/\[\[\/?r[^\]]*\]\]|\[\/?r[^\]]*\]/gi, ' ')
+    .replace(/\[\[\/?[a-z]+[^\]]*\]\]|\[\/?[a-z]+[^\]]*\]/gi, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+};
+
+const normalizeLooseString = (value: any): string | null => {
+  if (typeof value === 'string') return normalizeTagText(value);
+  if (value && typeof value === 'object') {
+    const nested = normalizeSubtitleValue(value);
+    if (nested) return normalizeTagText(nested);
+  }
+  return null;
+};
+
+const pickFirstString = (...values: any[]): string | null => {
+  for (const value of values) {
+    const normalized = normalizeLooseString(value);
+    if (normalized && normalized.trim().length > 0) return normalized;
+  }
+  return null;
+};
+
+const buildFalloDetailText = (content: Record<string, any>, metadata: Record<string, any>): string | null => {
+  const tipoFallo =
+    pickFirstString(
+      content?.['tipo-fallo'],
+      content?.tipo_fallo,
+      metadata?.['tipo-fallo'],
+      metadata?.tipo_fallo
+    ) ?? 'SENTENCIA';
+
+  const fechaRaw = pickFirstString(
+    content?.fecha,
+    content?.['fecha-fallo'],
+    content?.fecha_fallo,
+    metadata?.fecha,
+    metadata?.['fecha-fallo'],
+    metadata?.fecha_fallo
+  );
+  const fecha = formatDateLongEs(fechaRaw) ?? formatDateShort(fechaRaw);
+
+  const nroInterno = pickFirstString(
+    content?.['numero-interno'],
+    content?.numero_interno,
+    content?.['nro-interno'],
+    content?.nro_interno,
+    metadata?.['numero-interno'],
+    metadata?.numero_interno
+  );
+
+  const tribunal = pickFirstString(
+    content?.tribunal,
+    content?.organismo,
+    content?.['organo-judicial'],
+    content?.organo_judicial,
+    metadata?.tribunal,
+    metadata?.organismo
+  );
+
+  const magistrados = pickFirstString(
+    content?.magistrados,
+    content?.jueces,
+    content?.integracion,
+    metadata?.magistrados
+  );
+
+  const idSaij = pickFirstString(
+    content?.['id-infojus'],
+    content?.id_infojus,
+    content?.['numero-sumario'],
+    content?.numero_sumario,
+    metadata?.['id-infojus'],
+    metadata?.id_infojus
+  );
+
+  const summaryRaw = pickFirstString(
+    content?.texto,
+    content?.['texto-fallo'],
+    content?.texto_fallo,
+    normalizeSubtitleValue(content?.sumario),
+    content?.sumario
+  );
+  const summary = summaryRaw ? summaryRaw.replace(/^sumario\s*:?\s*/i, '').trim() : null;
+
+  const headerLines = [
+    tipoFallo ? tipoFallo.toUpperCase() : null,
+    fecha,
+    nroInterno ? `Nro. Interno: ${nroInterno}` : null,
+    tribunal ? tribunal.toUpperCase() : null,
+    magistrados ? `Magistrados: ${magistrados}` : null,
+    idSaij ? `Id SAIJ: ${idSaij}` : null,
+  ].filter((value): value is string => Boolean(value && value.trim().length > 0));
+
+  const sections: string[] = [];
+  if (headerLines.length) sections.push(headerLines.join('\n'));
+  if (summary) sections.push(`SUMARIO\n${summary}`);
+
+  return sections.length > 0 ? sections.join('\n\n') : null;
+};
+
+const extractInlineReferenceLabels = (texto?: string | null): string[] => {
+  if (!texto || typeof texto !== 'string') return [];
+  const labels: string[] = [];
+  const regex = /\[\[r[^\]]*\]\]([\s\S]*?)\[\[\/r[^\]]*\]\]/gi;
+  let match: RegExpExecArray | null = regex.exec(texto);
+  while (match) {
+    const label = normalizeTagText(match[1]);
+    if (label) labels.push(label);
+    match = regex.exec(texto);
+  }
+  return Array.from(new Set(labels));
+};
+
+const parseNormativeRefCode = (raw?: string | null): string | null => {
+  if (!raw || typeof raw !== 'string') return null;
+  const value = raw.replace(/\s+/g, ' ').trim();
+  if (!value) return null;
+
+  const leyMatch = value.match(/^LEY\s+C?\s+0*(\d{1,7})\b/i);
+  if (leyMatch) return `Ley ${Number(leyMatch[1])}`;
+
+  const cccnMatch = value.match(/^CCN\s+C\s+0*(\d{1,7})\s+\d{4}\s+\d{2}\s+\d{2}\s+0*(\d{1,5})\b/i);
+  if (cccnMatch) {
+    return `Codigo Civil y Comercial de la Nacion (Ley ${Number(cccnMatch[1])}) Art. ${Number(cccnMatch[2])}`;
+  }
+
+  return null;
+};
+
+const isHumanReadableRelatedLine = (value: string): boolean => {
+  const line = value.trim();
+  if (!line) return false;
+  if (/^REFERENCIAS?_NORMATIVAS?/i.test(line)) return false;
+  if (line.includes('_')) return false;
+  if (line.length > 220) return false;
+  if (/^[A-Z0-9 .\-\/]+$/.test(line) && /\d{4,}/.test(line) && !/[.,]/.test(line) && !/[a-záéíóúñ]/i.test(line)) {
+    return false;
+  }
+  return true;
+};
+
+const extractRelatedContentLines = (content: any): string[] => {
+  const lines: string[] = [];
+  const pushLine = (value?: string | null) => {
+    const cleaned = normalizeTagText(value);
+    if (!cleaned) return;
+    if (!isHumanReadableRelatedLine(cleaned)) return;
+    lines.push(cleaned);
+  };
+
+  const walkReferences = (node: any) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(walkReferences);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    if (typeof node.cr === 'string') {
+      pushLine(node.cr);
+    }
+    if (typeof node.ref === 'string') {
+      const parsed = parseNormativeRefCode(node.ref);
+      if (parsed) pushLine(parsed);
+    }
+
+    Object.values(node).forEach(walkReferences);
+  };
+
+  const walkLabeledNodes = (node: any) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(walkLabeledNodes);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    if (typeof node.titulo === 'string') pushLine(node.titulo);
+    if (typeof node.caratula === 'string') pushLine(node.caratula);
+    if (typeof node.descripcion === 'string') pushLine(node.descripcion);
+    if (typeof node.nombre === 'string') pushLine(node.nombre);
+
+    Object.values(node).forEach(walkLabeledNodes);
+  };
+
+  walkReferences(content?.['referencias-normativas'] ?? content?.referencias_normativas ?? null);
+  walkLabeledNodes(content?.['contenido-relacionado'] ?? content?.contenido_relacionado ?? content?.contenidoRelacionados ?? null);
+  walkLabeledNodes(content?.['fallos-a-los-que-aplica'] ?? content?.fallos_a_los_que_aplica ?? null);
+  walkLabeledNodes(content?.['fallos-relacionados'] ?? content?.fallos_relacionados ?? null);
+  extractInlineReferenceLabels(content?.texto).forEach(pushLine);
+
+  const unique = Array.from(new Set(lines.filter((line) => line.length > 0)));
+  const normalized = (value: string) => value.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, ' ').trim();
+  const compact = unique.filter((candidate, idx) => {
+    const candNorm = normalized(candidate);
+    if (!candNorm) return false;
+    return !unique.some((other, j) => {
+      if (j === idx) return false;
+      const otherNorm = normalized(other);
+      if (!otherNorm) return false;
+      return otherNorm.length > candNorm.length && otherNorm.includes(candNorm);
+    });
+  });
+  return compact;
 };
 
 const normalizeSubtitleValue = (value: any): string | null => {
@@ -168,13 +420,14 @@ export const mapSaijSearchHit = (
   const actor = typeof content['actor'] === 'string' ? content['actor'] : null;
   const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
   const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
+  const tituloSumario = normalizeTagText(typeof content['titulo'] === 'string' ? content['titulo'] : null);
   const caratula =
     normalizeSubtitleValue(content['caratula']) ??
     (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
     (contentType === 'fallo' ? buildFalloCaratula(actor, demandado, sobre) : null);
 
   const title = (
-    caratula ??
+    (contentType === 'sumario' ? tituloSumario ?? caratula : caratula) ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
     prettifyFriendlyDescription(description) ??
@@ -182,12 +435,9 @@ export const mapSaijSearchHit = (
     ''
   );
 
-  const sumario = normalizeSubtitleValue(content['sumario']);
+  const sumario = normalizeTagText(normalizeSubtitleValue(content['sumario']));
 
-  const rawSummaryText =
-    typeof content['texto'] === 'string'
-      ? content['texto'].replace(/\s+/g, ' ').trim()
-      : null;
+  const rawSummaryText = normalizeTagText(typeof content['texto'] === 'string' ? content['texto'] : null);
 
   const falloSubtitle = joinNonEmpty([
     typeof content['tipo-fallo'] === 'string' ? content['tipo-fallo'] : null,
@@ -195,9 +445,16 @@ export const mapSaijSearchHit = (
     formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
   ], '. ');
 
+  const sumarioSubtitle = joinNonEmpty([
+    'Sumario de Fallo',
+    formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
+  ], '. ');
+
   const subtitle =
     (contentType === 'fallo'
       ? falloSubtitle
+      : contentType === 'sumario'
+        ? sumarioSubtitle
       : truncate(sumario ?? undefined, 180) ??
         joinNonEmpty([
           content['tipo-norma']?.texto,
@@ -206,7 +463,10 @@ export const mapSaijSearchHit = (
           content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
         ])) ?? null;
 
-  const summary = sumario ?? (contentType === 'sumario' ? rawSummaryText : null);
+  const summary =
+    contentType === 'sumario'
+      ? rawSummaryText ?? sumario
+      : sumario ?? rawSummaryText;
 
   return {
     guid: (raw as any).uuid ?? raw.guid ?? raw.id ?? '',
@@ -543,6 +803,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   const actor = typeof content['actor'] === 'string' ? content['actor'] : null;
   const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
   const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
+  const tituloSumario = normalizeTagText(typeof content['titulo'] === 'string' ? content['titulo'] : null);
   const caratula =
     normalizeSubtitleValue(content['caratula']) ??
     (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
@@ -560,22 +821,33 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
       : null;
 
   const title =
-    caratula ??
+    (inferredDocContentType === 'sumario' ? tituloSumario ?? caratula : caratula) ??
     resolvedFalloCaratula ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
     prettifyFriendlyDescription(description) ??
     options.guid;
 
-  const sumario = normalizeSubtitleValue(content['sumario']);
+  const sumario = normalizeTagText(normalizeSubtitleValue(content['sumario']));
 
-  const subtitle =
-    truncate(sumario ?? undefined, 180) ??
-    joinNonEmpty([
-      content['tipo-norma']?.texto,
-      content['fecha'],
-      content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
-    ]);
+  const subtitle = (
+    inferredDocContentType === 'sumario'
+      ? joinNonEmpty([
+          'SUMARIO DE FALLO',
+          formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
+          typeof content['id-infojus'] === 'string'
+            ? `Id SAIJ: ${content['id-infojus']}`
+            : typeof content['numero-sumario'] === 'string'
+              ? `Id SAIJ: ${content['numero-sumario']}`
+              : null,
+        ], ' · ')
+      : truncate(sumario ?? undefined, 180) ??
+        joinNonEmpty([
+          content['tipo-norma']?.texto,
+          content['fecha'],
+          content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
+        ])
+  );
 
   const contentType = inferredDocContentType;
 
@@ -616,17 +888,90 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
         }
       : null;
 
+  const relatedReferenceLines = extractRelatedContentLines(content);
   const rawHtml = (abstractObj as any)?.html ?? options.fallbackHtml ?? null;
   const contentHtmlBase = extractMainHtml(rawHtml);
-  const contentTextBase = htmlToText(contentHtmlBase) ?? content['texto'] ?? null;
-  const articlesBase = parseArticlesFromText(contentTextBase);
+  const rawTexto =
+    normalizeTagText(typeof content['texto'] === 'string' ? content['texto'] : null) ??
+    normalizeTagText(typeof content['texto-fallo'] === 'string' ? content['texto-fallo'] : null) ??
+    normalizeTagText(typeof (content as any)?.texto_fallo === 'string' ? (content as any).texto_fallo : null) ??
+    null;
+  const rawSumario =
+    normalizeTagText(normalizeSubtitleValue(content['sumario'])) ??
+    normalizeTagText(typeof content['sumario'] === 'string' ? content['sumario'] : null) ??
+    null;
+  let contentTextBase =
+    htmlToText(contentHtmlBase) ??
+    rawTexto ??
+    rawSumario ??
+    null;
+  if (inferredDocContentType === 'fallo') {
+    const falloDetailText = buildFalloDetailText(content as Record<string, any>, metadata as Record<string, any>);
+    if (falloDetailText) {
+      contentTextBase = falloDetailText;
+    } else {
+      contentTextBase = rawTexto ?? rawSumario ?? contentTextBase;
+    }
+  }
+  const fuenteSumario =
+    inferredDocContentType === 'sumario' && typeof content['fuente'] === 'string'
+      ? normalizeTagText(content['fuente'])
+      : null;
+  if (
+    inferredDocContentType === 'sumario' &&
+    typeof contentTextBase === 'string' &&
+    contentTextBase.trim().length > 0 &&
+    fuenteSumario
+  ) {
+    contentTextBase = `${contentTextBase}\n\nFuente del sumario: ${fuenteSumario}`;
+  }
+  if (
+    inferredDocContentType === 'sumario' &&
+    typeof contentTextBase === 'string' &&
+    contentTextBase.trim().length > 0 &&
+    relatedReferenceLines.length > 0
+  ) {
+    contentTextBase = `${contentTextBase}\n\nCONTENIDO RELACIONADO\n${relatedReferenceLines.map((line) => `- ${line}`).join('\n')}`;
+  }
+  const falloAplicaCaratula =
+    inferredDocContentType === 'sumario' && typeof content['caratula'] === 'string'
+      ? normalizeTagText(content['caratula'])
+      : null;
+  const falloAplicaMeta =
+    inferredDocContentType === 'sumario'
+      ? joinNonEmpty([
+          typeof content['tipo-fallo'] === 'string' ? normalizeTagText(content['tipo-fallo']) : null,
+          typeof content['tribunal'] === 'string' ? normalizeTagText(content['tribunal']) : null,
+          formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
+        ], '. ')
+      : null;
+  const relatedFallos =
+    inferredDocContentType === 'sumario' && falloAplicaCaratula
+      ? [
+          {
+            title: falloAplicaCaratula,
+            subtitle: falloAplicaMeta,
+            guid: null,
+            sourceUrl: null,
+            url: buildFalloSearchUrl(falloAplicaCaratula),
+          },
+        ]
+      : [];
+  const shouldRenderArticleBlocks = inferredDocContentType === 'legislacion';
+  const articlesBase = shouldRenderArticleBlocks ? parseArticlesFromText(contentTextBase) : [];
 
   const deep = extractRenderableContentFromViewDocument(abstractObj);
 
   const fromArticulo = deep.fromArticulo === true;
   const contentHtml = fromArticulo ? null : contentHtmlBase || deep.contentHtml || null;
   const contentText = fromArticulo ? deep.contentText || null : contentTextBase || deep.contentText || null;
-  const articles = fromArticulo ? deep.articles || [] : (articlesBase.length ? articlesBase : deep.articles) || [];
+  const articles = fromArticulo
+    ? shouldRenderArticleBlocks
+      ? deep.articles || []
+      : []
+    : shouldRenderArticleBlocks
+      ? (articlesBase.length ? articlesBase : deep.articles) || []
+      : [];
 
   const toc = [] as { label: string; anchor?: string }[];
 
@@ -681,6 +1026,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     sourceUrl: friendlyUrl,
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },
     attachment,
+    relatedFallos,
     _contentSource: deep.sourcePath,
     _primaryTextWasRejectedAsMetadataOnly: primaryTextWasRejectedAsMetadataOnly,
     _rejectedTextReason: rejectedTextReason,

@@ -133,6 +133,13 @@ export type SaijResolvedDocument = {
     url?: string | null;
     fallbackUrl?: string | null;
   } | null;
+  relatedFallos?: Array<{
+    title: string;
+    subtitle?: string | null;
+    guid?: string | null;
+    sourceUrl?: string | null;
+    url: string;
+  }>;
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;

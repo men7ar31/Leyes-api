@@ -1,4 +1,4 @@
-import { SaijSearchRequest, SaijQuery, SaijContentType } from './saij.types';
+﻿import { SaijSearchRequest, SaijQuery, SaijContentType } from './saij.types';
 import { DEFAULT_PAGE_SIZE } from './saij.constants';
 
 const BASE_FACETS = [
@@ -30,10 +30,18 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
   }
 
   if (input.filters.textoEnNorma) {
-    const searchTerm = input.filters.textoEnNorma;
-    // En jurisprudencia/fallos SAIJ responde con titulo:, no con texto:
-    const field = input.contentType === 'fallo' ? 'titulo' : 'texto';
-    rParts.push(`${field}: ${searchTerm}`);
+    const searchTerm = input.filters.textoEnNorma.trim().replace(/\s+/g, '?');
+    // Alineado con SAIJ web:
+    // - fallo: titulo:
+    // - sumario: tema:
+    // - resto: texto:
+    const field =
+      input.contentType === 'fallo'
+        ? 'titulo'
+        : input.contentType === 'sumario'
+          ? 'tema'
+          : 'texto';
+    rParts.push(`${field}:${searchTerm}`);
   }
 
   return rParts.join(' ').trim();
