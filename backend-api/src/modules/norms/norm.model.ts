@@ -13,6 +13,7 @@ export interface NormCacheDocument extends Document {
   articles?: unknown[];
   toc?: unknown[];
   sourceUrl?: string | null;
+  attachment?: unknown;
   friendlyUrl?: string | null;
   rawPayload?: unknown;
   fetchedAt: Date;
@@ -33,6 +34,7 @@ const NormCacheSchema = new Schema<NormCacheDocument>({
   articles: [Schema.Types.Mixed],
   toc: [Schema.Types.Mixed],
   sourceUrl: String,
+  attachment: Schema.Types.Mixed,
   friendlyUrl: String,
   rawPayload: Schema.Types.Mixed,
   fetchedAt: { type: Date, default: Date.now },

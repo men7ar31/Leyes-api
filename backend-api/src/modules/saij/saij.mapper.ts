@@ -39,6 +39,29 @@ const truncate = (text: string | undefined, max = 180) => {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 };
 
+const formatDateShort = (value?: string | null) => {
+  if (!value || typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return value;
+  return `${Number(m[3])}/${Number(m[2])}/${m[1]}`;
+};
+
+const buildFalloCaratula = (actor?: string | null, demandado?: string | null, sobre?: string | null) => {
+  const actorClean = actor?.trim() || null;
+  const demandadoClean = demandado?.trim() || null;
+  const sobreClean = sobre?.trim() || null;
+  let base = '';
+  if (actorClean && demandadoClean) {
+    base = `${actorClean} c/ ${demandadoClean}`;
+  } else {
+    base = actorClean ?? demandadoClean ?? '';
+  }
+  if (sobreClean) {
+    base = base ? `${base} s/ ${sobreClean}` : sobreClean;
+  }
+  return base.trim() || null;
+};
+
 const normalizeSubtitleValue = (value: any): string | null => {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object') {
@@ -135,7 +158,23 @@ export const mapSaijSearchHit = (
   const description = friendlyMeta?.description as string | undefined;
   const friendlyUrl = subdomain && description ? `https://www.saij.gob.ar/${subdomain}-${description}` : null;
 
+  const inferredContentType =
+    metadata['document-content-type'] ??
+    (abstractObj as any)?.['document-content-type'] ??
+    raw.documentContentType;
+
+  const contentType = normalizeContentType(inferredContentType, fallbackContentType);
+
+  const actor = typeof content['actor'] === 'string' ? content['actor'] : null;
+  const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
+  const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
+  const caratula =
+    normalizeSubtitleValue(content['caratula']) ??
+    (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
+    (contentType === 'fallo' ? buildFalloCaratula(actor, demandado, sobre) : null);
+
   const title = (
+    caratula ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
     prettifyFriendlyDescription(description) ??
@@ -145,26 +184,27 @@ export const mapSaijSearchHit = (
 
   const sumario = normalizeSubtitleValue(content['sumario']);
 
-  const inferredContentType =
-    metadata['document-content-type'] ??
-    (abstractObj as any)?.['document-content-type'] ??
-    raw.documentContentType;
-
-  const contentType = normalizeContentType(inferredContentType, fallbackContentType);
-
   const rawSummaryText =
     typeof content['texto'] === 'string'
       ? content['texto'].replace(/\s+/g, ' ').trim()
       : null;
 
+  const falloSubtitle = joinNonEmpty([
+    typeof content['tipo-fallo'] === 'string' ? content['tipo-fallo'] : null,
+    typeof content['tribunal'] === 'string' ? content['tribunal'] : null,
+    formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
+  ], '. ');
+
   const subtitle =
-    truncate(sumario ?? undefined, 180) ??
-    joinNonEmpty([
-      content['tipo-norma']?.texto,
-      content['numero-sumario'],
-      content['fecha'],
-      content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
-    ]);
+    (contentType === 'fallo'
+      ? falloSubtitle
+      : truncate(sumario ?? undefined, 180) ??
+        joinNonEmpty([
+          content['tipo-norma']?.texto,
+          content['numero-sumario'],
+          content['fecha'],
+          content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
+        ])) ?? null;
 
   const summary = sumario ?? (contentType === 'sumario' ? rawSummaryText : null);
 
@@ -500,7 +540,28 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   const friendlyUrl =
     subdomain && description ? `https://www.saij.gob.ar/${subdomain}-${description}` : options.friendlyUrl ?? null;
 
+  const actor = typeof content['actor'] === 'string' ? content['actor'] : null;
+  const demandado = typeof content['demandado'] === 'string' ? content['demandado'] : null;
+  const sobre = typeof content['sobre'] === 'string' ? content['sobre'] : null;
+  const caratula =
+    normalizeSubtitleValue(content['caratula']) ??
+    (typeof content['caratula'] === 'string' ? content['caratula'] : null) ??
+    normalizeSubtitleValue(content['titulo']) ??
+    (typeof content['titulo'] === 'string' ? content['titulo'] : null);
+
+  const inferredDocContentType = normalizeContentType(
+    metadata['document-content-type'] ?? raw?.contentType,
+    'legislacion'
+  );
+
+  const resolvedFalloCaratula =
+    inferredDocContentType === 'fallo'
+      ? buildFalloCaratula(actor, demandado, sobre)
+      : null;
+
   const title =
+    caratula ??
+    resolvedFalloCaratula ??
     content['titulo-norma'] ??
     content['nombre-coloquial'] ??
     prettifyFriendlyDescription(description) ??
@@ -516,10 +577,44 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
       content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
     ]);
 
-  const contentType = normalizeContentType(
-    metadata['document-content-type'] ?? raw?.contentType,
-    'legislacion'
-  );
+  const contentType = inferredDocContentType;
+
+  const textoDoc = (content as any)?.['texto-doc'] ?? (content as any)?.texto_doc ?? null;
+  const attachmentGuid =
+    typeof textoDoc?.uuid === 'string'
+      ? textoDoc.uuid
+      : null;
+  const attachmentFileName =
+    typeof textoDoc?.['file-name'] === 'string'
+      ? textoDoc['file-name']
+      : typeof textoDoc?.fileName === 'string'
+        ? textoDoc.fileName
+        : null;
+  const attachment =
+    attachmentGuid || attachmentFileName
+      ? {
+          guid: attachmentGuid,
+          fileName: attachmentFileName,
+          // Ruta observada en SAIJ para adjuntos PDF.
+          url:
+            attachmentGuid && attachmentFileName
+              ? `https://www.saij.gob.ar/descarga-archivo?guid=${attachmentGuid}&name=${encodeURIComponent(
+                  attachmentFileName.toLowerCase()
+                )}`
+              : attachmentGuid
+                ? `https://www.saij.gob.ar/descarga-archivo?guid=${attachmentGuid}`
+                : null,
+          // Fallback de descarga con nombre original por si el servidor es case-sensitive.
+          fallbackUrl:
+            attachmentGuid && attachmentFileName
+              ? `https://www.saij.gob.ar/descarga-archivo?guid=${attachmentGuid}&name=${encodeURIComponent(
+                  attachmentFileName
+                )}`
+              : attachmentGuid
+                ? `https://www.saij.gob.ar/view-document?guid=${attachmentGuid}`
+                : null,
+        }
+      : null;
 
   const rawHtml = (abstractObj as any)?.html ?? options.fallbackHtml ?? null;
   const contentHtmlBase = extractMainHtml(rawHtml);
@@ -585,6 +680,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     friendlyUrl,
     sourceUrl: friendlyUrl,
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },
+    attachment,
     _contentSource: deep.sourcePath,
     _primaryTextWasRejectedAsMetadataOnly: primaryTextWasRejectedAsMetadataOnly,
     _rejectedTextReason: rejectedTextReason,
@@ -620,6 +716,7 @@ export const mergeDocumentContent = (
     toc: baseDoc.toc && baseDoc.toc.length ? baseDoc.toc : fallbackDoc.toc,
     friendlyUrl: baseDoc.friendlyUrl || fallbackDoc.friendlyUrl,
     sourceUrl: baseDoc.sourceUrl || fallbackDoc.sourceUrl,
+    attachment: (baseDoc as any).attachment || (fallbackDoc as any).attachment || null,
     _primaryTextWasRejectedAsMetadataOnly:
       (baseDoc as any)._primaryTextWasRejectedAsMetadataOnly ??
       (fallbackDoc as any)._primaryTextWasRejectedAsMetadataOnly ??

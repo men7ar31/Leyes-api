@@ -67,6 +67,12 @@ export type SaijDocument = {
   toc: any[];
   friendlyUrl: string | null;
   sourceUrl: string | null;
+  attachment?: {
+    guid?: string | null;
+    fileName?: string | null;
+    url?: string | null;
+    fallbackUrl?: string | null;
+  } | null;
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;

@@ -120,6 +120,10 @@ export const DetailScreen = () => {
   }
 
   const sourceUrl = document.sourceUrl || document.friendlyUrl;
+  const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
+  const attachmentLabel = document.attachment?.fileName
+    ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
+    : "Ver archivo adjunto";
   const metadataDateRaw = getMetadataDate(document.metadata);
   const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
 
@@ -201,6 +205,15 @@ export const DetailScreen = () => {
           <Text style={styles.sourceButtonText}>Abrir fuente</Text>
         </Pressable>
 
+        {attachmentUrl ? (
+          <Pressable
+            style={styles.attachmentButton}
+            onPress={() => Linking.openURL(attachmentUrl)}
+          >
+            <Text style={styles.attachmentButtonText}>{attachmentLabel}</Text>
+          </Pressable>
+        ) : null}
+
         {renderContent()}
       </ScrollView>
     </SafeAreaView>
@@ -234,6 +247,19 @@ const styles = StyleSheet.create({
   },
   sourceButtonText: {
     color: "#FFFFFF",
+    fontSize: typography.body,
+    fontWeight: "600",
+  },
+  attachmentButton: {
+    backgroundColor: colors.card,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: colors.primaryStrong,
+  },
+  attachmentButtonText: {
+    color: colors.primaryStrong,
     fontSize: typography.body,
     fontWeight: "600",
   },

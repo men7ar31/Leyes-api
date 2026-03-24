@@ -12,7 +12,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 4;
+const DOCUMENT_EXTRACTOR_VERSION = 6;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 
@@ -98,6 +98,7 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     toc,
     friendlyUrl: mongo.friendlyUrl ?? null,
     sourceUrl: mongo.sourceUrl ?? null,
+    attachment: (mongo.attachment as any) ?? null,
     fetchedAt: mongo.fetchedAt?.toISOString?.() ?? new Date().toISOString(),
     fromCache: overrides?.fromCache ?? true,
   };
@@ -655,6 +656,7 @@ async function finalizeDocument(
       articles: mapped.articles,
       toc: mapped.toc,
       sourceUrl: mapped.sourceUrl ?? null,
+      attachment: (mapped as any).attachment ?? null,
       friendlyUrl: mapped.friendlyUrl ?? null,
       rawPayload,
       fetchedAt: new Date(fetchedAt),
