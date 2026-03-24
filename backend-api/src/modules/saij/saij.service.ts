@@ -12,7 +12,9 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 3;
+const DOCUMENT_EXTRACTOR_VERSION = 4;
+const JURIS_SUMARIO_FACET =
+  'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 
 const safeParseJson = (payload?: string | null) => {
   if (!payload) return null;
@@ -67,12 +69,13 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
   let contentHtml = typeof mongo?.contentHtml === 'string' ? mongo.contentHtml : null;
   let contentText = typeof mongo?.contentText === 'string' ? mongo.contentText : null;
   let articles = Array.isArray(mongo?.articles) ? mongo.articles : [];
+  const contentType = (mongo?.contentType as string | undefined) ?? 'legislacion';
   const hasArticles = Array.isArray(articles) && articles.length > 0;
-  if (!hasArticles && contentText && !isLikelyLegalBodyText(contentText)) {
+  if (contentType === 'legislacion' && !hasArticles && contentText && !isLikelyLegalBodyText(contentText)) {
     contentText = null;
     articles = [];
   }
-  if (!hasArticles && !contentText && contentHtml) {
+  if (contentType === 'legislacion' && !hasArticles && !contentText && contentHtml) {
     const htmlText = stripHtmlToText(contentHtml);
     if (htmlText && isLikelyLegalBodyText(htmlText)) {
       contentText = htmlText;
@@ -86,7 +89,7 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     guid: mongo.guid,
     title: mongo.title,
     subtitle: typeof mongo.subtitle === 'string' ? mongo.subtitle : null,
-    contentType: (mongo.contentType as any) ?? 'legislacion',
+    contentType: contentType as any,
     extractorVersion: mongo.extractorVersion ?? 0,
     metadata: (mongo.metadata as any) ?? {},
     contentHtml,
@@ -102,6 +105,88 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
   const contentUnavailableReason =
     overrides?.contentUnavailableReason ?? (hasRenderableContent ? null : 'saij_document_only_metadata');
   return { ...doc, hasRenderableContent, contentUnavailableReason };
+};
+
+const extractRelatedSumarioCodes = (rawPayload: any): string[] => {
+  const abstractObj = (rawPayload as any)?.data
+    ? safeParseJson((rawPayload as any).data as string) ?? (rawPayload as any).data
+    : rawPayload;
+  const content = abstractObj?.document?.content ?? abstractObj?.content ?? {};
+  const related =
+    content?.['sumarios-relacionados'] ??
+    content?.sumariosRelacionados ??
+    content?.sumarios_relacionados ??
+    null;
+  if (!related) return [];
+
+  const values: string[] = [];
+  const walk = (node: any) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      values.push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node === 'object') {
+      Object.values(node).forEach(walk);
+    }
+  };
+  walk(related);
+
+  return Array.from(
+    new Set(
+      values
+        .map((v) => String(v).trim())
+        .filter((v) => /^[A-Za-z]\d{6,8}$/.test(v))
+    )
+  );
+};
+
+const getRawHits = (raw: any): any[] =>
+  (raw as any)?.searchResults?.documentResultList ??
+  raw?.documentResultList ??
+  raw?.hits ??
+  raw?.resultados ??
+  raw?.results ??
+  [];
+
+const resolveRelatedSumarioFallback = async (
+  rawPayload: any
+): Promise<{ contentType: 'sumario'; contentText: string; subtitle: string | null } | null> => {
+  const codes = extractRelatedSumarioCodes(rawPayload);
+  if (!codes.length) return null;
+
+  const snippets: string[] = [];
+  let subtitle: string | null = null;
+
+  for (const code of codes.slice(0, 3)) {
+    try {
+      const { raw } = await client.search({
+        r: `numero-sumario:${code}`,
+        f: JURIS_SUMARIO_FACET,
+        offset: 0,
+        pageSize: 1,
+      });
+      const first = getRawHits(raw)[0];
+      if (!first) continue;
+      const mapped = mapSaijSearchHit(first, 'sumario');
+      const text = typeof mapped.summary === 'string' ? mapped.summary.trim() : '';
+      if (text && !snippets.includes(text)) snippets.push(text);
+      if (!subtitle && mapped.subtitle) subtitle = mapped.subtitle;
+    } catch (err) {
+      logger.warn({ err, code }, 'Related sumario resolution failed');
+    }
+  }
+
+  if (!snippets.length) return null;
+  return {
+    contentType: 'sumario',
+    contentText: snippets.join('\n\n'),
+    subtitle,
+  };
 };
 
 const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
@@ -245,6 +330,20 @@ export const SaijService = {
       externalContentType = debugInfo.contentType;
       externalUrl = debugInfo.url;
       let mapped = mapSaijDocument(raw, { guid });
+      if (isDocumentContentEmpty(mapped)) {
+        const relatedSumario = await resolveRelatedSumarioFallback(raw);
+        if (relatedSumario) {
+          mapped = {
+            ...mapped,
+            contentType: mapped.contentType === 'legislacion' ? relatedSumario.contentType : mapped.contentType,
+            subtitle: mapped.subtitle || relatedSumario.subtitle || null,
+            contentHtml: null,
+            contentText: relatedSumario.contentText,
+            articles: [],
+            _contentSource: 'view-document.sumarios-relacionados',
+          };
+        }
+      }
       const primaryRenderable = !isDocumentContentEmpty(mapped);
 
       if (primaryRenderable) {

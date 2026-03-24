@@ -15,8 +15,8 @@ const BASE_FACETS = [
 
 const CONTENT_TYPE_FACETS: Record<SaijContentType, string | null> = {
   legislacion: 'Tipo de Documento/Legislación',
-  fallo: 'Tipo de Documento/Fallo',
-  sumario: 'Tipo de Documento/Sumario',
+  fallo: 'Tipo de Documento/Jurisprudencia/Fallo',
+  sumario: 'Tipo de Documento/Jurisprudencia/Sumario',
   dictamen: 'Tipo de Documento/Dictamen',
   doctrina: 'Tipo de Documento/Doctrina',
   todo: null,
@@ -30,7 +30,10 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
   }
 
   if (input.filters.textoEnNorma) {
-    rParts.push(`texto: ${input.filters.textoEnNorma}`);
+    const searchTerm = input.filters.textoEnNorma;
+    // En jurisprudencia/fallos SAIJ responde con titulo:, no con texto:
+    const field = input.contentType === 'fallo' ? 'titulo' : 'texto';
+    rParts.push(`${field}: ${searchTerm}`);
   }
 
   return rParts.join(' ').trim();

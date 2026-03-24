@@ -3,6 +3,9 @@ import { SaijContentType, SaijSearchHit, SaijSearchHitRaw, SaijArticle } from '.
 
 const normalizeContentType = (value: any, fallback: SaijContentType): SaijContentType => {
   const normalized = String(value || '').toLowerCase();
+  if (normalized === 'jurisprudencia' || normalized === 'sentencia') {
+    return 'fallo';
+  }
   if (['legislacion', 'fallo', 'sumario', 'dictamen', 'doctrina', 'todo'].includes(normalized)) {
     return normalized as SaijContentType;
   }
@@ -142,22 +145,28 @@ export const mapSaijSearchHit = (
 
   const sumario = normalizeSubtitleValue(content['sumario']);
 
-  const subtitle =
-    truncate(sumario ?? undefined, 180) ??
-    joinNonEmpty([
-      content['tipo-norma']?.texto,
-      content['fecha'],
-      content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
-    ]);
-
-  const summary = sumario ?? null;
-
   const inferredContentType =
     metadata['document-content-type'] ??
     (abstractObj as any)?.['document-content-type'] ??
     raw.documentContentType;
 
   const contentType = normalizeContentType(inferredContentType, fallbackContentType);
+
+  const rawSummaryText =
+    typeof content['texto'] === 'string'
+      ? content['texto'].replace(/\s+/g, ' ').trim()
+      : null;
+
+  const subtitle =
+    truncate(sumario ?? undefined, 180) ??
+    joinNonEmpty([
+      content['tipo-norma']?.texto,
+      content['numero-sumario'],
+      content['fecha'],
+      content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion,
+    ]);
+
+  const summary = sumario ?? (contentType === 'sumario' ? rawSummaryText : null);
 
   return {
     guid: (raw as any).uuid ?? raw.guid ?? raw.id ?? '',
@@ -534,7 +543,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   let contentTextFinal = contentText;
   let articlesFinal = articles;
 
-  if (!fromArticulo && contentTextFinal) {
+  if (!fromArticulo && contentType === 'legislacion' && contentTextFinal) {
     const analysis = analyzeLegalBodyText(contentTextFinal, textSourcePath);
     if (!analysis.ok) {
       primaryTextWasRejectedAsMetadataOnly = true;
@@ -544,7 +553,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     }
   }
 
-  if (!fromArticulo && !contentTextFinal && contentHtmlFinal) {
+  if (!fromArticulo && contentType === 'legislacion' && !contentTextFinal && contentHtmlFinal) {
     const htmlText =
       htmlToText(contentHtmlFinal) ??
       contentHtmlFinal.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
