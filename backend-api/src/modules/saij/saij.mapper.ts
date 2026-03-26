@@ -255,6 +255,52 @@ const formatDoctrinaDate = (value: any): string | null => {
   return null;
 };
 
+const normalizeComparableText = (value?: string | null) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const PROVINCE_LABELS: Array<{ patterns: string[]; label: string }> = [
+  { patterns: ['ciudad autonoma de buenos aires', ' caba '], label: 'Caba' },
+  { patterns: ['buenos aires'], label: 'Buenos Aires' },
+  { patterns: ['catamarca'], label: 'Catamarca' },
+  { patterns: ['chaco'], label: 'Chaco' },
+  { patterns: ['chubut'], label: 'Chubut' },
+  { patterns: ['cordoba'], label: 'Cordoba' },
+  { patterns: ['corrientes'], label: 'Corrientes' },
+  { patterns: ['entre rios'], label: 'Entre Rios' },
+  { patterns: ['formosa'], label: 'Formosa' },
+  { patterns: ['jujuy'], label: 'Jujuy' },
+  { patterns: ['la pampa'], label: 'La Pampa' },
+  { patterns: ['la rioja'], label: 'La Rioja' },
+  { patterns: ['mendoza'], label: 'Mendoza' },
+  { patterns: ['misiones'], label: 'Misiones' },
+  { patterns: ['neuquen'], label: 'Neuquen' },
+  { patterns: ['rio negro'], label: 'Rio Negro' },
+  { patterns: ['salta'], label: 'Salta' },
+  { patterns: ['san juan'], label: 'San Juan' },
+  { patterns: ['san luis'], label: 'San Luis' },
+  { patterns: ['santa cruz'], label: 'Santa Cruz' },
+  { patterns: ['santa fe'], label: 'Santa Fe' },
+  { patterns: ['santiago del estero'], label: 'Santiago del Estero' },
+  { patterns: ['tierra del fuego'], label: 'Tierra del Fuego' },
+  { patterns: ['tucuman'], label: 'Tucuman' },
+];
+
+const inferProvinceLabelFromTexts = (texts: Array<string | null | undefined>): string | null => {
+  const haystack = ` ${texts.map((item) => normalizeComparableText(item)).filter(Boolean).join(' ')} `;
+  if (!haystack.trim()) return null;
+  for (const province of PROVINCE_LABELS) {
+    if (province.patterns.some((pattern) => haystack.includes(` ${normalizeComparableText(pattern)} `))) {
+      return province.label;
+    }
+  }
+  return null;
+};
+
 const normalizeNumberValue = (value: any): string | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
   if (typeof value === 'string') {
@@ -1081,6 +1127,30 @@ export const mapSaijSearchHit = (
         ? sumario ?? truncate(rawSummaryText ?? undefined, 400)
       : sumario ?? rawSummaryText;
 
+  const rawJurisdiccionProvincia = normalizeLooseString(content['jurisdiccion']?.provincia ?? null);
+  const rawJurisdiccionDescripcion = normalizeLooseString(content['jurisdiccion']?.descripcion ?? null);
+  const rawJurisdiccion = rawJurisdiccionProvincia ?? rawJurisdiccionDescripcion ?? null;
+  const normalizedRawJurisdiccion = normalizeComparableText(rawJurisdiccion);
+  const inferredProvince = inferProvinceLabelFromTexts([
+    title,
+    subtitle,
+    summary,
+    rawSummaryText,
+    sumario,
+    rawJurisdiccionProvincia,
+    normalizeLooseString(content['organismo'] as any),
+    normalizeLooseString(content['publicacion'] as any),
+  ]);
+  const jurisdiccion =
+    normalizedRawJurisdiccion.includes('nacional') ||
+    normalizedRawJurisdiccion.includes('federal') ||
+    normalizedRawJurisdiccion.includes('internacional')
+      ? rawJurisdiccion
+      : inferredProvince ??
+        (normalizedRawJurisdiccion.includes('local') || normalizedRawJurisdiccion.includes('provincial')
+          ? 'Provincial'
+          : rawJurisdiccion);
+
   return {
     guid: (raw as any).uuid ?? raw.guid ?? raw.id ?? '',
     title,
@@ -1094,10 +1164,7 @@ export const mapSaijSearchHit = (
           ? (fechaDictamenIso ?? null)
           : content['fecha'] ?? null,
     estado: content['estado'] ?? null,
-    jurisdiccion:
-      content['jurisdiccion']?.provincia ??
-      content['jurisdiccion']?.descripcion ??
-      null,
+    jurisdiccion,
     fuente: 'SAIJ',
     friendlyUrl,
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },

@@ -41,7 +41,7 @@ export type SaijSearchFilters = {
 };
 
 export type SaijSearchRequest = {
-  contentType: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo";
+  contentType: "legislacion" | "jurisprudencia" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo";
   filters: SaijSearchFilters;
   offset: number;
   pageSize: number;
@@ -100,7 +100,15 @@ export type SaijArticle = {
 export type SaijLinkedDocumentRef = {
   title: string;
   subtitle?: string | null;
-  contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
+  contentTypeHint?:
+    | "legislacion"
+    | "jurisprudencia"
+    | "fallo"
+    | "sumario"
+    | "dictamen"
+    | "doctrina"
+    | "todo"
+    | "unknown";
   guid?: string | null;
   sourceUrl?: string | null;
   url: string;

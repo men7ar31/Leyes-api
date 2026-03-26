@@ -3,7 +3,47 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import type { SaijLegislationSubtype, SaijSearchRequest } from "../types/saij";
 
-type JurisdictionKind = "todas" | "nacional" | "provincial" | "internacional";
+export type JurisdictionKind = "todas" | "nacional" | "provincial" | "internacional";
+
+export type JurisprudenceSubtype =
+  | "todas"
+  | "fallo"
+  | "sumario"
+  | "corte_suprema_nacional"
+  | "nacional"
+  | "federal"
+  | "provincial"
+  | "internacional"
+  | "derecho_constitucional"
+  | "derecho_civil"
+  | "derecho_laboral"
+  | "derecho_penal"
+  | "derecho_comercial"
+  | "derecho_administrativo"
+  | "derecho_procesal"
+  | "tribunales_etica";
+
+export type DoctrinaSubtype =
+  | "todas"
+  | "doctrina_derecho_administrativo"
+  | "doctrina_derecho_civil"
+  | "doctrina_derecho_comercial"
+  | "doctrina_derecho_constitucional"
+  | "doctrina_derecho_familia"
+  | "doctrina_derecho_internacional"
+  | "doctrina_derecho_laboral"
+  | "doctrina_derecho_penal"
+  | "doctrina_derecho_procesal"
+  | "doctrina_derecho_seguridad_social"
+  | "doctrina_derecho_tributario_aduanero"
+  | "ultima_doctrina_ingresada";
+
+export type DictamenSubtype =
+  | "todas"
+  | "dictamenes_mpf"
+  | "dictamenes_inadi"
+  | "dictamenes_ptn"
+  | "resoluciones_aaip";
 
 type Props = {
   numeroNorma: string;
@@ -12,6 +52,12 @@ type Props = {
   onChangeContentType: (value: SaijSearchRequest["contentType"]) => void;
   legislationSubtype: SaijLegislationSubtype;
   onChangeLegislationSubtype: (value: SaijLegislationSubtype) => void;
+  jurisprudenceSubtype: JurisprudenceSubtype;
+  onChangeJurisprudenceSubtype: (value: JurisprudenceSubtype) => void;
+  doctrinaSubtype: DoctrinaSubtype;
+  onChangeDoctrinaSubtype: (value: DoctrinaSubtype) => void;
+  dictamenSubtype: DictamenSubtype;
+  onChangeDictamenSubtype: (value: DictamenSubtype) => void;
   jurisdictionKind: JurisdictionKind;
   onChangeJurisdictionKind: (value: JurisdictionKind) => void;
   province: string;
@@ -21,10 +67,8 @@ type Props = {
 
 const contentOptions: Array<{ label: string; value: SaijSearchRequest["contentType"] }> = [
   { label: "Legislacion", value: "legislacion" },
-  { label: "Todo", value: "todo" },
-  { label: "Fallo", value: "fallo" },
-  { label: "Sumario", value: "sumario" },
-  { label: "Dictamen", value: "dictamen" },
+  { label: "Jurisprudencia", value: "jurisprudencia" },
+  { label: "Dictamenes", value: "dictamen" },
   { label: "Doctrina", value: "doctrina" },
 ];
 
@@ -72,6 +116,81 @@ const legislationSubtypeGroups: Array<{
   },
 ];
 
+const jurisprudenceSubtypeGroups: Array<{
+  title: string;
+  options: Array<{ label: string; value: JurisprudenceSubtype }>;
+}> = [
+  {
+    title: "Tipo",
+    options: [
+      { label: "Todos", value: "todas" },
+      { label: "Fallos", value: "fallo" },
+      { label: "Sumarios", value: "sumario" },
+    ],
+  },
+  {
+    title: "Jurisdiccion / tribunal",
+    options: [
+      { label: "Corte Suprema de Justicia de la Nacion", value: "corte_suprema_nacional" },
+      { label: "Nacional", value: "nacional" },
+      { label: "Federal", value: "federal" },
+      { label: "Provincial", value: "provincial" },
+      { label: "Internacional", value: "internacional" },
+    ],
+  },
+  {
+    title: "Tema",
+    options: [
+      { label: "Derecho Constitucional", value: "derecho_constitucional" },
+      { label: "Derecho Civil", value: "derecho_civil" },
+      { label: "Derecho Laboral", value: "derecho_laboral" },
+      { label: "Derecho Penal", value: "derecho_penal" },
+      { label: "Derecho Comercial", value: "derecho_comercial" },
+      { label: "Derecho Administrativo", value: "derecho_administrativo" },
+      { label: "Derecho Procesal", value: "derecho_procesal" },
+    ],
+  },
+  {
+    title: "Especiales",
+    options: [{ label: "Tribunales de etica", value: "tribunales_etica" }],
+  },
+];
+
+const doctrinaSubtypeGroups: Array<{
+  title: string;
+  options: Array<{ label: string; value: DoctrinaSubtype }>;
+}> = [
+  {
+    title: "Derecho privado",
+    options: [
+      { label: "Doctrina de Derecho Civil", value: "doctrina_derecho_civil" },
+      { label: "Doctrina de Derecho Comercial", value: "doctrina_derecho_comercial" },
+      { label: "Doctrina de Derecho Laboral", value: "doctrina_derecho_laboral" },
+      { label: "Doctrina de Derecho de Familia", value: "doctrina_derecho_familia" },
+      { label: "Doctrina de Derecho Seguridad Social", value: "doctrina_derecho_seguridad_social" },
+    ],
+  },
+  {
+    title: "Derecho publico",
+    options: [
+      { label: "Doctrina de Derecho Penal", value: "doctrina_derecho_penal" },
+      { label: "Doctrina de Derecho Constitucional", value: "doctrina_derecho_constitucional" },
+      { label: "Doctrina de Derecho Administrativo", value: "doctrina_derecho_administrativo" },
+      { label: "Doctrina de Derecho Procesal", value: "doctrina_derecho_procesal" },
+      { label: "Doctrina de Derecho Tributario y Aduanero", value: "doctrina_derecho_tributario_aduanero" },
+      { label: "Doctrina de Derecho Internacional", value: "doctrina_derecho_internacional" },
+    ],
+  },
+];
+
+const dictamenSubtypeOptions: Array<{ label: string; value: DictamenSubtype }> = [
+  { label: "Todos", value: "todas" },
+  { label: "Dictamenes MPF", value: "dictamenes_mpf" },
+  { label: "Dictamenes INADI", value: "dictamenes_inadi" },
+  { label: "Dictamenes de la Procuracion del Tesoro de la Nacion", value: "dictamenes_ptn" },
+  { label: "Resoluciones de Reclamo de la Agencia de Acceso a la Inf. Publica", value: "resoluciones_aaip" },
+];
+
 export const SearchFilters = ({
   numeroNorma,
   onChangeNumeroNorma,
@@ -79,6 +198,12 @@ export const SearchFilters = ({
   onChangeContentType,
   legislationSubtype,
   onChangeLegislationSubtype,
+  jurisprudenceSubtype,
+  onChangeJurisprudenceSubtype,
+  doctrinaSubtype,
+  onChangeDoctrinaSubtype,
+  dictamenSubtype,
+  onChangeDictamenSubtype,
   jurisdictionKind,
   onChangeJurisdictionKind,
   province,
@@ -87,13 +212,32 @@ export const SearchFilters = ({
 }: Props) => {
   const [isLegislationPanelOpen, setIsLegislationPanelOpen] = useState(true);
   const [openLegislationGroup, setOpenLegislationGroup] = useState<string | null>("Leyes y tratados");
+  const [isJurisprudencePanelOpen, setIsJurisprudencePanelOpen] = useState(true);
+  const [openJurisprudenceGroup, setOpenJurisprudenceGroup] = useState<string | null>("Tipo");
+  const [openDoctrinaGroup, setOpenDoctrinaGroup] = useState<string | null>("Derecho privado");
+
+  const isJurisprudenceType = contentType === "jurisprudencia" || contentType === "fallo" || contentType === "sumario";
 
   useEffect(() => {
     if (contentType === "legislacion") {
       setIsLegislationPanelOpen(false);
       setOpenLegislationGroup(null);
+      return;
     }
-  }, [collapseToken, contentType]);
+    if (isJurisprudenceType) {
+      setIsJurisprudencePanelOpen(false);
+      setOpenJurisprudenceGroup(null);
+      return;
+    }
+    if (contentType === "doctrina") {
+      setOpenDoctrinaGroup("Derecho privado");
+    }
+  }, [collapseToken, contentType, isJurisprudenceType]);
+
+  const onSelectJurisprudenceSubtype = (value: JurisprudenceSubtype) => {
+    onChangeJurisprudenceSubtype(value);
+    onChangeContentType("jurisprudencia");
+  };
 
   return (
     <View style={styles.container}>
@@ -131,7 +275,7 @@ export const SearchFilters = ({
             style={styles.mainAccordionHeader}
             onPress={() => setIsLegislationPanelOpen((prev) => !prev)}
           >
-            <Text style={styles.mainAccordionTitle}>Subfiltro de legislación</Text>
+            <Text style={styles.mainAccordionTitle}>Subfiltro de legislacion</Text>
             <Text style={styles.accordionHint}>{isLegislationPanelOpen ? "Ocultar" : "Mostrar"}</Text>
           </Pressable>
 
@@ -173,9 +317,114 @@ export const SearchFilters = ({
                   ) : null}
                 </View>
               ))}
-
             </View>
           ) : null}
+        </View>
+      ) : null}
+
+      {isJurisprudenceType ? (
+        <View style={styles.field}>
+          <Pressable
+            style={styles.mainAccordionHeader}
+            onPress={() => setIsJurisprudencePanelOpen((prev) => !prev)}
+          >
+            <Text style={styles.mainAccordionTitle}>Subfiltro de jurisprudencia</Text>
+            <Text style={styles.accordionHint}>{isJurisprudencePanelOpen ? "Ocultar" : "Mostrar"}</Text>
+          </Pressable>
+
+          {isJurisprudencePanelOpen ? (
+            <View style={styles.groupBlock}>
+              {jurisprudenceSubtypeGroups.map((group) => (
+                <View key={group.title} style={styles.subGroup}>
+                  <Pressable
+                    style={styles.accordionHeader}
+                    onPress={() =>
+                      setOpenJurisprudenceGroup((prev) => (prev === group.title ? null : group.title))
+                    }
+                  >
+                    <Text style={styles.subGroupTitle}>{group.title}</Text>
+                    <Text style={styles.accordionHint}>
+                      {openJurisprudenceGroup === group.title ? "Ocultar" : "Mostrar"}
+                    </Text>
+                  </Pressable>
+
+                  {openJurisprudenceGroup === group.title ? (
+                    <View style={styles.chips}>
+                      {group.options.map((option) => (
+                        <FilterChip
+                          key={option.value}
+                          label={option.label}
+                          selected={jurisprudenceSubtype === option.value}
+                          onPress={() => onSelectJurisprudenceSubtype(option.value)}
+                        />
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {contentType === "doctrina" ? (
+        <View style={styles.field}>
+          <Text style={styles.mainAccordionTitle}>Subfiltro de doctrina</Text>
+          <View style={styles.chips}>
+            <FilterChip
+              label="Todas"
+              selected={doctrinaSubtype === "todas"}
+              onPress={() => onChangeDoctrinaSubtype("todas")}
+            />
+            <FilterChip
+              label="Ultima Doctrina ingresada"
+              selected={doctrinaSubtype === "ultima_doctrina_ingresada"}
+              onPress={() => onChangeDoctrinaSubtype("ultima_doctrina_ingresada")}
+            />
+          </View>
+          <View style={styles.groupBlock}>
+            {doctrinaSubtypeGroups.map((group) => (
+              <View key={group.title} style={styles.subGroup}>
+                <Pressable
+                  style={styles.accordionHeader}
+                  onPress={() => setOpenDoctrinaGroup((prev) => (prev === group.title ? null : group.title))}
+                >
+                  <Text style={styles.subGroupTitle}>{group.title}</Text>
+                  <Text style={styles.accordionHint}>
+                    {openDoctrinaGroup === group.title ? "Ocultar" : "Mostrar"}
+                  </Text>
+                </Pressable>
+                {openDoctrinaGroup === group.title ? (
+                  <View style={styles.chips}>
+                    {group.options.map((option) => (
+                      <FilterChip
+                        key={option.value}
+                        label={option.label}
+                        selected={doctrinaSubtype === option.value}
+                        onPress={() => onChangeDoctrinaSubtype(option.value)}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {contentType === "dictamen" ? (
+        <View style={styles.field}>
+          <Text style={styles.mainAccordionTitle}>Subfiltro de dictamenes</Text>
+          <View style={styles.chips}>
+            {dictamenSubtypeOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                label={option.label}
+                selected={dictamenSubtype === option.value}
+                onPress={() => onChangeDictamenSubtype(option.value)}
+              />
+            ))}
+          </View>
         </View>
       ) : null}
 

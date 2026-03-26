@@ -1,6 +1,6 @@
-﻿import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+﻿import { Alert, Linking, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { useRef, useState } from "react";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import RenderHTML from "react-native-render-html";
 import { useSaijDocument } from "../hooks/useSaijDocument";
@@ -180,7 +180,15 @@ const parseFalloContent = (text?: string | null) => {
 type RelatedContentItem = {
   title: string;
   subtitle?: string | null;
-  contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
+  contentTypeHint?:
+    | "legislacion"
+    | "jurisprudencia"
+    | "fallo"
+    | "sumario"
+    | "dictamen"
+    | "doctrina"
+    | "todo"
+    | "unknown";
   guid?: string | null;
   sourceUrl?: string | null;
   url?: string | null;
@@ -308,7 +316,55 @@ const getNewHeadingLines = (current: string[], previous: string[]) => {
   return current.slice(commonPrefix);
 };
 
+const buildStickySectionLabel = (headings: string[]) => {
+  if (!Array.isArray(headings) || headings.length === 0) return null;
+  const title = headings.filter((line) => /^T[ÍI]TULO\b/i.test(line)).at(-1) || null;
+  const chapter = headings.filter((line) => /^CAP[ÍI]TULO\b/i.test(line)).at(-1) || null;
+  if (title && chapter) return `${cleanText(title)}\n${cleanText(chapter)}`;
+  if (title) return cleanText(title);
+  if (chapter) return cleanText(chapter);
+  return cleanText(headings[headings.length - 1] || "");
+};
+
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const ARTICLE_SUFFIX_BY_CODE: Record<number, string> = {
+  2: "bis",
+  3: "ter",
+  4: "quater",
+  5: "quinquies",
+  6: "sexies",
+  7: "septies",
+  8: "octies",
+  9: "nonies",
+  10: "decies",
+};
+
+const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: number) => {
+  const raw = String(value || "").trim();
+  if (!raw) return String(fallbackIndex || "");
+  const compact = raw.replace(/\s+/g, " ");
+
+  const annex = compact.match(/^a0*(\d+)$/i);
+  if (annex) return String(Number(annex[1]));
+
+  const withCode = compact.match(/^(\d+)\s+0?(\d{1,2})$/);
+  if (withCode) {
+    const base = Number(withCode[1]);
+    const code = Number(withCode[2]);
+    const suffix = ARTICLE_SUFFIX_BY_CODE[code];
+    return suffix ? `${base} ${suffix}` : String(base);
+  }
+
+  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-záéíóú]+)$/i);
+  if (withLiteralSuffix) {
+    return `${Number(withLiteralSuffix[1])} ${withLiteralSuffix[2].toLowerCase()}`;
+  }
+
+  const numeric = compact.match(/^\d+$/);
+  if (numeric) return String(Number(compact));
+  return compact.toLowerCase();
+};
 
 const countMatchesInText = (text: string, query: string) => {
   const source = String(text || "");
@@ -325,15 +381,28 @@ const countMatchesInText = (text: string, query: string) => {
 
 const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) => {
   const trimmed = text.trimStart();
-  if (!trimmed || !articleNumber || typeof articleNumber !== "string") return trimmed;
-  const escapedNumber = escapeRegExp(articleNumber.trim());
-  if (!escapedNumber) return trimmed;
-  const pattern = new RegExp(
-    `^[\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${escapedNumber}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
-    "i"
+  if (!trimmed) return trimmed;
+  const genericPattern =
+    /^[\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
+  const genericCleaned = trimmed.replace(genericPattern, "").trimStart();
+  if (genericCleaned.length > 0 && genericCleaned !== trimmed) return genericCleaned;
+
+  if (!articleNumber || typeof articleNumber !== "string") return trimmed;
+  const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber);
+  const candidates = Array.from(
+    new Set([articleNumber.trim(), normalizedDisplay].filter((token) => token && token.length > 0))
   );
-  const cleaned = trimmed.replace(pattern, "").trimStart();
-  return cleaned.length > 0 ? cleaned : trimmed;
+  for (const candidate of candidates) {
+    const escapedNumber = escapeRegExp(candidate);
+    if (!escapedNumber) continue;
+    const pattern = new RegExp(
+      `^[\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${escapedNumber}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
+      "i"
+    );
+    const cleaned = trimmed.replace(pattern, "").trimStart();
+    if (cleaned.length > 0 && cleaned !== trimmed) return cleaned;
+  }
+  return trimmed;
 };
 
 const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
@@ -346,25 +415,84 @@ const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
   return before.length > 0 ? before : null;
 };
 
+const getHighlightedParts = (text: string, query: string) => {
+  const source = String(text || "");
+  const needle = String(query || "").trim().toLowerCase();
+  if (!source) return [] as Array<{ text: string; hit: boolean }>;
+  if (!needle || needle.length < 2) return [{ text: source, hit: false }];
+
+  const lower = source.toLowerCase();
+  const parts: Array<{ text: string; hit: boolean }> = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const index = lower.indexOf(needle, cursor);
+    if (index < 0) {
+      parts.push({ text: source.slice(cursor), hit: false });
+      break;
+    }
+    if (index > cursor) {
+      parts.push({ text: source.slice(cursor, index), hit: false });
+    }
+    parts.push({ text: source.slice(index, index + needle.length), hit: true });
+    cursor = index + needle.length;
+  }
+  return parts.length ? parts : [{ text: source, hit: false }];
+};
+
 export const DetailScreen = () => {
   const params = useLocalSearchParams<{ guid?: string }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
 
   const { document, isLoading, isError, error, refetch } = useSaijDocument(guidParam);
+  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
   const [docSearchQuery, setDocSearchQuery] = useState("");
   const [searchMatchPointer, setSearchMatchPointer] = useState(0);
+  const [textZoom, setTextZoom] = useState(0.94);
   const [activeArticlePreviewIndex, setActiveArticlePreviewIndex] = useState<number>(-1);
+  const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
+  const [stickySectionTranslateY, setStickySectionTranslateY] = useState(0);
+  const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
+  const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrollRef = useRef<ScrollView | null>(null);
   const articleOffsetsRef = useRef<Record<number, number>>({});
+  const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null }>>({});
+  const articleStickySortedRef = useRef<Array<{ y: number; label: string }>>([]);
+  const articleStickyDirtyRef = useRef(true);
+  const scrollViewportHeightRef = useRef(0);
+  const scrollContentHeightRef = useRef(0);
   const scrollOffsetRef = useRef(0);
   const restorePendingRef = useRef(false);
+  const restoredGuidRef = useRef<string | null>(null);
+  const lastDocGuidRef = useRef<string | null>(null);
+  const isScrubbingArticlesRef = useRef(false);
+  const scrubActiveIndexRef = useRef<number>(-1);
+  const stickySectionCacheRef = useRef<{ label: string | null; translateY: number }>({
+    label: null,
+    translateY: 0,
+  });
+
+  const setArticleScrubbing = (value: boolean) => {
+    isScrubbingArticlesRef.current = value;
+    setIsScrubbingArticles(value);
+  };
 
   const toggleArticlePanel = (key: string) => {
     setExpandedArticlePanels((prev) => ({ ...prev, [key]: !prev[key] }));
   };
+
+  const setActiveSectionSafe = (nextSection: string) => {
+    setArticleScrubbing(false);
+    stickySectionCacheRef.current = { label: null, translateY: 0 };
+    setStickySectionLabel(null);
+    setStickySectionTranslateY(0);
+    setActiveSection(nextSection);
+  };
+
+  const zoomOut = () => setTextZoom((prev) => Math.max(0.82, Math.round((prev - 0.06) * 100) / 100));
+  const zoomIn = () => setTextZoom((prev) => Math.min(1.34, Math.round((prev + 0.06) * 100) / 100));
 
   if (!guidParam) {
     return (
@@ -390,7 +518,6 @@ export const DetailScreen = () => {
     );
   }
 
-  const sourceUrl = document.sourceUrl || document.friendlyUrl;
   const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
   const attachmentLabel = document.attachment?.fileName
     ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
@@ -407,6 +534,14 @@ export const DetailScreen = () => {
   const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
 
   const contentWidth = Math.max(0, width - spacing.md * 2);
+  const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
+  const bodyFontSize = Math.round(typography.body * clampedTextZoom * 10) / 10;
+  const bodyLineHeight = Math.max(18, Math.round(bodyFontSize * 1.45));
+  const headingFontSize = Math.round(typography.subtitle * clampedTextZoom * 10) / 10;
+  const stickySearchTop = Math.max(insets.top + 8, 56);
+  const stickySearchHeight = 44;
+  const stickySectionHeight = 34;
+  const stickySectionTop = stickySearchTop + stickySearchHeight + 6;
   const subtitleText = getSubtitleText(document.subtitle);
   const cleanedContentText = cleanContentText(document.contentText);
   const extractedRelated =
@@ -526,7 +661,7 @@ export const DetailScreen = () => {
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
   const searchableArticles = Array.isArray(document.articles) ? document.articles : [];
   const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
-  const articleSearchMatches = useMemo(() => {
+  const articleSearchMatches = (() => {
     if (!normalizedSearchQuery || !searchableArticles.length) return [] as number[];
     const hits: number[] = [];
     searchableArticles.forEach((article, index) => {
@@ -534,48 +669,67 @@ export const DetailScreen = () => {
       if (haystack.includes(normalizedSearchQuery)) hits.push(index);
     });
     return hits;
-  }, [normalizedSearchQuery, searchableArticles]);
-  const articleSearchMatchSet = useMemo(() => new Set(articleSearchMatches), [articleSearchMatches]);
-  const plainTextSearchMatches = useMemo(() => {
-    if (!normalizedSearchQuery || searchableArticles.length > 0) return 0;
-    const fallbackText = `${leadText || ""}\n${extractedRelated.mainText || ""}`;
-    return countMatchesInText(fallbackText, normalizedSearchQuery);
-  }, [normalizedSearchQuery, searchableArticles.length, leadText, extractedRelated.mainText]);
+  })();
+  const articleSearchMatchSet = new Set(articleSearchMatches);
+  const plainTextSearchMatches =
+    !normalizedSearchQuery || searchableArticles.length > 0
+      ? 0
+      : countMatchesInText(`${leadText || ""}\n${extractedRelated.mainText || ""}`, normalizedSearchQuery);
   const totalSearchMatches =
     searchableArticles.length > 0 ? articleSearchMatches.length : plainTextSearchMatches;
+  const normalizedSearchPointer =
+    articleSearchMatches.length > 0
+      ? Math.min(searchMatchPointer, articleSearchMatches.length - 1)
+      : 0;
+  const activeSearchArticleIndex =
+    articleSearchMatches.length > 0 ? articleSearchMatches[normalizedSearchPointer] : -1;
 
-  const jumpToY = (y: number) => {
+  const jumpToY = (y: number, animated = true, topOffset = 130) => {
     if (!scrollRef.current) return;
-    scrollRef.current.scrollTo({ y: Math.max(0, y - 130), animated: true });
+    scrollRef.current.scrollTo({ y: Math.max(0, y - topOffset), animated });
   };
 
-  const jumpToArticleByIndex = (articleIndex: number) => {
+  const jumpToArticleByIndex = (
+    articleIndex: number,
+    options?: {
+      animated?: boolean;
+      topOffset?: number;
+    }
+  ) => {
     const y = articleOffsetsRef.current[articleIndex];
-    if (typeof y === "number") jumpToY(y);
+    if (typeof y === "number") jumpToY(y, options?.animated ?? true, options?.topOffset ?? 130);
   };
 
-  const updateActiveArticleByScroll = (offsetY: number) => {
-    if (!searchableArticles.length) {
-      setActiveArticlePreviewIndex(-1);
-      return;
+  const getTargetArticleIndexFromLocationY = (locationY: number) => {
+    if (!searchableArticles.length || scrubberHeight <= 0) return -1;
+    const clamped = Math.max(0, Math.min(locationY, scrubberHeight));
+    const ratio = clamped / scrubberHeight;
+    const maxIndex = searchableArticles.length - 1;
+    return Math.max(0, Math.min(maxIndex, Math.round(ratio * maxIndex)));
+  };
+
+  const scrubToLocationY = (locationY: number) => {
+    const nextIndex = getTargetArticleIndexFromLocationY(locationY);
+    if (nextIndex < 0) return;
+    if (nextIndex !== scrubActiveIndexRef.current) {
+      scrubActiveIndexRef.current = nextIndex;
+      setActiveArticlePreviewIndex(nextIndex);
+      const measuredY = articleOffsetsRef.current[nextIndex];
+      if (typeof measuredY === "number" && scrollRef.current) {
+        scrollRef.current.scrollTo({ y: Math.max(0, measuredY - 96), animated: false });
+      } else {
+        const maxScroll = Math.max(0, scrollContentHeightRef.current - scrollViewportHeightRef.current);
+        const fallbackY = (nextIndex / Math.max(1, searchableArticles.length - 1)) * maxScroll;
+        if (scrollRef.current) {
+          scrollRef.current.scrollTo({ y: fallbackY, animated: false });
+        }
+      }
     }
-    const thresholdY = offsetY + 180;
-    const pairs = Object.entries(articleOffsetsRef.current)
-      .map(([idx, y]) => ({ idx: Number(idx), y: Number(y) }))
-      .filter((item) => Number.isFinite(item.idx) && Number.isFinite(item.y))
-      .sort((a, b) => a.y - b.y);
-    if (!pairs.length) return;
-    let active = pairs[0].idx;
-    for (const pair of pairs) {
-      if (pair.y <= thresholdY) active = pair.idx;
-      else break;
-    }
-    setActiveArticlePreviewIndex(active);
   };
 
   const goToNextSearchMatch = () => {
     if (!articleSearchMatches.length) return;
-    const nextPointer = (searchMatchPointer + 1) % articleSearchMatches.length;
+    const nextPointer = (normalizedSearchPointer + 1) % articleSearchMatches.length;
     setSearchMatchPointer(nextPointer);
     jumpToArticleByIndex(articleSearchMatches[nextPointer]);
   };
@@ -583,32 +737,168 @@ export const DetailScreen = () => {
   const goToPrevSearchMatch = () => {
     if (!articleSearchMatches.length) return;
     const nextPointer =
-      (searchMatchPointer - 1 + articleSearchMatches.length) % articleSearchMatches.length;
+      (normalizedSearchPointer - 1 + articleSearchMatches.length) % articleSearchMatches.length;
     setSearchMatchPointer(nextPointer);
     jumpToArticleByIndex(articleSearchMatches[nextPointer]);
   };
 
-  useEffect(() => {
-    setSearchMatchPointer(0);
-  }, [normalizedSearchQuery, articleSearchMatches.length, plainTextSearchMatches]);
-
-  useEffect(() => {
+  if (lastDocGuidRef.current !== document.guid) {
+    lastDocGuidRef.current = document.guid;
     articleOffsetsRef.current = {};
-    setActiveArticlePreviewIndex(-1);
-  }, [document.guid, searchableArticles.length]);
+    articleStickyMetaRef.current = {};
+    articleStickySortedRef.current = [];
+    articleStickyDirtyRef.current = true;
+    stickySectionCacheRef.current = { label: null, translateY: 0 };
+    restoredGuidRef.current = null;
+    scrollOffsetRef.current = DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] ?? 0;
+    scrubActiveIndexRef.current = -1;
+  }
+  const safeActiveArticlePreviewIndex =
+    activeArticlePreviewIndex >= 0 && activeArticlePreviewIndex < searchableArticles.length
+      ? activeArticlePreviewIndex
+      : -1;
+  const activeArticlePreviewLabel =
+    safeActiveArticlePreviewIndex >= 0
+      ? `Art. ${normalizeArticleNumberDisplay(
+          searchableArticles[safeActiveArticlePreviewIndex]?.number,
+          safeActiveArticlePreviewIndex + 1
+        )}.`
+      : null;
+  const scrubberPreviewTop =
+    safeActiveArticlePreviewIndex >= 0 && scrubberHeight > 0
+      ? Math.max(
+          0,
+          Math.min(
+            Math.max(0, scrubberHeight - 52),
+            ((safeActiveArticlePreviewIndex / Math.max(1, searchableArticles.length - 1)) * scrubberHeight) - 26
+          )
+        )
+      : 0;
 
-  useEffect(() => {
-    if (!document?.guid) return;
-    if (restorePendingRef.current) return;
+  const getSortedStickyEntries = () => {
+    if (!articleStickyDirtyRef.current) return articleStickySortedRef.current;
+    const raw = Object.values(articleStickyMetaRef.current)
+      .filter((item) => item && Number.isFinite(item.y) && item.label)
+      .sort((a, b) => a.y - b.y) as Array<{ y: number; label: string }>;
+    const compact: Array<{ y: number; label: string }> = [];
+    for (const entry of raw) {
+      const prev = compact[compact.length - 1];
+      if (!prev || prev.label !== entry.label) compact.push(entry);
+    }
+    articleStickySortedRef.current = compact;
+    articleStickyDirtyRef.current = false;
+    return articleStickySortedRef.current;
+  };
+
+  const updateStickySectionByScroll = (scrollY: number) => {
+    if (selectedSection !== "texto") {
+      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
+        stickySectionCacheRef.current = { label: null, translateY: 0 };
+        setStickySectionLabel(null);
+        setStickySectionTranslateY(0);
+      }
+      return;
+    }
+
+    const entries = getSortedStickyEntries();
+    if (!entries.length) {
+      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
+        stickySectionCacheRef.current = { label: null, translateY: 0 };
+        setStickySectionLabel(null);
+        setStickySectionTranslateY(0);
+      }
+      return;
+    }
+
+    const anchorY = scrollY + stickySectionTop;
+    let currentIndex = -1;
+    for (let i = 0; i < entries.length; i += 1) {
+      if (entries[i].y <= anchorY) currentIndex = i;
+      else break;
+    }
+    if (currentIndex < 0) {
+      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
+        stickySectionCacheRef.current = { label: null, translateY: 0 };
+        setStickySectionLabel(null);
+        setStickySectionTranslateY(0);
+      }
+      return;
+    }
+
+    const current = entries[currentIndex];
+    const next = entries[currentIndex + 1];
+    const distanceToNext = next ? next.y - anchorY : Number.POSITIVE_INFINITY;
+    const translateY = distanceToNext < stickySectionHeight ? distanceToNext - stickySectionHeight : 0;
+
+    if (stickySectionCacheRef.current.label !== current.label) {
+      stickySectionCacheRef.current.label = current.label;
+      setStickySectionLabel(current.label);
+    }
+    if (Math.abs(stickySectionCacheRef.current.translateY - translateY) > 0.5) {
+      stickySectionCacheRef.current.translateY = translateY;
+      setStickySectionTranslateY(translateY);
+    }
+  };
+
+  const renderHighlightedInline = (value: string, keyPrefix: string) =>
+    getHighlightedParts(value, normalizedSearchQuery).map((part, index) => (
+      <Text key={`${keyPrefix}-${index}`} style={part.hit ? styles.searchHighlight : undefined}>
+        {part.text}
+      </Text>
+    ));
+
+  const renderHighlightedBlock = (value: string, style: any, keyPrefix: string) => (
+    <Text style={style}>{renderHighlightedInline(value, keyPrefix)}</Text>
+  );
+
+  const handleDetailScroll = (y: number) => {
+    scrollOffsetRef.current = y;
+    if (document.guid) DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] = y;
+    updateStickySectionByScroll(y);
+  };
+
+  const restoreSavedScrollIfNeeded = () => {
+    if (!document.guid || !scrollRef.current) return;
+    if (restoredGuidRef.current === document.guid) return;
     const saved = DETAIL_SCROLL_OFFSET_BY_GUID[document.guid];
+    restoredGuidRef.current = document.guid;
     if (typeof saved !== "number" || saved <= 0) return;
+    if (restorePendingRef.current) return;
     restorePendingRef.current = true;
-    const timer = setTimeout(() => {
-      jumpToY(saved);
+    setTimeout(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTo({ y: Math.max(0, saved), animated: false });
+        handleDetailScroll(saved);
+      }
       restorePendingRef.current = false;
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [document.guid]);
+    }, 20);
+  };
+
+  const stopScrubbing = () => {
+    if (isScrubbingArticlesRef.current) setArticleScrubbing(false);
+    scrubActiveIndexRef.current = -1;
+  };
+
+  const articleScrubberResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => selectedSection === "texto" && searchableArticles.length > 0,
+    onMoveShouldSetPanResponder: (_, gestureState) =>
+      selectedSection === "texto" && searchableArticles.length > 0 && Math.abs(gestureState.dy) > 1,
+    onPanResponderGrant: (event) => {
+      setArticleScrubbing(true);
+      scrubToLocationY(event.nativeEvent.locationY);
+    },
+    onPanResponderMove: (event) => {
+      if (!isScrubbingArticlesRef.current) return;
+      scrubToLocationY(event.nativeEvent.locationY);
+    },
+    onPanResponderRelease: () => {
+      stopScrubbing();
+    },
+    onPanResponderTerminate: () => {
+      stopScrubbing();
+    },
+    onPanResponderTerminationRequest: () => false,
+  });
 
   const openRelatedFallo = async (fallo: { title: string; guid?: string | null; sourceUrl?: string | null; url?: string | null }) => {
     const directGuid = typeof fallo.guid === "string" ? fallo.guid.trim() : "";
@@ -766,7 +1056,7 @@ export const DetailScreen = () => {
         <RenderHTML
           contentWidth={contentWidth}
           source={{ html: sanitizeHtml(html) }}
-          baseStyle={styles.contentText}
+          baseStyle={{ color: colors.text, fontSize: bodyFontSize, lineHeight: bodyLineHeight }}
         />
       );
     }
@@ -780,14 +1070,19 @@ export const DetailScreen = () => {
               cleanContentText(article.text) ||
               (typeof article.text === "string" ? article.text.trim() : String(article.text ?? ""));
             const articleTextWithoutDuplicateLabel = stripRepeatedArticleLead(articleText, article.number);
+            const parsedTitle = parseArticleTitleContext(article.title);
+            const displayArticleNumber = normalizeArticleNumberDisplay(article.number, index + 1);
+            const articleLeadTitle = `ARTICULO ${displayArticleNumber}${
+              parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"
+            }`;
             const articleNormasQueModifica = Array.isArray(article.normasQueModifica) ? article.normasQueModifica : [];
             const articleNormasComplementarias = Array.isArray(article.normasComplementarias) ? article.normasComplementarias : [];
             const articleObservaciones = Array.isArray(article.observaciones) ? article.observaciones : [];
             const articleNormasQueModificaFinal = dedupeRelatedByTitle(articleNormasQueModifica as RelatedContentItem[]);
             const articleNormasComplementariasFinal = dedupeRelatedByTitle(articleNormasComplementarias as RelatedContentItem[]);
             const articleObservacionesFinal = dedupeRelatedByTitle(articleObservaciones as RelatedContentItem[]);
-            const parsedTitle = parseArticleTitleContext(article.title);
             const headingLines = getNewHeadingLines(parsedTitle.headings, previousHeadings);
+            const stickyLabelForArticle = buildStickySectionLabel(parsedTitle.headings);
             previousHeadings = parsedTitle.headings;
             const articleKey = `${index}-${article.number || "na"}`;
             const articlePanels = [
@@ -807,19 +1102,39 @@ export const DetailScreen = () => {
                 items: articleObservacionesFinal,
               },
             ].filter((panel) => panel.items.length > 0);
+            const isSearchHit = articleSearchMatchSet.has(index);
+            const isSearchActive = activeSearchArticleIndex === index;
             return (
-              <View key={articleKey} style={styles.articleBlock}>
+              <View
+                key={articleKey}
+                style={styles.articleBlock}
+                onLayout={(event) => {
+                  const y = event.nativeEvent.layout.y;
+                  articleOffsetsRef.current[index] = y;
+                  articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle };
+                  articleStickyDirtyRef.current = true;
+                  updateStickySectionByScroll(scrollOffsetRef.current);
+                }}
+              >
                 {headingLines.map((heading, headingIndex) => (
-                  <Text key={`${articleKey}-h-${headingIndex}`} style={styles.sectionHeading}>
+                  <Text
+                    key={`${articleKey}-h-${headingIndex}`}
+                    style={[styles.sectionHeading, { fontSize: Math.max(17, headingFontSize + 1) }]}
+                  >
                     {cleanText(heading)}
                   </Text>
                 ))}
-                <View style={styles.articleCard}>
-                  <Text style={styles.articleTitle}>
-                    {article.number ? `Articulo ${article.number}` : "Articulo"}
-                    {parsedTitle.articleLabel ? ` - ${cleanText(parsedTitle.articleLabel)}` : ""}
+                <View
+                  style={[
+                    styles.articleCard,
+                    isSearchHit ? styles.articleCardSearchHit : null,
+                    isSearchActive ? styles.articleCardSearchActive : null,
+                  ]}
+                >
+                  <Text style={[styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }]}>
+                    <Text style={styles.articleLeadInline}>{articleLeadTitle} </Text>
+                    {renderHighlightedInline(articleTextWithoutDuplicateLabel, `${articleKey}-body`)}
                   </Text>
-                  <Text style={styles.articleText}>{articleTextWithoutDuplicateLabel}</Text>
                   {articlePanels.length > 0 ? (
                     <View style={styles.articlePanelContainer}>
                       {articlePanels.map((panel) => (
@@ -874,47 +1189,108 @@ export const DetailScreen = () => {
                   key={`${index}-${line}`}
                   style={[
                     styles.falloHeaderLine,
+                    { fontSize: bodyFontSize, lineHeight: bodyLineHeight },
                     isPrimary ? styles.falloHeaderPrimary : null,
                     isMetaLabel ? styles.falloHeaderMeta : null,
                   ]}
                 >
-                  {line}
+                  {renderHighlightedInline(line, `fallo-header-${index}`)}
                 </Text>
               );
             })}
             {parsed.summaryText ? (
               <View style={styles.falloSummarySection}>
                 <Text style={styles.falloSummaryTitle}>Sumario</Text>
-                <Text style={styles.contentText}>{parsed.summaryText}</Text>
+                {renderHighlightedBlock(
+                  parsed.summaryText,
+                  [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
+                  "fallo-summary"
+                )}
               </View>
             ) : null}
           </View>
         );
       }
 
-      return <Text style={styles.contentText}>{extractedRelated.mainText}</Text>;
+      return renderHighlightedBlock(
+        extractedRelated.mainText,
+        [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
+        "main-text"
+      );
     }
 
     return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
   };
 
+  const renderDocSearchBar = (floating = false) => (
+    <View style={[styles.docSearchBar, floating ? styles.docSearchBarFloating : null]}>
+      <Text style={styles.docSearchIcon}>⌕</Text>
+      <TextInput
+        value={docSearchQuery}
+        onChangeText={(value) => {
+          setDocSearchQuery(value);
+          setSearchMatchPointer(0);
+        }}
+        placeholder="Buscar texto dentro del documento"
+        placeholderTextColor={colors.muted}
+        style={styles.docSearchInput}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      {normalizedSearchQuery ? <Text style={styles.docSearchCount}>{totalSearchMatches}</Text> : null}
+      {normalizedSearchQuery ? (
+        <Pressable
+          style={styles.docSearchClearBtn}
+          onPress={() => {
+            setDocSearchQuery("");
+            setSearchMatchPointer(0);
+          }}
+        >
+          <Text style={styles.docSearchClearBtnText}>×</Text>
+        </Pressable>
+      ) : null}
+      {articleSearchMatches.length > 0 ? (
+        <View style={styles.docSearchNav}>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch}>
+            <Text style={styles.docSearchNavBtnText}>‹</Text>
+          </Pressable>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch}>
+            <Text style={styles.docSearchNavBtnText}>›</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      <View style={styles.zoomControls}>
+        <Pressable style={styles.zoomBtn} onPress={zoomOut}>
+          <Text style={styles.zoomBtnText}>A-</Text>
+        </Pressable>
+        <Pressable style={styles.zoomBtn} onPress={zoomIn}>
+          <Text style={styles.zoomBtnText}>A+</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={[styles.container, selectedSection === "texto" ? { paddingTop: spacing.md + stickySearchHeight + 8 } : null]}
+        onLayout={(event) => {
+          scrollViewportHeightRef.current = event.nativeEvent.layout.height;
+        }}
+        onScroll={(event) => handleDetailScroll(event.nativeEvent.contentOffset.y)}
+        scrollEventThrottle={48}
+        onContentSizeChange={(_, contentHeight) => {
+          scrollContentHeightRef.current = contentHeight;
+          restoreSavedScrollIfNeeded();
+        }}
+      >
         <DetailHeader title={document.title} subtitle={subtitleText} />
 
         <View style={styles.metaCard}>
           <MetadataRow label="Tipo" value={typeLabel} />
           <MetadataRow label={secondaryMeta.label} value={secondaryMeta.value} valueColor={secondaryMeta.color} />
         </View>
-
-        <Pressable
-          style={[styles.sourceButton, !sourceUrl ? styles.sourceButtonDisabled : null]}
-          onPress={() => (sourceUrl ? Linking.openURL(sourceUrl) : null)}
-          disabled={!sourceUrl}
-        >
-          <Text style={styles.sourceButtonText}>Abrir fuente</Text>
-        </Pressable>
 
         {attachmentUrl ? (
           <Pressable
@@ -930,7 +1306,7 @@ export const DetailScreen = () => {
             <Pressable
               key={item.key}
               style={[styles.sectionTab, selectedSection === item.key ? styles.sectionTabActive : null]}
-              onPress={() => setActiveSection(item.key)}
+              onPress={() => setActiveSectionSafe(item.key)}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
             >
               <Text style={[styles.sectionTabText, selectedSection === item.key ? styles.sectionTabTextActive : null]}>
@@ -943,7 +1319,11 @@ export const DetailScreen = () => {
 
         {selectedSection === "encabezado" && leadText ? (
           <View style={styles.articleCard}>
-            <Text style={styles.articleText}>{leadText}</Text>
+            {renderHighlightedBlock(
+              leadText,
+              [styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
+              "lead-text"
+            )}
           </View>
         ) : null}
 
@@ -1039,6 +1419,47 @@ export const DetailScreen = () => {
           </View>
         ) : null}
       </ScrollView>
+      {selectedSection === "texto" ? (
+        <View pointerEvents="box-none" style={[styles.floatingDocSearchWrap, { top: stickySearchTop }]}>
+          <View>{renderDocSearchBar(true)}</View>
+        </View>
+      ) : null}
+      {selectedSection === "texto" && stickySectionLabel ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.stickySectionWrap,
+            {
+              top: stickySectionTop,
+              transform: [{ translateY: stickySectionTranslateY }],
+            },
+          ]}
+        >
+          <Text style={[styles.stickySectionText, { fontSize: Math.max(13, bodyFontSize - 0.2) }]}>
+            {stickySectionLabel}
+          </Text>
+        </View>
+      ) : null}
+      {selectedSection === "texto" && searchableArticles.length > 0 ? (
+        <View
+          style={[styles.articleScrubberTrack, isScrubbingArticles ? styles.articleScrubberTrackActive : null]}
+          onLayout={(event) => setScrubberHeight(event.nativeEvent.layout.height)}
+          {...articleScrubberResponder.panHandlers}
+        >
+          <View style={styles.articleScrubberGrip} />
+          {isScrubbingArticles && activeArticlePreviewLabel ? (
+            <View
+              style={[
+                styles.scrubberPreviewBubble,
+                { top: scrubberPreviewTop },
+              ]}
+            >
+              <Text style={styles.scrubberPreviewText}>{activeArticlePreviewLabel}</Text>
+              <View style={styles.scrubberPreviewTail} />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -1058,20 +1479,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  sourceButton: {
-    backgroundColor: colors.primaryStrong,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    alignItems: "center",
-  },
-  sourceButtonDisabled: {
-    opacity: 0.6,
-  },
-  sourceButtonText: {
-    color: "#FFFFFF",
-    fontSize: typography.body,
-    fontWeight: "600",
   },
   attachmentButton: {
     backgroundColor: colors.card,
@@ -1112,6 +1519,128 @@ const styles = StyleSheet.create({
   },
   sectionTabTextActive: {
     color: colors.primaryStrong,
+  },
+  docSearchBar: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    minHeight: 42,
+    paddingHorizontal: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    shadowColor: "#000000",
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  docSearchBarFloating: {
+    borderColor: "#BFD0FF",
+  },
+  floatingDocSearchWrap: {
+    position: "absolute",
+    left: spacing.md,
+    right: spacing.md + 18,
+    top: spacing.sm,
+    zIndex: 20,
+  },
+  stickySectionWrap: {
+    position: "absolute",
+    left: spacing.md,
+    right: spacing.md + 18,
+    backgroundColor: "#EEF3FF",
+    borderColor: "#D6E2FF",
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    zIndex: 19,
+  },
+  stickySectionText: {
+    color: colors.primaryStrong,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+    textAlign: "center",
+    lineHeight: 17,
+  },
+  docSearchIcon: {
+    color: colors.muted,
+    fontSize: typography.body + 2,
+    fontWeight: "700",
+  },
+  docSearchInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: typography.body,
+    paddingVertical: 8,
+  },
+  docSearchCount: {
+    color: colors.primaryStrong,
+    fontSize: typography.small + 1,
+    fontWeight: "700",
+    minWidth: 22,
+    textAlign: "center",
+  },
+  docSearchClearBtn: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#F5F7FC",
+  },
+  docSearchClearBtnText: {
+    color: colors.muted,
+    fontSize: typography.body + 1,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  docSearchNav: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  zoomControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginLeft: 2,
+  },
+  zoomBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F5F7FC",
+    minWidth: 28,
+    height: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  zoomBtnText: {
+    color: colors.primaryStrong,
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  docSearchNavBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F5F7FC",
+    width: 26,
+    height: 26,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  docSearchNavBtnText: {
+    color: colors.primaryStrong,
+    fontSize: typography.body + 1,
+    fontWeight: "700",
+    lineHeight: 16,
   },
   relatedSection: {
     gap: spacing.sm,
@@ -1170,9 +1699,13 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   contentText: {
-    fontSize: typography.body,
+    fontSize: typography.body - 1,
     color: colors.text,
-    lineHeight: 20,
+    lineHeight: 19,
+  },
+  searchHighlight: {
+    backgroundColor: "#FFE08A",
+    color: colors.text,
   },
   articles: {
     gap: spacing.sm,
@@ -1194,6 +1727,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     gap: spacing.xs,
+  },
+  articleCardSearchHit: {
+    borderColor: "#C7D2FE",
+    backgroundColor: "#F8FAFF",
+  },
+  articleCardSearchActive: {
+    borderColor: colors.primaryStrong,
+    borderWidth: 1.5,
   },
   articlePanelContainer: {
     marginTop: spacing.sm,
@@ -1226,12 +1767,74 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.text,
   },
-  articleText: {
-    fontSize: typography.body,
+  articleLeadInline: {
+    fontWeight: "700",
     color: colors.text,
-    lineHeight: 20,
+  },
+  articleText: {
+    fontSize: typography.body - 1,
+    color: colors.text,
+    lineHeight: 19,
+  },
+  articleScrubberTrack: {
+    position: "absolute",
+    top: spacing.xl + 72,
+    bottom: spacing.xl + 12,
+    right: 1,
+    width: 10,
+    borderRadius: 7,
+    backgroundColor: "rgba(22, 40, 84, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(22, 40, 84, 0.14)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  articleScrubberTrackActive: {
+    backgroundColor: "rgba(37, 82, 224, 0.2)",
+    borderColor: "rgba(37, 82, 224, 0.45)",
+  },
+  articleScrubberGrip: {
+    width: 2,
+    height: 24,
+    borderRadius: 2,
+    backgroundColor: "rgba(22, 40, 84, 0.55)",
+  },
+  scrubberPreviewBubble: {
+    position: "absolute",
+    right: 18,
+    minWidth: 132,
+    height: 52,
+    backgroundColor: "#39BDF3",
+    borderRadius: 20,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  scrubberPreviewText: {
+    color: "#FFFFFF",
+    fontSize: typography.subtitle + 6,
+    fontWeight: "500",
+  },
+  scrubberPreviewTail: {
+    position: "absolute",
+    right: -6,
+    width: 6,
+    height: 24,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+    backgroundColor: "#39BDF3",
   },
 });
+
+
 
 
 

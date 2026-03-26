@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const ContentTypeEnum = z.enum([
   'legislacion',
+  'jurisprudencia',
   'fallo',
   'sumario',
   'dictamen',

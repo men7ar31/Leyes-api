@@ -9,6 +9,63 @@ type Props = {
 };
 
 export const ResultCard = ({ hit, onPress }: Props) => {
+  const jurisdictionSource = cleanText(
+    [hit.jurisdiccion || "", hit.subtitle || "", hit.title || ""].filter(Boolean).join(" ")
+  );
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const provinceLabels: Array<{ name: string; label: string }> = [
+    { name: "buenos aires", label: "Buenos Aires" },
+    { name: "ciudad autonoma de buenos aires", label: "Caba" },
+    { name: "caba", label: "Caba" },
+    { name: "catamarca", label: "Catamarca" },
+    { name: "chaco", label: "Chaco" },
+    { name: "chubut", label: "Chubut" },
+    { name: "cordoba", label: "Cordoba" },
+    { name: "corrientes", label: "Corrientes" },
+    { name: "entre rios", label: "Entre Rios" },
+    { name: "formosa", label: "Formosa" },
+    { name: "jujuy", label: "Jujuy" },
+    { name: "la pampa", label: "La Pampa" },
+    { name: "la rioja", label: "La Rioja" },
+    { name: "mendoza", label: "Mendoza" },
+    { name: "misiones", label: "Misiones" },
+    { name: "neuquen", label: "Neuquen" },
+    { name: "rio negro", label: "Rio Negro" },
+    { name: "salta", label: "Salta" },
+    { name: "san juan", label: "San Juan" },
+    { name: "san luis", label: "San Luis" },
+    { name: "santa cruz", label: "Santa Cruz" },
+    { name: "santa fe", label: "Santa Fe" },
+    { name: "santiago del estero", label: "Santiago del Estero" },
+    { name: "tierra del fuego", label: "Tierra del Fuego" },
+    { name: "tucuman", label: "Tucuman" },
+  ];
+
+  const jurisdictionBadge = (() => {
+    if (!jurisdictionSource) return null;
+    const lower = normalize(jurisdictionSource);
+    if (lower.includes("nacional")) return "Nacional";
+    if (lower.includes("internacional")) return "Internacional";
+    if (lower.includes("federal")) return "Federal";
+
+    const provinceMatch = provinceLabels.find((province) => lower.includes(province.name));
+    if (provinceMatch) {
+      return provinceMatch.label;
+    }
+
+    if (lower.includes("provincial") || lower.includes("local")) {
+      return "Provincial";
+    }
+    return null;
+  })();
+
   const metaParts = [
     hit.fecha ? formatDate(hit.fecha) || hit.fecha : null,
     hit.jurisdiccion || null,
@@ -23,6 +80,11 @@ export const ResultCard = ({ hit, onPress }: Props) => {
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{hit.contentType}</Text>
         </View>
+        {jurisdictionBadge ? (
+          <View style={styles.badgeJurisdiction}>
+            <Text style={styles.badgeJurisdictionText}>{jurisdictionBadge}</Text>
+          </View>
+        ) : null}
         <View style={styles.badgeMuted}>
           <Text style={styles.badgeMutedText}>SAIJ</Text>
         </View>
@@ -60,6 +122,19 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
     fontWeight: "600",
     textTransform: "capitalize",
+  },
+  badgeJurisdiction: {
+    backgroundColor: "#EAF2FF",
+    borderWidth: 1,
+    borderColor: "#BBD2FF",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.sm,
+  },
+  badgeJurisdictionText: {
+    color: "#1B4DB8",
+    fontSize: typography.small,
+    fontWeight: "600",
   },
   badgeMuted: {
     backgroundColor: "#EEF2F7",

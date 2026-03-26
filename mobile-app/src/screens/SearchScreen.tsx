@@ -1,9 +1,15 @@
-﻿import { useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SearchBar } from "../components/SearchBar";
-import { SearchFilters } from "../components/SearchFilters";
+import {
+  SearchFilters,
+  type DictamenSubtype,
+  type DoctrinaSubtype,
+  type JurisprudenceSubtype,
+} from "../components/SearchFilters";
 import { ResultCard } from "../components/ResultCard";
 import { LoadingState } from "../components/LoadingState";
 import { EmptyState } from "../components/EmptyState";
@@ -18,20 +24,26 @@ import type {
 } from "../types/saij";
 
 const PAGE_SIZE = 20;
+const RECENT_SEARCHES_MAX = 4;
+const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
 
 type FormState = {
   textoEnNorma: string;
   numeroNorma: string;
   contentType: SaijSearchRequest["contentType"];
   legislationSubtype: SaijLegislationSubtype;
+  jurisprudenceSubtype: JurisprudenceSubtype;
+  doctrinaSubtype: DoctrinaSubtype;
+  dictamenSubtype: DictamenSubtype;
   jurisdictionKind: "todas" | "nacional" | "provincial" | "internacional";
   province: string;
   facetFecha: string;
+  facetTema: string;
   facetEstadoVigencia: string;
   facetOrganismo: string;
 };
 
-type RefineSection = "anio" | "estado" | "organismo";
+type RefineSection = "anio" | "tema" | "estado" | "organismo";
 
 type FacetOption = {
   value: string;
@@ -39,14 +51,28 @@ type FacetOption = {
   hits: number;
 };
 
+type RecentSearchItem = {
+  key: string;
+  guid: string;
+  title: string;
+  subtitle: string | null;
+  contentType: string;
+};
+
+let recentSearchesStore: RecentSearchItem[] = [];
+
 const initialState: FormState = {
   textoEnNorma: "",
   numeroNorma: "",
   contentType: "legislacion",
   legislationSubtype: "todas",
+  jurisprudenceSubtype: "todas",
+  doctrinaSubtype: "todas",
+  dictamenSubtype: "todas",
   jurisdictionKind: "todas",
   province: "",
   facetFecha: "",
+  facetTema: "",
   facetEstadoVigencia: "",
   facetOrganismo: "",
 };
@@ -99,13 +125,130 @@ const getLeafLabel = (value?: string) => {
   return parts[parts.length - 1] || "";
 };
 
+type AutoFacetValues = {
+  facetTema?: string;
+  facetOrganismo?: string;
+  facetJurisdiccion?: string;
+};
+
+const isJurisprudenceContentType = (value: SaijSearchRequest["contentType"]) =>
+  value === "jurisprudencia" || value === "fallo" || value === "sumario";
+
+const getJurisprudenceAutoFacets = (subtype: JurisprudenceSubtype): AutoFacetValues => {
+  switch (subtype) {
+    case "corte_suprema_nacional":
+      return { facetOrganismo: "Organismo/Corte Suprema de Justicia de la Nación" };
+    case "nacional":
+      return { facetJurisdiccion: "Jurisdicción/Nacional" };
+    case "federal":
+      return { facetJurisdiccion: "Jurisdicción/Federal" };
+    case "provincial":
+      return { facetJurisdiccion: "Jurisdicción/Local" };
+    case "internacional":
+      return { facetJurisdiccion: "Jurisdicción/Internacional" };
+    case "derecho_constitucional":
+      return { facetTema: "Tema/Derecho constitucional" };
+    case "derecho_civil":
+      return { facetTema: "Tema/Derecho civil" };
+    case "derecho_laboral":
+      return { facetTema: "Tema/Derecho laboral" };
+    case "derecho_penal":
+      return { facetTema: "Tema/Derecho penal" };
+    case "derecho_comercial":
+      return { facetTema: "Tema/Derecho comercial" };
+    case "derecho_administrativo":
+      return { facetTema: "Tema/Derecho administrativo" };
+    case "derecho_procesal":
+      return { facetTema: "Tema/Derecho procesal" };
+    case "tribunales_etica":
+      return { facetTema: "Tema/Tribunales de ética" };
+    default:
+      return {};
+  }
+};
+
+const getDoctrinaAutoFacets = (subtype: DoctrinaSubtype): AutoFacetValues => {
+  switch (subtype) {
+    case "doctrina_derecho_administrativo":
+      return { facetTema: "Tema/Derecho administrativo" };
+    case "doctrina_derecho_civil":
+      return { facetTema: "Tema/Derecho civil" };
+    case "doctrina_derecho_comercial":
+      return { facetTema: "Tema/Derecho comercial" };
+    case "doctrina_derecho_constitucional":
+      return { facetTema: "Tema/Derecho constitucional" };
+    case "doctrina_derecho_familia":
+      return { facetTema: "Tema/Derecho de familia" };
+    case "doctrina_derecho_internacional":
+      return { facetTema: "Tema/Derecho internacional" };
+    case "doctrina_derecho_laboral":
+      return { facetTema: "Tema/Derecho laboral" };
+    case "doctrina_derecho_penal":
+      return { facetTema: "Tema/Derecho penal" };
+    case "doctrina_derecho_procesal":
+      return { facetTema: "Tema/Derecho procesal" };
+    case "doctrina_derecho_seguridad_social":
+      return { facetTema: "Tema/Derecho de la seguridad social" };
+    case "doctrina_derecho_tributario_aduanero":
+      return { facetTema: "Tema/Derecho tributario y aduanero" };
+    default:
+      return {};
+  }
+};
+
+const getDictamenAutoFacets = (subtype: DictamenSubtype): AutoFacetValues => {
+  switch (subtype) {
+    case "dictamenes_mpf":
+      return { facetOrganismo: "Organismo/Ministerio Público Fiscal" };
+    case "dictamenes_inadi":
+      return { facetOrganismo: "Organismo/INADI" };
+    case "dictamenes_ptn":
+      return { facetOrganismo: "Organismo/Procuración del Tesoro de la Nación" };
+    case "resoluciones_aaip":
+      return { facetOrganismo: "Organismo/Agencia de Acceso a la Información Pública" };
+    default:
+      return {};
+  }
+};
+
 export const SearchScreen = () => {
   const [formState, setFormState] = useState<FormState>(initialState);
   const [appliedState, setAppliedState] = useState<FormState>(initialState);
+  const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>(recentSearchesStore);
   const [hasSearched, setHasSearched] = useState(false);
   const [collapseToken, setCollapseToken] = useState(0);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
   const [activeRefineSection, setActiveRefineSection] = useState<RefineSection | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadRecent = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(RECENT_SEARCHES_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as RecentSearchItem[];
+        if (!Array.isArray(parsed)) return;
+        const valid = parsed
+          .filter((item) => item && typeof item.guid === "string" && item.guid.trim().length > 0)
+          .slice(0, RECENT_SEARCHES_MAX);
+        if (cancelled) return;
+        recentSearchesStore = valid;
+        setRecentSearches(valid);
+      } catch {
+        // ignore broken local cache
+      }
+    };
+    loadRecent();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(recentSearches)).catch(() => {
+      // ignore storage write failures
+    });
+  }, [recentSearches]);
 
   const filters = useMemo<SaijSearchFilters>(() => {
     const next: SaijSearchFilters = {};
@@ -114,6 +257,33 @@ export const SearchScreen = () => {
 
     if (appliedState.contentType === "legislacion" && appliedState.legislationSubtype !== "todas") {
       next.tipoNorma = appliedState.legislationSubtype;
+    }
+    if (
+      appliedState.contentType === "jurisprudencia" &&
+      (appliedState.jurisprudenceSubtype === "fallo" || appliedState.jurisprudenceSubtype === "sumario")
+    ) {
+      next.tipoNorma = appliedState.jurisprudenceSubtype;
+    }
+
+    let autoFacetTema = "";
+    let autoFacetOrganismo = "";
+    let autoFacetJurisdiccion = "";
+
+    if (isJurisprudenceContentType(appliedState.contentType)) {
+      const auto = getJurisprudenceAutoFacets(appliedState.jurisprudenceSubtype);
+      autoFacetTema = auto.facetTema ?? "";
+      autoFacetOrganismo = auto.facetOrganismo ?? "";
+      autoFacetJurisdiccion = auto.facetJurisdiccion ?? "";
+    }
+
+    if (appliedState.contentType === "doctrina") {
+      const auto = getDoctrinaAutoFacets(appliedState.doctrinaSubtype);
+      autoFacetTema = auto.facetTema ?? autoFacetTema;
+    }
+
+    if (appliedState.contentType === "dictamen") {
+      const auto = getDictamenAutoFacets(appliedState.dictamenSubtype);
+      autoFacetOrganismo = auto.facetOrganismo ?? autoFacetOrganismo;
     }
 
     if (appliedState.jurisdictionKind === "provincial") {
@@ -126,8 +296,12 @@ export const SearchScreen = () => {
     }
 
     if (appliedState.facetFecha) next.facetFecha = appliedState.facetFecha;
+    if (appliedState.facetTema || autoFacetTema) next.facetTema = appliedState.facetTema || autoFacetTema;
     if (appliedState.facetEstadoVigencia) next.facetEstadoVigencia = appliedState.facetEstadoVigencia;
-    if (appliedState.facetOrganismo) next.facetOrganismo = appliedState.facetOrganismo;
+    if (appliedState.facetOrganismo || autoFacetOrganismo) {
+      next.facetOrganismo = appliedState.facetOrganismo || autoFacetOrganismo;
+    }
+    if (autoFacetJurisdiccion) next.facetJurisdiccion = autoFacetJurisdiccion;
 
     return next;
   }, [appliedState]);
@@ -153,16 +327,15 @@ export const SearchScreen = () => {
   const provinceRequired =
     formState.jurisdictionKind === "provincial" && formState.province.trim().length === 0;
 
-  const showLegislationRefiners =
-    hasSearched &&
-    appliedState.contentType === "legislacion" &&
-    appliedState.legislationSubtype !== "todas";
+  const showRefiners = hasSearched;
 
   const fechaNode = useMemo(() => findFacetNode(facets, "Fecha"), [facets]);
+  const temaNode = useMemo(() => findFacetNode(facets, "Tema"), [facets]);
   const estadoNode = useMemo(() => findFacetNode(facets, "Estado de Vigencia"), [facets]);
   const organismoNode = useMemo(() => findFacetNode(facets, "Organismo"), [facets]);
 
   const fechaOptions = useMemo(() => mapFacetChildren(fechaNode, "Fecha", 20), [fechaNode]);
+  const temaOptions = useMemo(() => mapFacetChildren(temaNode, "Tema", 20), [temaNode]);
   const estadoOptions = useMemo(() => mapFacetChildren(estadoNode, "Estado de Vigencia", 12), [estadoNode]);
   const organismoOptions = useMemo(() => mapFacetChildren(organismoNode, "Organismo", 12), [organismoNode]);
 
@@ -175,6 +348,7 @@ export const SearchScreen = () => {
   const clearRefiners = () =>
     applyRefine({
       facetFecha: "",
+      facetTema: "",
       facetEstadoVigencia: "",
       facetOrganismo: "",
     });
@@ -191,8 +365,36 @@ export const SearchScreen = () => {
     setActiveRefineSection((prev) => (prev === section ? null : section));
   };
 
+  const registerRecentOpenedDocument = (item: {
+    guid: string;
+    title: string;
+    subtitle: string | null;
+    contentType: string;
+  }) => {
+    const key = String(item.guid || "").trim();
+    if (!key) return;
+    const nextItem: RecentSearchItem = {
+      key,
+      guid: key,
+      title: item.title,
+      subtitle: item.subtitle,
+      contentType: item.contentType,
+    };
+    const next = [nextItem, ...recentSearches.filter((entry) => entry.key !== key)].slice(0, RECENT_SEARCHES_MAX);
+    recentSearchesStore = next;
+    setRecentSearches(next);
+  };
+
+  const openRecentDocument = (item: RecentSearchItem) => {
+    router.push({
+      pathname: "/detail/[guid]",
+      params: { guid: item.guid },
+    });
+  };
+
   const onSearch = () => {
-    setAppliedState({ ...formState });
+    const nextState = { ...formState };
+    setAppliedState(nextState);
     setHasSearched(true);
     setCollapseToken((prev) => prev + 1);
     if (hasSearched) {
@@ -232,12 +434,18 @@ export const SearchScreen = () => {
         renderItem={({ item }) => (
           <ResultCard
             hit={item}
-            onPress={() =>
+            onPress={() => {
+              registerRecentOpenedDocument({
+                guid: String(item.guid || ""),
+                title: String(item.title || ""),
+                subtitle: item.subtitle || null,
+                contentType: String(item.contentType || ""),
+              });
               router.push({
                 pathname: "/detail/[guid]",
                 params: { guid: item.guid },
-              })
-            }
+              });
+            }}
           />
         )}
         contentContainerStyle={styles.listContent}
@@ -259,7 +467,11 @@ export const SearchScreen = () => {
                   ...prev,
                   contentType,
                   legislationSubtype: contentType === "legislacion" ? prev.legislationSubtype : "todas",
+                  jurisprudenceSubtype: contentType === "jurisprudencia" ? prev.jurisprudenceSubtype : "todas",
+                  doctrinaSubtype: contentType === "doctrina" ? prev.doctrinaSubtype : "todas",
+                  dictamenSubtype: contentType === "dictamen" ? prev.dictamenSubtype : "todas",
                   facetFecha: "",
+                  facetTema: "",
                   facetEstadoVigencia: "",
                   facetOrganismo: "",
                 }))
@@ -270,6 +482,40 @@ export const SearchScreen = () => {
                   ...prev,
                   legislationSubtype,
                   facetFecha: "",
+                  facetTema: "",
+                  facetEstadoVigencia: "",
+                  facetOrganismo: "",
+                }))
+              }
+              jurisprudenceSubtype={formState.jurisprudenceSubtype}
+              onChangeJurisprudenceSubtype={(jurisprudenceSubtype) =>
+                setFormState((prev) => ({
+                  ...prev,
+                  jurisprudenceSubtype,
+                  facetFecha: "",
+                  facetTema: "",
+                  facetEstadoVigencia: "",
+                  facetOrganismo: "",
+                }))
+              }
+              doctrinaSubtype={formState.doctrinaSubtype}
+              onChangeDoctrinaSubtype={(doctrinaSubtype) =>
+                setFormState((prev) => ({
+                  ...prev,
+                  doctrinaSubtype,
+                  facetFecha: "",
+                  facetTema: "",
+                  facetEstadoVigencia: "",
+                  facetOrganismo: "",
+                }))
+              }
+              dictamenSubtype={formState.dictamenSubtype}
+              onChangeDictamenSubtype={(dictamenSubtype) =>
+                setFormState((prev) => ({
+                  ...prev,
+                  dictamenSubtype,
+                  facetFecha: "",
+                  facetTema: "",
                   facetEstadoVigencia: "",
                   facetOrganismo: "",
                 }))
@@ -283,7 +529,7 @@ export const SearchScreen = () => {
               collapseToken={collapseToken}
             />
 
-            {showLegislationRefiners ? (
+            {showRefiners ? (
               <View style={styles.refineCard}>
                 <Pressable
                   style={styles.refineToggle}
@@ -311,6 +557,24 @@ export const SearchScreen = () => {
                         onSelect={(value) =>
                           applyRefine({
                             facetFecha: appliedState.facetFecha === value ? "" : value,
+                          })
+                        }
+                      />
+                    ) : null}
+
+                    <Pressable style={styles.refineSectionButton} onPress={() => toggleRefineSection("tema")}>
+                      <Text style={styles.refineSectionText}>
+                        Tema {appliedState.facetTema ? `· ${getLeafLabel(appliedState.facetTema)}` : ""}
+                      </Text>
+                    </Pressable>
+                    {activeRefineSection === "tema" ? (
+                      <FacetGroup
+                        title="Temas disponibles"
+                        options={temaOptions}
+                        selected={appliedState.facetTema}
+                        onSelect={(value) =>
+                          applyRefine({
+                            facetTema: appliedState.facetTema === value ? "" : value,
                           })
                         }
                       />
@@ -377,6 +641,34 @@ export const SearchScreen = () => {
                 <Text style={styles.clearButtonText}>Borrar filtros</Text>
               </Pressable>
             </View>
+
+            {!hasSearched && recentSearches.length > 0 ? (
+              <View style={styles.recentsCard}>
+                <Text style={styles.recentsTitle}>Ultimos documentos abiertos</Text>
+                <View style={styles.recentsList}>
+                  {recentSearches.map((entry) => (
+                    <Pressable
+                      key={entry.key}
+                      style={styles.recentItem}
+                      onPress={() => openRecentDocument(entry)}
+                    >
+                      <Text style={styles.recentItemType} numberOfLines={1}>
+                        {entry.contentType}
+                      </Text>
+                      <Text style={styles.recentItemText} numberOfLines={2}>
+                        {entry.title}
+                      </Text>
+                      {entry.subtitle ? (
+                        <Text style={styles.recentItemSubtitle} numberOfLines={1}>
+                          {entry.subtitle}
+                        </Text>
+                      ) : null}
+                      <Text style={styles.recentItemOpen}>Abrir</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ) : null}
 
             {hasSearched ? <Text style={styles.totalText}>{total} resultados</Text> : null}
 
@@ -580,6 +872,50 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: typography.small,
   },
+  recentsCard: {
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+  recentsTitle: {
+    color: colors.text,
+    fontSize: typography.body,
+    fontWeight: "700",
+  },
+  recentsList: {
+    gap: spacing.xs,
+  },
+  recentItem: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+  },
+  recentItemType: {
+    color: colors.primaryStrong,
+    fontSize: typography.small,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+  recentItemText: {
+    color: colors.text,
+    fontSize: typography.small,
+    fontWeight: "600",
+  },
+  recentItemSubtitle: {
+    color: colors.muted,
+    fontSize: typography.small,
+  },
+  recentItemOpen: {
+    color: colors.primaryStrong,
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
   loadMore: {
     marginTop: spacing.md,
     alignItems: "center",
@@ -595,3 +931,4 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 });
+

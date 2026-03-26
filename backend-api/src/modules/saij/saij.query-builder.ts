@@ -25,6 +25,7 @@ type BaseFacetName =
 
 const CONTENT_TYPE_FACETS: Record<SaijContentType, string | null> = {
   legislacion: 'Tipo de Documento/Legislación',
+  jurisprudencia: 'Tipo de Documento/Jurisprudencia',
   fallo: 'Tipo de Documento/Jurisprudencia/Fallo',
   sumario: 'Tipo de Documento/Jurisprudencia/Sumario',
   dictamen: 'Tipo de Documento/Dictamen',
@@ -251,7 +252,10 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
     const field =
       input.contentType === 'fallo'
         ? 'titulo'
-        : input.contentType === 'sumario' || input.contentType === 'doctrina' || input.contentType === 'dictamen'
+        : input.contentType === 'jurisprudencia' ||
+            input.contentType === 'sumario' ||
+            input.contentType === 'doctrina' ||
+            input.contentType === 'dictamen'
           ? 'tema'
           : 'texto';
     rParts.push(`${field}:${searchTerm}`);
@@ -265,6 +269,11 @@ export const buildSaijFacets = (input: SaijSearchRequest): string => {
 
   // Tipo de documento facet
   let contentFacet = CONTENT_TYPE_FACETS[input.contentType];
+  if (input.contentType === 'jurisprudencia') {
+    const tipo = String(input.filters.tipoNorma || '').trim().toLowerCase();
+    if (tipo === 'fallo') contentFacet = 'Tipo de Documento/Jurisprudencia/Fallo';
+    if (tipo === 'sumario') contentFacet = 'Tipo de Documento/Jurisprudencia/Sumario';
+  }
   if (input.contentType === 'legislacion') {
     const subtype = normalizeLegislationSubtype(input.filters.tipoNorma);
     const subtypeConfig = subtype ? LEGISLATION_SUBTYPE_FACETS[subtype] : null;
