@@ -5,15 +5,25 @@ export interface NormCacheDocument extends Document {
   source: 'saij';
   extractorVersion?: number;
   contentType: string;
+  documentSubtype?: string | null;
+  estadoVigencia?: string | null;
+  tribunal?: string | null;
+  fechaSentencia?: string | null;
+  autor?: string | null;
+  organismo?: string | null;
   title: string;
   subtitle?: string | null;
   metadata?: Record<string, unknown>;
   contentHtml?: string | null;
   contentText?: string | null;
+  headerText?: string | null;
   articles?: unknown[];
   toc?: unknown[];
   sourceUrl?: string | null;
   attachment?: unknown;
+  normasQueModifica?: unknown[];
+  normasComplementarias?: unknown[];
+  observaciones?: unknown[];
   relatedFallos?: unknown[];
   relatedContents?: unknown[];
   friendlyUrl?: string | null;
@@ -28,15 +38,25 @@ const NormCacheSchema = new Schema<NormCacheDocument>({
   source: { type: String, required: true, default: 'saij' },
   extractorVersion: Number,
   contentType: { type: String, required: true },
+  documentSubtype: String,
+  estadoVigencia: String,
+  tribunal: String,
+  fechaSentencia: String,
+  autor: String,
+  organismo: String,
   title: { type: String, required: true },
   subtitle: String,
   metadata: Schema.Types.Mixed,
   contentHtml: String,
   contentText: String,
+  headerText: String,
   articles: [Schema.Types.Mixed],
   toc: [Schema.Types.Mixed],
   sourceUrl: String,
   attachment: Schema.Types.Mixed,
+  normasQueModifica: [Schema.Types.Mixed],
+  normasComplementarias: [Schema.Types.Mixed],
+  observaciones: [Schema.Types.Mixed],
   relatedFallos: [Schema.Types.Mixed],
   relatedContents: [Schema.Types.Mixed],
   friendlyUrl: String,

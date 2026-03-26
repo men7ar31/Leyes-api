@@ -4,10 +4,40 @@
   | { kind: "internacional" }
   | { kind: "provincial"; provincia: string };
 
+export type SaijLegislationSubtype =
+  | "todas"
+  | "normas_internacionales"
+  | "normativa_comunitaria"
+  | "leyes_ratificatorias_tratados"
+  | "constitucion"
+  | "constitucion_nacional"
+  | "constitucion_provincial"
+  | "codigo"
+  | "codigo_nacional"
+  | "codigo_provincial"
+  | "leyes_nacionales_vigentes"
+  | "leyes_provinciales_vigentes"
+  | "nuevas_leyes_sancionadas"
+  | "leyes_vetadas"
+  | "decretos_nacionales_vigentes"
+  | "dnu"
+  | "resolucion_afip"
+  | "resolucion_igj"
+  | "resolucion_aabe"
+  | "decreto"
+  | "decreto_simple"
+  | "texto_ordenado_decreto";
+
 export type SaijSearchFilters = {
   textoEnNorma?: string;
   numeroNorma?: string;
+  tipoNorma?: string;
   jurisdiccion?: SaijJurisdiction;
+  facetFecha?: string;
+  facetJurisdiccion?: string;
+  facetEstadoVigencia?: string;
+  facetTema?: string;
+  facetOrganismo?: string;
 };
 
 export type SaijSearchRequest = {
@@ -36,6 +66,14 @@ export type SaijSearchHit = {
   } | null;
 };
 
+export type SaijFacetNode = {
+  facetName: string;
+  facetHits: number;
+  currentDepth?: number;
+  hasMoreChildren?: boolean;
+  facetChildren?: SaijFacetNode[];
+};
+
 export type SaijSearchResponse = {
   ok: boolean;
   query: {
@@ -46,13 +84,26 @@ export type SaijSearchResponse = {
   };
   total: number;
   hits: SaijSearchHit[];
-  facets: any[];
+  facets: SaijFacetNode[];
 };
 
 export type SaijArticle = {
   number: string | null;
   title: string | null;
   text: string;
+  normasQueModifica?: SaijLinkedDocumentRef[];
+  normasComplementarias?: SaijLinkedDocumentRef[];
+  observaciones?: SaijLinkedDocumentRef[];
+  relatedContents?: SaijLinkedDocumentRef[];
+};
+
+export type SaijLinkedDocumentRef = {
+  title: string;
+  subtitle?: string | null;
+  contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
+  guid?: string | null;
+  sourceUrl?: string | null;
+  url: string;
 };
 
 export type SaijDocument = {
@@ -60,9 +111,16 @@ export type SaijDocument = {
   title: string;
   subtitle: string | null;
   contentType: string;
+  documentSubtype?: string | null;
+  estadoVigencia?: string | null;
+  tribunal?: string | null;
+  fechaSentencia?: string | null;
+  autor?: string | null;
+  organismo?: string | null;
   metadata: any;
   contentHtml: string | null;
   contentText: string | null;
+  headerText?: string | null;
   articles: SaijArticle[];
   toc: any[];
   friendlyUrl: string | null;
@@ -73,21 +131,11 @@ export type SaijDocument = {
     url?: string | null;
     fallbackUrl?: string | null;
   } | null;
-  relatedFallos?: Array<{
-    title: string;
-    subtitle?: string | null;
-    guid?: string | null;
-    sourceUrl?: string | null;
-    url: string;
-  }>;
-  relatedContents?: Array<{
-    title: string;
-    subtitle?: string | null;
-    contentTypeHint?: "legislacion" | "fallo" | "sumario" | "dictamen" | "doctrina" | "todo" | "unknown";
-    guid?: string | null;
-    sourceUrl?: string | null;
-    url: string;
-  }>;
+  normasQueModifica?: SaijLinkedDocumentRef[];
+  normasComplementarias?: SaijLinkedDocumentRef[];
+  observaciones?: SaijLinkedDocumentRef[];
+  relatedFallos?: SaijLinkedDocumentRef[];
+  relatedContents?: SaijLinkedDocumentRef[];
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;
@@ -98,3 +146,4 @@ export type SaijDocumentResponse = {
   ok: boolean;
   document: SaijDocument;
 };
+

@@ -102,6 +102,13 @@ const buildFalloSearchUrl = (title: string) => {
 };
 
 type RelatedContentHint = SaijContentType | 'todo' | 'unknown';
+type RelatedContentEntry = {
+  title: string;
+  subtitle?: string | null;
+  contentTypeHint: RelatedContentHint;
+  guid?: string | null;
+  sourceUrl?: string | null;
+};
 
 const buildGenericSearchUrl = (title: string) => {
   const normalized = title.trim().replace(/\s+/g, '?');
@@ -149,6 +156,43 @@ const normalizeLooseString = (value: any): string | null => {
     const nested = normalizeSubtitleValue(value);
     if (nested) return normalizeTagText(nested);
   }
+  return null;
+};
+
+const extractLeadSectionText = (value: any): string | null => {
+  if (!value) return null;
+  if (typeof value === 'string') return normalizeTagText(value);
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => extractLeadSectionText(item))
+      .filter((item): item is string => Boolean(item && item.trim().length > 0));
+    if (!parts.length) return null;
+    return Array.from(new Set(parts)).join('\n\n');
+  }
+
+  if (typeof value === 'object') {
+    const preferredKeys = ['texto', 'sumario', 'sancion', 'encabezado', 'visto', 'considerando', 'tema', 'indice'];
+    const parts: string[] = [];
+
+    preferredKeys.forEach((key) => {
+      const picked = normalizeLooseString((value as any)?.[key]);
+      if (picked) parts.push(picked);
+    });
+
+    if (!parts.length) {
+      Object.values(value).forEach((child) => {
+        if (typeof child === 'string') {
+          const normalized = normalizeTagText(child);
+          if (normalized) parts.push(normalized);
+        }
+      });
+    }
+
+    if (!parts.length) return null;
+    return Array.from(new Set(parts)).join('\n\n');
+  }
+
   return null;
 };
 
@@ -373,6 +417,21 @@ const parseNormativeRefCode = (raw?: string | null): string | null => {
     return `Codigo Civil y Comercial de la Nacion (Ley ${Number(cccnMatch[1])}) Art. ${Number(cccnMatch[2])}`;
   }
 
+  const decretoMatch = value.match(/^DEC(?:RETO)?\s+C?\s+0*(\d{1,7})\s+(\d{4})\b/i);
+  if (decretoMatch) {
+    return `Decreto ${Number(decretoMatch[1])}/${decretoMatch[2]}`;
+  }
+
+  const dnuMatch = value.match(/^DNU\s+C?\s+0*(\d{1,7})\s+(\d{4})\b/i);
+  if (dnuMatch) {
+    return `DNU ${Number(dnuMatch[1])}/${dnuMatch[2]}`;
+  }
+
+  const resolucionMatch = value.match(/^RES(?:OLUCION)?\s+C?\s+0*(\d{1,7})\s+(\d{4})\b/i);
+  if (resolucionMatch) {
+    return `Resolucion ${Number(resolucionMatch[1])}/${resolucionMatch[2]}`;
+  }
+
   return null;
 };
 
@@ -387,12 +446,21 @@ const isHumanReadableRelatedLine = (value: string): boolean => {
   if (!line) return false;
   if (isShorthandNormReference(line)) return false;
   if (/^REFERENCIAS?_NORMATIVAS?/i.test(line)) return false;
-  if (line.includes('_')) return false;
+  if (/^[A-Z0-9_]{8,}$/.test(line)) return false;
   if (line.length > 220) return false;
-  if (/^[A-Z0-9 .\-\/]+$/.test(line) && /\d{4,}/.test(line) && !/[.,]/.test(line) && !/[a-záéíóúñ]/i.test(line)) {
+  if (/^[A-Z0-9 .\-\/]+$/.test(line) && /\d{6,}/.test(line) && !/[.,]/.test(line) && !/[a-záéíóúñ]/i.test(line)) {
     return false;
   }
   return true;
+};
+
+const isNormativeReferenceNote = (value?: string | null): boolean => {
+  if (!value || typeof value !== 'string') return false;
+  const clean = value.trim();
+  if (!clean) return false;
+  if (/^\((?:B\.?\s*O\.?|SUP\.?\s*B\.?\s*O\.?)\b/i.test(clean)) return true;
+  if (/\b(observa|observado|vigencia|prorroga|prorrog[aá]|modifica|modificado)\b/i.test(clean)) return true;
+  return false;
 };
 
 const normalizeRelatedKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9áéíóúñ]+/gi, ' ').trim();
@@ -407,6 +475,237 @@ const dedupeRelatedItems = <T extends { title: string; contentTypeHint?: Related
     result.push(item);
   }
   return result;
+};
+
+const toResolvedLinkedRef = (item: RelatedContentEntry) => ({
+  title: item.title,
+  subtitle: item.subtitle ?? null,
+  contentTypeHint: item.contentTypeHint,
+  guid: item.guid ?? null,
+  sourceUrl: item.sourceUrl ?? null,
+  url: item.sourceUrl ?? buildSearchUrlByHint(item.title, item.contentTypeHint),
+});
+
+const dedupeLinkedRefs = <T extends { title: string; contentTypeHint?: RelatedContentHint }>(items: T[]) =>
+  dedupeRelatedItems(items);
+
+const extractContentEntriesFromNode = (node: any, defaultHint: RelatedContentHint = 'legislacion') => {
+  const results: RelatedContentEntry[] = [];
+
+  const pushEntry = (entry: {
+    title?: string | null;
+    subtitle?: string | null;
+    contentTypeHint?: RelatedContentHint;
+    guid?: string | null;
+    sourceUrl?: string | null;
+  }) => {
+    const title = normalizeTagText(entry.title ?? null);
+    if (!title) return;
+    if (!isHumanReadableRelatedLine(title)) return;
+    const compact = title.replace(/\s+/g, ' ').trim();
+    const looksLikeMachineToken =
+      /^[A-Z0-9_]+$/i.test(compact) &&
+      !/[a-záéíóúñ]/i.test(compact) &&
+      compact.length > 10;
+    if (looksLikeMachineToken) return;
+    results.push({
+      title,
+      subtitle: entry.subtitle ?? null,
+      contentTypeHint: entry.contentTypeHint ?? defaultHint,
+      guid: entry.guid ?? null,
+      sourceUrl: entry.sourceUrl ?? null,
+    });
+  };
+
+  const walk = (current: any, inheritedHint: RelatedContentHint) => {
+    if (!current) return;
+    if (typeof current === 'string') {
+      const normalized = normalizeTagText(current);
+      if (!normalized) return;
+      const lines = normalized
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      if (!lines.length) {
+        pushEntry({ title: normalized, contentTypeHint: inheritedHint });
+        return;
+      }
+      lines.forEach((line) => pushEntry({ title: line, contentTypeHint: inheritedHint }));
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach((item) => walk(item, inheritedHint));
+      return;
+    }
+    if (typeof current !== 'object') return;
+
+    const hintedType = normalizeRelatedHint(
+      current['document-content-type'] ??
+      current.document_content_type ??
+      current['tipo-documento'] ??
+      current.tipo_documento ??
+      current.tipo ??
+      (current['tipo-fallo'] || current.tipo_fallo ? 'fallo' : null),
+      inheritedHint
+    );
+
+    const parsedRef = typeof current.ref === 'string' ? parseNormativeRefCode(current.ref) : null;
+    const crText = normalizeLooseString(current.cr);
+    const useParsedRefAsTitle = Boolean(parsedRef && crText && isNormativeReferenceNote(crText));
+    const title =
+      (useParsedRefAsTitle ? parsedRef : crText) ??
+      (!useParsedRefAsTitle ? parsedRef : null) ??
+      normalizeLooseString(current.titulo) ??
+      normalizeLooseString(current.caratula) ??
+      normalizeLooseString(current.nombre) ??
+      normalizeLooseString(current.descripcion) ??
+      normalizeLooseString(current.texto) ??
+      normalizeLooseString(current.sumario);
+    const subtitle = joinNonEmpty(
+      [
+        useParsedRefAsTitle ? crText : null,
+        normalizeLooseString(current['tipo-fallo'] ?? current.tipo_fallo),
+        normalizeLooseString(current.tribunal),
+        formatDateShort(normalizeLooseString(current.fecha)),
+      ],
+      '. '
+    );
+    const guid =
+      normalizeLooseString(current.guid) ??
+      normalizeLooseString(current.uuid) ??
+      normalizeLooseString(current.id) ??
+      null;
+    const sourceUrl = normalizeLooseString(current.url) ?? normalizeLooseString(current.sourceUrl) ?? null;
+
+    if (title) {
+      pushEntry({
+        title,
+        subtitle,
+        contentTypeHint: hintedType,
+        guid,
+        sourceUrl,
+      });
+    }
+
+    Object.values(current).forEach((child) => walk(child, hintedType));
+  };
+
+  walk(node, defaultHint);
+  return dedupeRelatedItems(results);
+};
+
+const normalizeKeyForSection = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const matchesAny = (value: string, patterns: ReadonlyArray<RegExp>) => patterns.some((pattern) => pattern.test(value));
+
+const SECTION_PATTERNS = {
+  normasQueModifica: [
+    /\bnormas?\s+que\s+modifica\b/i,
+    /\bnorma\s+que\s+modifica\b/i,
+    /\bmodifica\s+a\b/i,
+    /\bderoga\s+a\b/i,
+    /\bsustituye\s+a\b/i,
+    /\bincorpora\s+a\b/i,
+    /\breemplaza\s+a\b/i,
+  ],
+  normasComplementarias: [
+    /\bnormas?\s+compl/i,
+    /\bnormas?\s+complement/i,
+    /\bcomplementari[ao]s?\b/i,
+    /\bconcordancias?\b/i,
+    /\bobservad[oa]\s+por\b/i,
+    /\bmodificad[oa]\s+por\b/i,
+    /\bprorrogad[oa]\s+por\b/i,
+    /\breglamentad[oa]\s+por\b/i,
+  ],
+  observaciones: [
+    /\bobservaciones?\b/i,
+    /\bobs\b/i,
+  ],
+} as const;
+
+const SECTION_EXACT_KEYS = {
+  normasQueModifica: new Set([
+    'normas que modifica',
+    'norma que modifica',
+    'modifica a',
+    'deroga a',
+    'sustituye a',
+    'incorpora a',
+    'reemplaza a',
+  ]),
+  normasComplementarias: new Set([
+    'normas complementarias',
+    'normas compl',
+    'observado por',
+    'modificado por',
+    'prorrogado por',
+    'reglamentado por',
+    'concordancias',
+  ]),
+  observaciones: new Set([
+    'observaciones',
+    'observaciones generales',
+    'obs',
+  ]),
+} as const;
+
+const extractNormativeSectionEntries = (content: any) => {
+  const buckets: {
+    normasQueModifica: RelatedContentEntry[];
+    normasComplementarias: RelatedContentEntry[];
+    observaciones: RelatedContentEntry[];
+  } = {
+    normasQueModifica: [],
+    normasComplementarias: [],
+    observaciones: [],
+  };
+
+  const walk = (node: any) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    Object.entries(node).forEach(([rawKey, value]) => {
+      const key = normalizeKeyForSection(rawKey);
+      if (
+        SECTION_EXACT_KEYS.normasQueModifica.has(key) ||
+        matchesAny(key, SECTION_PATTERNS.normasQueModifica)
+      ) {
+        buckets.normasQueModifica.push(...extractContentEntriesFromNode(value, 'legislacion'));
+      }
+      if (
+        SECTION_EXACT_KEYS.normasComplementarias.has(key) ||
+        matchesAny(key, SECTION_PATTERNS.normasComplementarias)
+      ) {
+        buckets.normasComplementarias.push(...extractContentEntriesFromNode(value, 'legislacion'));
+      }
+      if (
+        SECTION_EXACT_KEYS.observaciones.has(key) ||
+        matchesAny(key, SECTION_PATTERNS.observaciones)
+      ) {
+        buckets.observaciones.push(...extractContentEntriesFromNode(value, 'legislacion'));
+      }
+      walk(value);
+    });
+  };
+
+  walk(content);
+
+  return {
+    normasQueModifica: dedupeRelatedItems(buckets.normasQueModifica),
+    normasComplementarias: dedupeRelatedItems(buckets.normasComplementarias),
+    observaciones: dedupeRelatedItems(buckets.observaciones),
+  };
 };
 
 const extractRelatedFalloEntries = (content: any) => {
@@ -481,21 +780,9 @@ const extractRelatedFalloEntries = (content: any) => {
 };
 
 const extractRelatedContentEntries = (content: any) => {
-  const results: Array<{
-    title: string;
-    subtitle?: string | null;
-    contentTypeHint: RelatedContentHint;
-    guid?: string | null;
-    sourceUrl?: string | null;
-  }> = [];
+  const results: RelatedContentEntry[] = [];
 
-  const pushEntry = (entry: {
-    title?: string | null;
-    subtitle?: string | null;
-    contentTypeHint?: RelatedContentHint;
-    guid?: string | null;
-    sourceUrl?: string | null;
-  }) => {
+  const pushEntry = (entry: RelatedContentEntry) => {
     const title = normalizeTagText(entry.title ?? null);
     if (!title || !isHumanReadableRelatedLine(title)) return;
     results.push({
@@ -746,6 +1033,22 @@ export const mapSaijSearchHit = (
     formatDateShort(typeof content['fecha'] === 'string' ? content['fecha'] : null),
   ], '. ');
 
+  const legislationMetaSubtitle = joinNonEmpty(
+    [
+      joinNonEmpty(
+        [
+          normalizeLooseString(content['tipo-norma']?.texto ?? content['tipo-norma'] ?? (content as any)?.tipo_norma?.texto),
+          normalizeLooseString(content['numero-sumario'] ?? content['numero-norma'] ?? (content as any)?.numero_norma),
+          formatDateShort(normalizeLooseString(content['fecha'])),
+        ],
+        '. '
+      ),
+      normalizeLooseString(content['estado']?.texto ?? content['estado']),
+      normalizeLooseString(content['jurisdiccion']?.provincia ?? content['jurisdiccion']?.descripcion),
+    ],
+    '. '
+  );
+
   const subtitle =
     (contentType === 'fallo'
       ? falloSubtitle
@@ -760,7 +1063,8 @@ export const mapSaijSearchHit = (
             publicacionDoctrina,
             fechaDoctrinaLabel,
           ], '. ')
-      : truncate(sumario ?? undefined, 180) ??
+      : legislationMetaSubtitle ??
+        truncate(sumario ?? undefined, 180) ??
         joinNonEmpty([
           content['tipo-norma']?.texto,
           content['numero-sumario'],
@@ -867,11 +1171,48 @@ const parseArticlesFromText = (text?: string | null) => {
   });
 };
 
+const extractLeadTextBeforeFirstArticle = (text?: string | null): string | null => {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = cleanStructuredText(text);
+  if (!normalized) return null;
+  const match = normalized.match(/(?:^|\n)\s*(?:ART[ÍI]CULO|ART\.?)\s*\d+/i);
+  if (!match || typeof match.index !== 'number') return null;
+  const before = normalized.slice(0, match.index).trim();
+  return before.length > 0 ? before : null;
+};
+
+const pickBestHeaderText = (...candidates: Array<string | null | undefined>): string | null => {
+  const unique = Array.from(
+    new Set(
+      candidates
+        .map((value) => (typeof value === 'string' ? cleanStructuredText(value) : ''))
+        .filter((value) => value.length > 0)
+    )
+  );
+  if (!unique.length) return null;
+
+  const score = (value: string) => {
+    let points = 0;
+    if (/\b(visto|considerando|tema|indice|encabezado)\b/i.test(value)) points += 20;
+    if (/\b(por ello|decreta|resuelve)\b/i.test(value)) points += 35;
+    points += Math.min(40, Math.floor(value.length / 120));
+    return points;
+  };
+
+  return unique
+    .sort((a, b) => {
+      const byScore = score(b) - score(a);
+      if (byScore !== 0) return byScore;
+      return b.length - a.length;
+    })[0] ?? null;
+};
+
 type MapDocOptions = { guid: string; fallbackHtml?: string; friendlyUrl?: string };
 
 export type ExtractedRenderable = {
   contentHtml?: string | null;
   contentText?: string | null;
+  leadText?: string | null;
   articles?: SaijArticle[];
   toc?: { label: string; anchor?: string }[];
   sourcePath?: string;
@@ -945,6 +1286,11 @@ const isLikelyArticleNode = (item: any, cleanedText: string, path: string) => {
   return Boolean(hasNumberField || pathSuggestsArticle || textStartsWithArticle);
 };
 
+const isLikelyNormasQueModificaArticle = (text: string) =>
+  /\b(der[óo]gase|sustit[uú]yese|modif[ií]case|incorp[oó]rase|reempl[aá]zase|supr[ií]mase|d[eé]jase\s+sin\s+efecto)\b/i.test(
+    text
+  );
+
 const buildStructuredArticleTitle = (item: any, headings: string[]) => {
   const ownTitle =
     normalizeHeadingText(item?.['titulo-articulo']) ??
@@ -987,8 +1333,34 @@ const deepFindRenderable = (obj: any, path = '', found: ExtractedRenderable = {}
 export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRenderable => {
   const result: ExtractedRenderable = {};
   const { segmento, directArticulo, anexo } = getStructuredArticleSources(raw);
+  const rootContent =
+    raw?.document?.content ??
+    raw?.data?.document?.content ??
+    raw?.content ??
+    raw?.data?.content ??
+    null;
   const articles: SaijArticle[] = [];
+  const leadBlocks: string[] = [];
   const seen = new Set<string>();
+  const seenLead = new Set<string>();
+
+  const pushLeadBlock = (value?: string | null, heading?: string | null) => {
+    if (!value || typeof value !== 'string') return;
+    let cleaned = cleanStructuredText(value);
+    if (!cleaned) return;
+    const leadOnly = extractLeadTextBeforeFirstArticle(cleaned);
+    if (leadOnly) {
+      cleaned = leadOnly;
+    }
+    if (!heading && /^\s*(?:art[íi]culo|art\.?)\s*\d+/i.test(cleaned)) {
+      return;
+    }
+    const block = heading && heading.trim().length > 0 ? `${heading.trim()}\n${cleaned}` : cleaned;
+    const dedupeKey = block.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!dedupeKey || seenLead.has(dedupeKey)) return;
+    seenLead.add(dedupeKey);
+    leadBlocks.push(block);
+  };
 
   const pushArticle = (item: any, idx: number, headings: string[], path: string) => {
     const rawText =
@@ -1003,10 +1375,34 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
     if (!isLikelyArticleNode(item, cleaned, path)) return;
     if (seen.has(cleaned)) return;
     seen.add(cleaned);
+    const articleNormativeSections =
+      item && typeof item === 'object'
+        ? extractNormativeSectionEntries(item)
+        : { normasQueModifica: [], normasComplementarias: [], observaciones: [] };
+    let articleNormasQueModificaEntries = articleNormativeSections.normasQueModifica;
+    let articleObservacionesEntries = articleNormativeSections.observaciones;
+    let articleRelatedContents =
+      item && typeof item === 'object'
+        ? extractRelatedContentEntries(item)
+        : [];
+    if (isLikelyNormasQueModificaArticle(cleaned)) {
+      if (!articleNormasQueModificaEntries.length) {
+        articleNormasQueModificaEntries = dedupeRelatedItems([
+          ...articleObservacionesEntries,
+          ...articleRelatedContents,
+        ]);
+        articleObservacionesEntries = [];
+        articleRelatedContents = [];
+      }
+    }
     articles.push({
       number: detectArticleNumber(cleaned, item, idx),
       title: buildStructuredArticleTitle(item, headings),
       text: cleaned,
+      normasQueModifica: articleNormasQueModificaEntries.map(toResolvedLinkedRef),
+      normasComplementarias: articleNormativeSections.normasComplementarias.map(toResolvedLinkedRef),
+      observaciones: articleObservacionesEntries.map(toResolvedLinkedRef),
+      relatedContents: articleRelatedContents.map(toResolvedLinkedRef),
     });
   };
 
@@ -1014,6 +1410,42 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
   const markStructuredPath = (path: string) => {
     if (!structuredPath) structuredPath = path;
   };
+
+  if (rootContent && typeof rootContent === 'object') {
+    const encabezadoRoot =
+      normalizeLooseString((rootContent as any)?.encabezado) ??
+      normalizeLooseString((rootContent as any)?.['encabezado']) ??
+      normalizeLooseString((rootContent as any)?.generalidades?.encabezado) ??
+      null;
+    const temaRoot =
+      normalizeLooseString((rootContent as any)?.tema) ??
+      normalizeLooseString((rootContent as any)?.descriptores?.tema) ??
+      normalizeLooseString((rootContent as any)?.generalidades?.sintesis) ??
+      null;
+    const decretaRoot =
+      extractLeadSectionText(
+        (rootContent as any)?.decreta ??
+          (rootContent as any)?.resuelve ??
+          (rootContent as any)?.['por-ello'] ??
+          (rootContent as any)?.por_ello
+      ) ??
+      null;
+    const indiceRoot =
+      normalizeLooseString((rootContent as any)?.indice) ??
+      null;
+    const vistoRoot =
+      extractLeadSectionText((rootContent as any)?.visto ?? (rootContent as any)?.vistos) ??
+      null;
+    const considerandoRoot =
+      extractLeadSectionText((rootContent as any)?.considerando ?? (rootContent as any)?.considerandos) ??
+      null;
+    pushLeadBlock(encabezadoRoot, 'Encabezado');
+    pushLeadBlock(indiceRoot, 'Indice');
+    pushLeadBlock(vistoRoot, 'Visto');
+    pushLeadBlock(considerandoRoot, 'Considerando');
+    pushLeadBlock(decretaRoot, 'Por ello');
+    pushLeadBlock(temaRoot, 'Tema');
+  }
 
   const walkStructured = (node: any, path: string, headings: string[] = []) => {
     if (!node) return;
@@ -1044,7 +1476,43 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
       normalizeHeadingText(node?.['titulo-capitulo'])
     );
 
+    const vistoValue =
+      extractLeadSectionText(node?.visto ?? node?.['visto'] ?? node?.vistos ?? node?.['vistos']) ??
+      null;
+    const considerandoValue =
+      extractLeadSectionText(
+        node?.considerando ?? node?.['considerando'] ?? node?.considerandos ?? node?.['considerandos']
+      ) ??
+      null;
+    const indiceValue =
+      normalizeLooseString(node?.indice) ??
+      normalizeLooseString(node?.['indice']) ??
+      null;
+    const encabezadoValue =
+      normalizeLooseString(node?.encabezado) ??
+      normalizeLooseString(node?.['encabezado']) ??
+      null;
+    const temaValue =
+      normalizeLooseString(node?.tema) ??
+      normalizeLooseString(node?.['tema']) ??
+      normalizeLooseString(node?.['tema-norma']) ??
+      normalizeLooseString(node?.tema_norma) ??
+      null;
+    const decretaValue =
+      extractLeadSectionText(node?.decreta ?? node?.resuelve ?? node?.['por-ello'] ?? node?.por_ello) ??
+      null;
+    pushLeadBlock(encabezadoValue, 'Encabezado');
+    pushLeadBlock(indiceValue, 'Indice');
+    pushLeadBlock(vistoValue, 'Visto');
+    pushLeadBlock(considerandoValue, 'Considerando');
+    pushLeadBlock(decretaValue, 'Por ello');
+    pushLeadBlock(temaValue, 'Tema');
+
     if (typeof node?.texto === 'string') {
+      const cleanedNodeText = cleanStructuredText(node.texto);
+      if (cleanedNodeText && !isLikelyArticleNode(node, cleanedNodeText, path)) {
+        pushLeadBlock(cleanedNodeText, null);
+      }
       pushArticle(node, 0, nextHeadings, path);
       markStructuredPath(path);
     }
@@ -1077,9 +1545,15 @@ export const extractRenderableContentFromViewDocument = (raw: any): ExtractedRen
   walkStructured(directArticulo, 'data.document.content.articulo');
   walkStructured(anexo, 'data.document.content.anexo');
 
+  const leadText = leadBlocks.length > 0 ? leadBlocks.join('\n\n') : null;
+  if (leadText) {
+    result.leadText = leadText;
+  }
+
   if (articles.length) {
     result.articles = articles;
-    result.contentText = articles.map((article) => article.text).join('\n\n');
+    const articlesText = articles.map((article) => article.text).join('\n\n');
+    result.contentText = leadText ? `${leadText}\n\n${articlesText}` : articlesText;
     result.contentHtml = null;
     result.sourcePath = structuredPath ?? 'data.document.content.articulo[]';
     result.fromArticulo = true;
@@ -1187,6 +1661,31 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   );
 
   const contentType = inferredDocContentType;
+  const documentSubtype =
+    (contentType === 'legislacion'
+      ? normalizeLooseString(
+          content['tipo-norma']?.texto ??
+            content['tipo-norma'] ??
+            (content as any)?.tipo_norma?.texto ??
+            (content as any)?.tipo_norma
+        )
+      : contentType === 'fallo'
+        ? normalizeLooseString(content['tipo-fallo'] ?? (content as any)?.tipo_fallo)
+        : contentType === 'sumario'
+          ? normalizeLooseString(content['tipo-sumario'] ?? (content as any)?.tipo_sumario) ?? 'Sumario de Fallo'
+          : contentType === 'dictamen'
+            ? 'Dictamen'
+            : contentType === 'doctrina'
+              ? 'Doctrina'
+              : null) ?? null;
+  const estadoVigencia =
+    normalizeLooseString(
+      content['estado']?.texto ?? content['estado'] ?? (content as any)?.estado_vigencia?.texto ?? (content as any)?.estado_vigencia
+    ) ?? null;
+  const tribunal = normalizeLooseString(content['tribunal'] ?? (content as any)?.tribunal) ?? null;
+  const fechaSentencia = normalizeLooseString(content['fecha'] ?? (content as any)?.fecha) ?? null;
+  const autor = contentType === 'doctrina' ? autorDoctrina ?? null : null;
+  const organismo = contentType === 'dictamen' ? dictamenOrganismo ?? null : null;
 
   const textoDoc =
     (content as any)?.['texto-doc'] ??
@@ -1229,6 +1728,32 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
                 : null,
         }
       : null;
+
+  const normativeSections = extractNormativeSectionEntries(content);
+  const normasQueModifica = normativeSections.normasQueModifica.map((item) => ({
+    title: item.title,
+    subtitle: item.subtitle ?? null,
+    contentTypeHint: item.contentTypeHint,
+    guid: item.guid ?? null,
+    sourceUrl: item.sourceUrl ?? null,
+    url: item.sourceUrl ?? buildSearchUrlByHint(item.title, item.contentTypeHint),
+  }));
+  const normasComplementarias = normativeSections.normasComplementarias.map((item) => ({
+    title: item.title,
+    subtitle: item.subtitle ?? null,
+    contentTypeHint: item.contentTypeHint,
+    guid: item.guid ?? null,
+    sourceUrl: item.sourceUrl ?? null,
+    url: item.sourceUrl ?? buildSearchUrlByHint(item.title, item.contentTypeHint),
+  }));
+  const observaciones = normativeSections.observaciones.map((item) => ({
+    title: item.title,
+    subtitle: item.subtitle ?? null,
+    contentTypeHint: item.contentTypeHint,
+    guid: item.guid ?? null,
+    sourceUrl: item.sourceUrl ?? null,
+    url: item.sourceUrl ?? buildSearchUrlByHint(item.title, item.contentTypeHint),
+  }));
 
   const relatedContents = extractRelatedContentEntries(content).map((item) => ({
     title: item.title,
@@ -1327,7 +1852,13 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
 
   const fromArticulo = deep.fromArticulo === true;
   const contentHtml = fromArticulo ? null : contentHtmlBase || deep.contentHtml || null;
-  const contentText = fromArticulo ? deep.contentText || null : contentTextBase || deep.contentText || null;
+  const contentText = fromArticulo ? deep.contentText || contentTextBase || null : contentTextBase || deep.contentText || null;
+  const headerText = pickBestHeaderText(
+    deep.leadText ?? null,
+    extractLeadTextBeforeFirstArticle(contentTextBase),
+    extractLeadTextBeforeFirstArticle(deep.contentText ?? null),
+    extractLeadTextBeforeFirstArticle(contentText)
+  );
   const articles = fromArticulo
     ? shouldRenderArticleBlocks
       ? deep.articles || []
@@ -1375,22 +1906,53 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     }
   }
 
+  const articleNormasQueModifica = dedupeLinkedRefs(
+    articlesFinal.flatMap((article: any) => (Array.isArray(article?.normasQueModifica) ? article.normasQueModifica : []))
+  );
+  const articleNormasComplementarias = dedupeLinkedRefs(
+    articlesFinal.flatMap((article: any) =>
+      Array.isArray(article?.normasComplementarias) ? article.normasComplementarias : []
+    )
+  );
+  const articleObservaciones = dedupeLinkedRefs(
+    articlesFinal.flatMap((article: any) => (Array.isArray(article?.observaciones) ? article.observaciones : []))
+  );
+  const articleRelatedContents = dedupeLinkedRefs(
+    articlesFinal.flatMap((article: any) => (Array.isArray(article?.relatedContents) ? article.relatedContents : []))
+  );
+
+  const normasQueModificaFinal = normasQueModifica.length > 0 ? normasQueModifica : articleNormasQueModifica;
+  const normasComplementariasFinal =
+    normasComplementarias.length > 0 ? normasComplementarias : articleNormasComplementarias;
+  const observacionesFinal = observaciones.length > 0 ? observaciones : articleObservaciones;
+  const relatedContentsFinal = relatedContents.length > 0 ? relatedContents : articleRelatedContents;
+
   return {
     guid: options.guid,
     title,
     subtitle,
     contentType,
+    documentSubtype,
+    estadoVigencia,
+    tribunal,
+    fechaSentencia,
+    autor,
+    organismo,
     metadata,
     contentHtml: contentHtmlFinal,
     contentText: contentTextFinal,
+    headerText,
     articles: articlesFinal,
     toc,
     friendlyUrl,
     sourceUrl: friendlyUrl,
     friendlyUrlParts: { raw: friendlyMeta, subdomain, description },
     attachment,
+    normasQueModifica: normasQueModificaFinal,
+    normasComplementarias: normasComplementariasFinal,
+    observaciones: observacionesFinal,
     relatedFallos,
-    relatedContents,
+    relatedContents: relatedContentsFinal,
     _contentSource: deep.sourcePath,
     _primaryTextWasRejectedAsMetadataOnly: primaryTextWasRejectedAsMetadataOnly,
     _rejectedTextReason: rejectedTextReason,
@@ -1419,14 +1981,39 @@ export const mergeDocumentContent = (
     ...baseDoc,
     title: baseDoc.title || fallbackDoc.title,
     subtitle: baseDoc.subtitle || fallbackDoc.subtitle,
+    documentSubtype: (baseDoc as any).documentSubtype || (fallbackDoc as any).documentSubtype || null,
+    estadoVigencia: (baseDoc as any).estadoVigencia || (fallbackDoc as any).estadoVigencia || null,
+    tribunal: (baseDoc as any).tribunal || (fallbackDoc as any).tribunal || null,
+    fechaSentencia: (baseDoc as any).fechaSentencia || (fallbackDoc as any).fechaSentencia || null,
+    autor: (baseDoc as any).autor || (fallbackDoc as any).autor || null,
+    organismo: (baseDoc as any).organismo || (fallbackDoc as any).organismo || null,
     metadata: Object.keys(baseDoc.metadata || {}).length ? baseDoc.metadata : fallbackDoc.metadata,
     contentHtml: baseDoc.contentHtml || fallbackDoc.contentHtml,
     contentText: baseDoc.contentText || fallbackDoc.contentText,
+    headerText: (baseDoc as any).headerText || (fallbackDoc as any).headerText || null,
     articles: baseDoc.articles && baseDoc.articles.length ? baseDoc.articles : fallbackDoc.articles,
     toc: baseDoc.toc && baseDoc.toc.length ? baseDoc.toc : fallbackDoc.toc,
     friendlyUrl: baseDoc.friendlyUrl || fallbackDoc.friendlyUrl,
     sourceUrl: baseDoc.sourceUrl || fallbackDoc.sourceUrl,
     attachment: (baseDoc as any).attachment || (fallbackDoc as any).attachment || null,
+    normasQueModifica:
+      Array.isArray((baseDoc as any).normasQueModifica) && (baseDoc as any).normasQueModifica.length
+        ? (baseDoc as any).normasQueModifica
+        : Array.isArray((fallbackDoc as any).normasQueModifica)
+          ? (fallbackDoc as any).normasQueModifica
+          : [],
+    normasComplementarias:
+      Array.isArray((baseDoc as any).normasComplementarias) && (baseDoc as any).normasComplementarias.length
+        ? (baseDoc as any).normasComplementarias
+        : Array.isArray((fallbackDoc as any).normasComplementarias)
+          ? (fallbackDoc as any).normasComplementarias
+          : [],
+    observaciones:
+      Array.isArray((baseDoc as any).observaciones) && (baseDoc as any).observaciones.length
+        ? (baseDoc as any).observaciones
+        : Array.isArray((fallbackDoc as any).observaciones)
+          ? (fallbackDoc as any).observaciones
+          : [],
     relatedFallos:
       Array.isArray((baseDoc as any).relatedFallos) && (baseDoc as any).relatedFallos.length
         ? (baseDoc as any).relatedFallos

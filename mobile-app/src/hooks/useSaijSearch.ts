@@ -36,8 +36,18 @@ export const useSaijSearch = ({
 
   const itemsRaw = query.data?.pages.flatMap((page) => page.hits) ?? [];
   const items = useMemo(() => {
-    if (contentType !== "sumario" && contentType !== "doctrina" && contentType !== "dictamen") return itemsRaw;
-    return [...itemsRaw].sort((a, b) => {
+    const deduped: typeof itemsRaw = [];
+    const seen = new Set<string>();
+    for (const item of itemsRaw) {
+      const guid = String(item?.guid || "").trim();
+      const key = guid || `${item.contentType}::${item.title}::${item.fecha || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(item);
+    }
+
+    if (contentType !== "sumario" && contentType !== "doctrina" && contentType !== "dictamen") return deduped;
+    return [...deduped].sort((a, b) => {
       const ta = a.fecha ? Date.parse(a.fecha) : Number.NEGATIVE_INFINITY;
       const tb = b.fecha ? Date.parse(b.fecha) : Number.NEGATIVE_INFINITY;
       return (Number.isNaN(tb) ? Number.NEGATIVE_INFINITY : tb) - (Number.isNaN(ta) ? Number.NEGATIVE_INFINITY : ta);
@@ -45,10 +55,12 @@ export const useSaijSearch = ({
   }, [contentType, itemsRaw]);
 
   const total = query.data?.pages[0]?.total ?? 0;
+  const facets = query.data?.pages[0]?.facets ?? [];
 
   return {
     items,
     total,
+    facets,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,

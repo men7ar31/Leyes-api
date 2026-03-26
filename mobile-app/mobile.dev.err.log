@@ -1,0 +1,5 @@
+  --non-interactive is not supported, use $CI=1 instead
+The following packages should be updated for best compatibility with the installed expo version:
+  react-native@0.81.4 - expected version: 0.81.5
+  @types/react@19.2.14 - expected version: ~19.1.10
+Your project may not work correctly until you install the expected versions of the packages.

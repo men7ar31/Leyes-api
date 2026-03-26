@@ -20,6 +20,11 @@ export const SearchFiltersSchema = z.object({
   numeroNorma: z.string().trim().optional(),
   tipoNorma: z.string().trim().optional(),
   jurisdiccion: JurisdiccionSchema.optional(),
+  facetFecha: z.string().trim().optional(),
+  facetJurisdiccion: z.string().trim().optional(),
+  facetEstadoVigencia: z.string().trim().optional(),
+  facetTema: z.string().trim().optional(),
+  facetOrganismo: z.string().trim().optional(),
   estadoVigencia: z.string().trim().optional(),
   titulo: z.string().trim().optional(),
   organismo: z.string().trim().optional(),
@@ -106,11 +111,24 @@ export type SaijArticle = {
   number: string;
   title: string | null;
   text: string;
+  normasQueModifica?: SaijLinkedDocumentRef[];
+  normasComplementarias?: SaijLinkedDocumentRef[];
+  observaciones?: SaijLinkedDocumentRef[];
+  relatedContents?: SaijLinkedDocumentRef[];
 };
 
 export type SaijTocItem = {
   label: string;
   anchor?: string;
+};
+
+export type SaijLinkedDocumentRef = {
+  title: string;
+  subtitle?: string | null;
+  contentTypeHint?: SaijContentType | 'todo' | 'unknown';
+  guid?: string | null;
+  sourceUrl?: string | null;
+  url: string;
 };
 
 export type SaijDocumentRaw = Record<string, unknown>;
@@ -120,9 +138,16 @@ export type SaijResolvedDocument = {
   title: string;
   subtitle?: string | null;
   contentType: SaijContentType;
+  documentSubtype?: string | null;
+  estadoVigencia?: string | null;
+  tribunal?: string | null;
+  fechaSentencia?: string | null;
+  autor?: string | null;
+  organismo?: string | null;
   metadata: Record<string, unknown>;
   contentHtml?: string | null;
   contentText?: string | null;
+  headerText?: string | null;
   articles: SaijArticle[];
   toc: SaijTocItem[];
   friendlyUrl?: string | null;
@@ -133,21 +158,11 @@ export type SaijResolvedDocument = {
     url?: string | null;
     fallbackUrl?: string | null;
   } | null;
-  relatedFallos?: Array<{
-    title: string;
-    subtitle?: string | null;
-    guid?: string | null;
-    sourceUrl?: string | null;
-    url: string;
-  }>;
-  relatedContents?: Array<{
-    title: string;
-    subtitle?: string | null;
-    contentTypeHint?: SaijContentType | 'todo' | 'unknown';
-    guid?: string | null;
-    sourceUrl?: string | null;
-    url: string;
-  }>;
+  normasQueModifica?: SaijLinkedDocumentRef[];
+  normasComplementarias?: SaijLinkedDocumentRef[];
+  observaciones?: SaijLinkedDocumentRef[];
+  relatedFallos?: SaijLinkedDocumentRef[];
+  relatedContents?: SaijLinkedDocumentRef[];
   fetchedAt: string;
   fromCache: boolean;
   hasRenderableContent: boolean;

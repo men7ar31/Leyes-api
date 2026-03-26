@@ -12,11 +12,19 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 19;
+const DOCUMENT_EXTRACTOR_VERSION = 25;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Fallo|Fecha|Organismo|Tribunal|Tema|Publicación|Estado de Vigencia|Autor|Jurisdicción';
+const LEGISLACION_FACET =
+  'Total|Tipo de Documento/Legislación|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
+const LEGISLACION_DECRETO_FACET =
+  'Total|Tipo de Documento/Legislación/Decreto|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
+const LEGISLACION_DNU_FACET =
+  'Total|Tipo de Documento/Legislación/Decreto/Decreto de Necesidad y Urgencia|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
+const LEGISLACION_RESOLUCION_FACET =
+  'Total|Tipo de Documento/Legislación/Resolución|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 
 const safeParseJson = (payload?: string | null) => {
   if (!payload) return null;
@@ -76,6 +84,7 @@ const isCurrentExtractorVersion = (doc: any) =>
 const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReason?: string | null; fromCache?: boolean }) => {
   let contentHtml = typeof mongo?.contentHtml === 'string' ? mongo.contentHtml : null;
   let contentText = typeof mongo?.contentText === 'string' ? mongo.contentText : null;
+  const headerText = typeof mongo?.headerText === 'string' ? mongo.headerText : null;
   let articles = Array.isArray(mongo?.articles) ? mongo.articles : [];
   const contentType = (mongo?.contentType as string | undefined) ?? 'legislacion';
   const hasArticles = Array.isArray(articles) && articles.length > 0;
@@ -98,15 +107,25 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     title: mongo.title,
     subtitle: typeof mongo.subtitle === 'string' ? mongo.subtitle : null,
     contentType: contentType as any,
+    documentSubtype: typeof mongo?.documentSubtype === 'string' ? mongo.documentSubtype : null,
+    estadoVigencia: typeof mongo?.estadoVigencia === 'string' ? mongo.estadoVigencia : null,
+    tribunal: typeof mongo?.tribunal === 'string' ? mongo.tribunal : null,
+    fechaSentencia: typeof mongo?.fechaSentencia === 'string' ? mongo.fechaSentencia : null,
+    autor: typeof mongo?.autor === 'string' ? mongo.autor : null,
+    organismo: typeof mongo?.organismo === 'string' ? mongo.organismo : null,
     extractorVersion: mongo.extractorVersion ?? 0,
     metadata: (mongo.metadata as any) ?? {},
     contentHtml,
     contentText,
+    headerText,
     articles,
     toc,
     friendlyUrl: mongo.friendlyUrl ?? null,
     sourceUrl: mongo.sourceUrl ?? null,
     attachment: (mongo.attachment as any) ?? null,
+    normasQueModifica: Array.isArray(mongo?.normasQueModifica) ? mongo.normasQueModifica : [],
+    normasComplementarias: Array.isArray(mongo?.normasComplementarias) ? mongo.normasComplementarias : [],
+    observaciones: Array.isArray(mongo?.observaciones) ? mongo.observaciones : [],
     relatedFallos: Array.isArray(mongo?.relatedFallos) ? mongo.relatedFallos : [],
     relatedContents: Array.isArray(mongo?.relatedContents) ? mongo.relatedContents : [],
     fetchedAt: mongo.fetchedAt?.toISOString?.() ?? new Date().toISOString(),
@@ -357,13 +376,339 @@ const resolveRelatedFallos = async (mappedDoc: any) => {
 
   return { ...mappedDoc, relatedFallos: resolved };
 };
+
+type NormLookup = { kind: 'ley' | 'decreto' | 'dnu' | 'resolucion'; number: string; year?: string | null };
+
+const buildNormLookupIdentityKey = (lookup: NormLookup) => {
+  const base = `${lookup.kind}:${Number(lookup.number)}`;
+  if (lookup.kind === 'ley') return base;
+  return lookup.year ? `${base}:${lookup.year}` : base;
+};
+
+const parseNormLookup = (title?: string | null): NormLookup | null => {
+  if (!title || typeof title !== 'string') return null;
+  const clean = title.replace(/\./g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!clean) return null;
+
+  const leySlash = clean.match(/\bley\b[^\d]*(\d{2,7})\s*\/\s*(\d{2,4})\b/i);
+  if (leySlash) return { kind: 'ley', number: leySlash[1], year: leySlash[2] };
+  const ley = clean.match(/\bley\b[^\d]*(\d{2,7})\b/i);
+  if (ley) return { kind: 'ley', number: ley[1] };
+
+  const dnuSlash = clean.match(/\bdnu\b[^\d]*(\d{1,7})\s*\/\s*(\d{2,4})\b/i);
+  if (dnuSlash) return { kind: 'dnu', number: dnuSlash[1], year: dnuSlash[2] };
+  const dnu = clean.match(/\bdnu\b[^\d]*(\d{1,7})\b/i);
+  if (dnu) return { kind: 'dnu', number: dnu[1] };
+
+  const decretoSlash = clean.match(/\bdecreto\b[^\d]*(\d{1,7})\s*\/\s*(\d{2,4})\b/i);
+  if (decretoSlash) {
+    return {
+      kind: clean.includes('necesidad y urgencia') ? 'dnu' : 'decreto',
+      number: decretoSlash[1],
+      year: decretoSlash[2],
+    };
+  }
+  const decreto = clean.match(/\bdecreto\b[^\d]*(\d{1,7})\b/i);
+  if (decreto) return { kind: clean.includes('necesidad y urgencia') ? 'dnu' : 'decreto', number: decreto[1] };
+  const decretoShort = clean.match(/\bdec\b[^\d]*(\d{1,7})\s*(\d{4})?\b/i);
+  if (decretoShort) return { kind: 'decreto', number: decretoShort[1], year: decretoShort[2] ?? null };
+
+  const resolSlash = clean.match(/\bresoluci[oó]n\b[^\d]*(\d{1,7})\s*\/\s*(\d{2,4})\b/i);
+  if (resolSlash) return { kind: 'resolucion', number: resolSlash[1], year: resolSlash[2] };
+  const resol = clean.match(/\bresoluci[oó]n\b[^\d]*(\d{1,7})\b/i);
+  if (resol) return { kind: 'resolucion', number: resol[1] };
+  const resolShort = clean.match(/\bres\b[^\d]*(\d{1,7})\s*(\d{4})?\b/i);
+  if (resolShort) return { kind: 'resolucion', number: resolShort[1], year: resolShort[2] ?? null };
+
+  return null;
+};
+
+const formatNormLookupLabel = (lookup: NormLookup) => {
+  const number = String(Number(lookup.number));
+  const yearSuffix = lookup.year ? `/${lookup.year}` : '';
+  if (lookup.kind === 'ley') return `Ley ${number}${yearSuffix}`;
+  if (lookup.kind === 'dnu') return `DNU ${number}${yearSuffix}`;
+  if (lookup.kind === 'resolucion') return `Resolución ${number}${yearSuffix}`;
+  return `Decreto ${number}${yearSuffix}`;
+};
+
+const isGenericNormLabel = (title?: string | null): boolean => {
+  if (!title || typeof title !== 'string') return false;
+  const clean = title.replace(/\s+/g, ' ').trim();
+  return /^(ley|decreto|dec|dnu|resoluci[oó]n|res)\b/i.test(clean) || /^\s*ley\s*n?[°º]?\s*\d+/i.test(clean);
+};
+
+const legislationFacetForLookupKind = (kind: 'ley' | 'decreto' | 'dnu' | 'resolucion') => {
+  if (kind === 'dnu') return LEGISLACION_DNU_FACET;
+  if (kind === 'decreto') return LEGISLACION_DECRETO_FACET;
+  if (kind === 'resolucion') return LEGISLACION_RESOLUCION_FACET;
+  return LEGISLACION_FACET;
+};
+
+const isLikelySaijGuid = (value?: string | null): boolean => {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('_')) return false;
+  return /^[0-9a-z]{6,}-[0-9a-z-]{8,}$/i.test(trimmed);
+};
+
+const pickBestLegislationMatch = (lookup: NormLookup, candidates: ReturnType<typeof mapSaijSearchHit>[]) => {
+  const byNumber = candidates.filter((c) => c.contentType === 'legislacion');
+  if (!byNumber.length) return null;
+
+  let normalized = byNumber.map((c) => ({
+    hit: c,
+    text: `${(c.title || '').toLowerCase()} ${(c.subtitle || '').toLowerCase()}`,
+  }));
+
+  if (lookup.year) {
+    const yearPattern = new RegExp(`(?:\\b|/)${lookup.year}\\b`);
+    const yearMatched = normalized.filter((x) => yearPattern.test(x.text));
+    if (yearMatched.length) normalized = yearMatched;
+  }
+
+  const byKind =
+    lookup.kind === 'dnu'
+      ? normalized.find((x) => x.text.includes('necesidad y urgencia') || x.text.includes(' dnu '))?.hit ??
+        normalized.find((x) => x.text.includes('decreto'))?.hit
+      : lookup.kind === 'decreto'
+        ? normalized.find((x) => x.text.includes('decreto') && !x.text.includes('resoluci'))?.hit
+        : lookup.kind === 'resolucion'
+          ? normalized.find((x) => x.text.includes('resoluci'))?.hit
+          : normalized.find((x) => x.text.includes('ley'))?.hit;
+  return byKind ?? byNumber[0];
+};
+
+const isRawNormCodeLabel = (value?: string | null): boolean => {
+  if (!value || typeof value !== 'string') return false;
+  const clean = value.replace(/\s+/g, ' ').trim().toUpperCase();
+  return /^(LEY|DNU|DEC(?:RETO)?|RES(?:OLUCION)?)\s+C?\s+\d{1,7}\b/.test(clean) && /\d{4}/.test(clean);
+};
+
+const parseNormLookupLoose = (value?: string | null): NormLookup | null => {
+  if (!value || typeof value !== 'string') return null;
+  const compact = value.replace(/[°º]/g, ' ').replace(/[./-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!compact) return null;
+
+  const ley = compact.match(/\bley\b[^\d]*(\d{2,7})(?:\s*\/\s*(\d{2,4}))?\b/i);
+  if (ley) return { kind: 'ley', number: ley[1], year: ley[2] ?? null };
+
+  const dnu = compact.match(/\bdnu\b[^\d]*(\d{1,7})(?:\s*\/\s*(\d{2,4}))?\b/i);
+  if (dnu) return { kind: 'dnu', number: dnu[1], year: dnu[2] ?? null };
+
+  const decreto = compact.match(/\bdecreto\b[^\d]*(\d{1,7})(?:\s*\/\s*(\d{2,4}))?\b/i);
+  if (decreto) {
+    return {
+      kind: compact.includes('necesidad y urgencia') ? 'dnu' : 'decreto',
+      number: decreto[1],
+      year: decreto[2] ?? null,
+    };
+  }
+
+  const resol = compact.match(/\bresoluci[oó]n\b[^\d]*(\d{1,7})(?:\s*\/\s*(\d{2,4}))?\b/i);
+  if (resol) return { kind: 'resolucion', number: resol[1], year: resol[2] ?? null };
+
+  const rawCode = compact.match(/^(ley|dnu|dec|decreto|res|resolucion)\s+c?\s*0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
+  if (rawCode) {
+    const kind =
+      rawCode[1].startsWith('ley')
+        ? 'ley'
+        : rawCode[1].startsWith('dnu')
+          ? 'dnu'
+          : rawCode[1].startsWith('res')
+            ? 'resolucion'
+            : 'decreto';
+    return { kind, number: rawCode[2], year: rawCode[3] ?? null };
+  }
+
+  return null;
+};
+
+const buildNormIdentityKey = (item: any): string | null => {
+  if (!item || typeof item !== 'object') return null;
+  const guid = typeof item.guid === 'string' ? item.guid.trim() : '';
+  if (isLikelySaijGuid(guid)) return `guid:${guid}`;
+
+  const fromTitle = parseNormLookupLoose(typeof item.title === 'string' ? item.title : null);
+  if (fromTitle) return buildNormLookupIdentityKey(fromTitle);
+
+  const fromSubtitle = parseNormLookupLoose(typeof item.subtitle === 'string' ? item.subtitle : null);
+  if (fromSubtitle) return buildNormLookupIdentityKey(fromSubtitle);
+
+  return null;
+};
+
+const scoreNormativeRef = (item: any): number => {
+  if (!item || typeof item !== 'object') return 0;
+  const title = typeof item.title === 'string' ? item.title.trim() : '';
+  const subtitle = typeof item.subtitle === 'string' ? item.subtitle.trim() : '';
+  const guid = typeof item.guid === 'string' ? item.guid.trim() : '';
+  const sourceUrl = typeof item.sourceUrl === 'string' ? item.sourceUrl.trim() : '';
+  const generic = isGenericNormLabel(title);
+  const rawCode = isRawNormCodeLabel(title);
+
+  let score = 0;
+  if (isLikelySaijGuid(guid)) score += 100;
+  if (!generic) score += 40;
+  if (subtitle) score += 25;
+  if (sourceUrl) score += 10;
+  if (title.length >= 30) score += 5;
+  if (rawCode) score -= 20;
+  return score;
+};
+
+const mergeNormativeRefs = (current: any, incoming: any) => {
+  const best = scoreNormativeRef(incoming) > scoreNormativeRef(current) ? { ...incoming } : { ...current };
+  const alt = best === incoming ? current : incoming;
+
+  if ((!best.subtitle || !String(best.subtitle).trim()) && alt?.subtitle) {
+    best.subtitle = alt.subtitle;
+  }
+  if ((!best.guid || !String(best.guid).trim()) && isLikelySaijGuid(alt?.guid)) {
+    best.guid = alt.guid;
+  }
+  if ((!best.sourceUrl || !String(best.sourceUrl).trim()) && alt?.sourceUrl) {
+    best.sourceUrl = alt.sourceUrl;
+  }
+  if ((!best.url || !String(best.url).trim()) && alt?.url) {
+    best.url = alt.url;
+  }
+  if ((!best.contentTypeHint || best.contentTypeHint === 'unknown') && alt?.contentTypeHint) {
+    best.contentTypeHint = alt.contentTypeHint;
+  }
+
+  return best;
+};
+
+const compactNormativeRefs = (value: any) => {
+  if (!Array.isArray(value) || !value.length) return Array.isArray(value) ? value : [];
+
+  const keyed = new Map<string, any>();
+  const order: string[] = [];
+  const loose = new Map<string, any>();
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    if (!title) continue;
+    const key = buildNormIdentityKey(item);
+    if (key) {
+      if (!keyed.has(key)) {
+        keyed.set(key, item);
+        order.push(key);
+      } else {
+        keyed.set(key, mergeNormativeRefs(keyed.get(key), item));
+      }
+      continue;
+    }
+
+    const looseKey = `${title.toLowerCase().replace(/\s+/g, ' ').trim()}::${String(item.subtitle || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()}`;
+    if (!loose.has(looseKey)) {
+      loose.set(looseKey, item);
+    } else {
+      loose.set(looseKey, mergeNormativeRefs(loose.get(looseKey), item));
+    }
+  }
+
+  const compacted = order.map((key) => keyed.get(key)).filter(Boolean);
+  loose.forEach((item) => compacted.push(item));
+  return compacted;
+};
+
+const enrichNormativeReferenceTitles = async (mappedDoc: any) => {
+  const lookupCache = new Map<string, ReturnType<typeof mapSaijSearchHit> | null>();
+  const maxUniqueLookups = 120;
+
+  const resolveItem = async (item: any) => {
+    if (!item || typeof item !== 'object') return item;
+    const hasGuid = isLikelySaijGuid(typeof item.guid === 'string' ? item.guid : null);
+    const title = typeof item.title === 'string' ? item.title : '';
+    if (hasGuid || !isGenericNormLabel(title)) return item;
+
+    const lookup = parseNormLookup(title);
+    if (!lookup) return item;
+    const key = `${lookup.kind}:${lookup.number}:${lookup.year ?? ''}`;
+
+    if (!lookupCache.has(key)) {
+      if (lookupCache.size >= maxUniqueLookups) {
+        lookupCache.set(key, null);
+      } else {
+        try {
+          const primaryFacet = legislationFacetForLookupKind(lookup.kind);
+          const fetchCandidates = async (facet: string) => {
+            const { raw } = await client.search({
+              r: `numero-norma:${lookup.number}`,
+              f: facet,
+              offset: 0,
+              pageSize: 10,
+            });
+            return getRawHits(raw).map((hit: any) => mapSaijSearchHit(hit, 'legislacion'));
+          };
+
+          let candidates = await fetchCandidates(primaryFacet);
+          let picked = pickBestLegislationMatch(lookup, candidates);
+          if (!picked && primaryFacet !== LEGISLACION_FACET) {
+            candidates = await fetchCandidates(LEGISLACION_FACET);
+            picked = pickBestLegislationMatch(lookup, candidates);
+          }
+
+          lookupCache.set(key, picked ?? null);
+        } catch {
+          lookupCache.set(key, null);
+        }
+      }
+    }
+
+    const resolved = lookupCache.get(key);
+    if (!resolved) {
+      return {
+        ...item,
+        title: formatNormLookupLabel(lookup),
+      };
+    }
+    const sourceUrl = resolved.sourceUrl ?? resolved.friendlyUrl ?? (item.sourceUrl || item.url || null);
+    return {
+      ...item,
+      title: resolved.title || item.title,
+      subtitle: resolved.subtitle || item.subtitle || null,
+      guid: resolved.guid || item.guid || null,
+      sourceUrl,
+      url: sourceUrl || item.url,
+    };
+  };
+
+  const resolveArray = async (value: any) => {
+    if (!Array.isArray(value) || !value.length) return Array.isArray(value) ? value : [];
+    const compacted = compactNormativeRefs(value);
+    const resolved = await Promise.all(compacted.map((item) => resolveItem(item)));
+    return compactNormativeRefs(resolved);
+  };
+
+  const out = { ...mappedDoc };
+  out.normasQueModifica = compactNormativeRefs(await resolveArray(out.normasQueModifica));
+  out.normasComplementarias = compactNormativeRefs(await resolveArray(out.normasComplementarias));
+  out.observaciones = compactNormativeRefs(await resolveArray(out.observaciones));
+  out.relatedContents = compactNormativeRefs(await resolveArray(out.relatedContents));
+  if (Array.isArray(out.articles) && out.articles.length) {
+    out.articles = await Promise.all(
+      out.articles.map(async (article: any) => ({
+        ...article,
+        normasQueModifica: compactNormativeRefs(await resolveArray(article?.normasQueModifica)),
+        normasComplementarias: compactNormativeRefs(await resolveArray(article?.normasComplementarias)),
+        observaciones: compactNormativeRefs(await resolveArray(article?.observaciones)),
+        relatedContents: compactNormativeRefs(await resolveArray(article?.relatedContents)),
+      }))
+    );
+  }
+  return out;
+};
 const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
   const unimplemented: Array<keyof typeof filters> = [
-    'tipoNorma',
-    'estadoVigencia',
+    // Estado/tema/organismo tienen versión facet implementada
     'titulo',
-    'organismo',
-    'tema',
     'fechaDesde',
     'fechaHasta',
     'idDoc',
@@ -380,7 +725,7 @@ export const SaijService = {
     console.log('DEBUG FLAG:', input.debug);
 
     const query = buildSaijQuery(input);
-    const cacheKey = `saij-search:v4:${hashString(JSON.stringify(query))}`;
+    const cacheKey = `saij-search:v5:${hashString(JSON.stringify(query))}`;
 
     if (!input.debug) {
       const cachedMem = cache.getSearch(query);
@@ -436,7 +781,12 @@ export const SaijService = {
         raw.total ??
         hits.length,
       hits,
-      facets: raw.facets ?? raw.facetas ?? [],
+      facets:
+        (raw as any)?.searchResults?.categoriesResultList ??
+        (raw as any)?.searchResults?.searchResults ??
+        raw.facets ??
+        raw.facetas ??
+        [],
     };
 
     if (input.debug) {
@@ -503,6 +853,7 @@ export const SaijService = {
       externalUrl = debugInfo.url;
       let mapped = mapSaijDocument(raw, { guid });
       mapped = await resolveRelatedFallos(mapped);
+      mapped = await enrichNormativeReferenceTitles(mapped);
       mapped = await enrichFalloWithRelatedSummary(mapped, raw);
       if (isDocumentContentEmpty(mapped)) {
         const relatedSumario = await resolveRelatedSumarioFallback(raw);
@@ -546,6 +897,7 @@ export const SaijService = {
           const fallbackDoc = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl: fallbackUrl });
           mapped = mergeDocumentContent(mapped, fallbackDoc);
           mapped = await resolveRelatedFallos(mapped);
+          mapped = await enrichNormativeReferenceTitles(mapped);
           mapped = await enrichFalloWithRelatedSummary(mapped, raw);
           fallbackSucceeded = !isDocumentContentEmpty(mapped);
           strategyUsed = 'view-document+friendly-url-fallback';
@@ -649,6 +1001,7 @@ export const SaijService = {
         externalUrl = dbg.finalUrl ?? dbg.url;
         let mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
         mapped = await resolveRelatedFallos(mapped);
+        mapped = await enrichNormativeReferenceTitles(mapped);
         mapped = await enrichFalloWithRelatedSummary(mapped, null);
         const mergedDoc = mapped;
         const fbSucceeded = !isDocumentContentEmpty(mergedDoc);
@@ -825,15 +1178,25 @@ async function finalizeDocument(
       source: 'saij',
       extractorVersion: DOCUMENT_EXTRACTOR_VERSION,
       contentType: mapped.contentType,
+      documentSubtype: typeof (mapped as any).documentSubtype === 'string' ? (mapped as any).documentSubtype : null,
+      estadoVigencia: typeof (mapped as any).estadoVigencia === 'string' ? (mapped as any).estadoVigencia : null,
+      tribunal: typeof (mapped as any).tribunal === 'string' ? (mapped as any).tribunal : null,
+      fechaSentencia: typeof (mapped as any).fechaSentencia === 'string' ? (mapped as any).fechaSentencia : null,
+      autor: typeof (mapped as any).autor === 'string' ? (mapped as any).autor : null,
+      organismo: typeof (mapped as any).organismo === 'string' ? (mapped as any).organismo : null,
       title: mapped.title,
       subtitle: safeSubtitle,
       metadata: mapped.metadata,
       contentHtml: mapped.contentHtml ?? null,
       contentText: mapped.contentText ?? null,
+      headerText: (mapped as any).headerText ?? null,
       articles: mapped.articles,
       toc: mapped.toc,
       sourceUrl: mapped.sourceUrl ?? null,
       attachment: (mapped as any).attachment ?? null,
+      normasQueModifica: Array.isArray((mapped as any).normasQueModifica) ? (mapped as any).normasQueModifica : [],
+      normasComplementarias: Array.isArray((mapped as any).normasComplementarias) ? (mapped as any).normasComplementarias : [],
+      observaciones: Array.isArray((mapped as any).observaciones) ? (mapped as any).observaciones : [],
       relatedFallos: Array.isArray((mapped as any).relatedFallos) ? (mapped as any).relatedFallos : [],
       relatedContents: Array.isArray((mapped as any).relatedContents) ? (mapped as any).relatedContents : [],
       friendlyUrl: mapped.friendlyUrl ?? null,

@@ -4,14 +4,15 @@ import { colors, spacing, typography } from "../constants/theme";
 type Props = {
   label: string;
   value?: string | null;
+  valueColor?: string;
 };
 
-export const MetadataRow = ({ label, value }: Props) => {
+export const MetadataRow = ({ label, value, valueColor }: Props) => {
   if (!value) return null;
   return (
     <View style={styles.row}>
       <Text style={styles.label}>{label}</Text>
-      <Text style={styles.value}>{value}</Text>
+      <Text style={[styles.value, valueColor ? { color: valueColor } : null]}>{value}</Text>
     </View>
   );
 };

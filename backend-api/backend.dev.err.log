@@ -1,0 +1,7 @@
+Error: listen EADDRINUSE: address already in use :::4000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at Server.listen (node:net:2067:7)
+    at start (C:\Users\medin\OneDrive\Escritorio\Ecommerce futruro\Apps\Leyes App\backend-api\src\server.ts:15:12)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+^C^C

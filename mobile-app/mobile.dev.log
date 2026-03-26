@@ -1,0 +1,10 @@
+
+> mobile-app@1.0.0 start
+> expo start --non-interactive --port 8081
+
+env: load .env
+env: export EXPO_PUBLIC_API_URL
+Starting project at C:\Users\medin\OneDrive\Escritorio\Ecommerce futruro\Apps\Leyes App\mobile-app
+Starting Metro Bundler
+Waiting on http://localhost:8081
+Logs for your project will appear below.
