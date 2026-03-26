@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -16,6 +16,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { useSaijSearch } from "../hooks/useSaijSearch";
+import { addFavoriteFromSearchHit } from "../services/favorites";
 import type {
   SaijFacetNode,
   SaijLegislationSubtype,
@@ -60,6 +61,25 @@ type RecentSearchItem = {
 };
 
 let recentSearchesStore: RecentSearchItem[] = [];
+
+const getDateTimestamp = (value?: string | null) => {
+  const raw = String(value || "").trim();
+  if (!raw) return Number.NaN;
+
+  const parsed = Date.parse(raw);
+  if (!Number.isNaN(parsed)) return parsed;
+
+  const dmy = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    const year = Number(dmy[3]);
+    const ts = Date.UTC(year, month - 1, day);
+    return Number.isNaN(ts) ? Number.NaN : ts;
+  }
+
+  return Number.NaN;
+};
 
 const initialState: FormState = {
   textoEnNorma: "",
@@ -216,6 +236,7 @@ export const SearchScreen = () => {
   const [appliedState, setAppliedState] = useState<FormState>(initialState);
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>(recentSearchesStore);
   const [hasSearched, setHasSearched] = useState(false);
+  const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
   const [collapseToken, setCollapseToken] = useState(0);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
   const [activeRefineSection, setActiveRefineSection] = useState<RefineSection | null>(null);
@@ -392,15 +413,60 @@ export const SearchScreen = () => {
     });
   };
 
+  const addHitToFavorites = async (item: (typeof items)[number]) => {
+    try {
+      const result = await addFavoriteFromSearchHit(item);
+      if (result.added) {
+        Alert.alert(
+          "Favorito agregado",
+          result.offlineReady ? "Quedo guardado para usar sin conexion." : "Quedo guardado, pero sin snapshot offline."
+        );
+      } else {
+        Alert.alert("Ya estaba en favoritos", "Ese documento ya estaba guardado.");
+      }
+    } catch {
+      Alert.alert("No se pudo agregar favorito", "Intenta nuevamente.");
+    }
+  };
+
   const onSearch = () => {
     const nextState = { ...formState };
     setAppliedState(nextState);
     setHasSearched(true);
+    setDateOrder("desc");
     setCollapseToken((prev) => prev + 1);
     if (hasSearched) {
       refetch();
     }
   };
+
+  const canSortByDate = useMemo(
+    () => items.some((item) => Number.isFinite(getDateTimestamp(item.fecha))),
+    [items]
+  );
+
+  const sortedItems = useMemo(() => {
+    if (!hasSearched || items.length <= 1 || !canSortByDate) return items;
+
+    return items
+      .map((item, index) => ({
+        item,
+        index,
+        ts: getDateTimestamp(item.fecha),
+      }))
+      .sort((a, b) => {
+        const aHasDate = Number.isFinite(a.ts);
+        const bHasDate = Number.isFinite(b.ts);
+        if (aHasDate && bHasDate) {
+          const diff = dateOrder === "desc" ? b.ts - a.ts : a.ts - b.ts;
+          if (Math.abs(diff) > 0) return diff;
+        } else if (aHasDate !== bHasDate) {
+          return aHasDate ? -1 : 1;
+        }
+        return a.index - b.index;
+      })
+      .map((entry) => entry.item);
+  }, [canSortByDate, dateOrder, hasSearched, items]);
 
   const renderEmpty = () => {
     if (!hasSearched) {
@@ -429,7 +495,7 @@ export const SearchScreen = () => {
   return (
     <SafeAreaView style={styles.safeArea}>
       <FlatList
-        data={hasSearched ? items : []}
+        data={hasSearched ? sortedItems : []}
         keyExtractor={(item, index) => `${String(item.guid || "no-guid")}-${index}`}
         renderItem={({ item }) => (
           <ResultCard
@@ -445,6 +511,9 @@ export const SearchScreen = () => {
                 pathname: "/detail/[guid]",
                 params: { guid: item.guid },
               });
+            }}
+            onSwipeRight={() => {
+              addHitToFavorites(item);
             }}
           />
         )}
@@ -670,7 +739,18 @@ export const SearchScreen = () => {
               </View>
             ) : null}
 
-            {hasSearched ? <Text style={styles.totalText}>{total} resultados</Text> : null}
+            {hasSearched ? (
+              <View style={styles.resultsMetaRow}>
+                <Text style={styles.totalText}>{total} resultados</Text>
+                {canSortByDate ? (
+                  <Pressable style={styles.sortToggleButton} onPress={() => setDateOrder((prev) => (prev === "desc" ? "asc" : "desc"))}>
+                    <Text style={styles.sortToggleButtonText}>
+                      A/Z · {dateOrder === "desc" ? "Mas recientes" : "Mas antiguas"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
 
             {isError && items.length > 0 ? (
               <ErrorState message={(error as Error)?.message || "Fallo la busqueda."} onRetry={refetch} />
@@ -871,6 +951,25 @@ const styles = StyleSheet.create({
   totalText: {
     color: colors.muted,
     fontSize: typography.small,
+  },
+  resultsMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  sortToggleButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: colors.card,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+  },
+  sortToggleButtonText: {
+    color: colors.primaryStrong,
+    fontSize: typography.small,
+    fontWeight: "700",
   },
   recentsCard: {
     backgroundColor: colors.card,

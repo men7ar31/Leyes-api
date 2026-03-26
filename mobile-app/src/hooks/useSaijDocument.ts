@@ -1,12 +1,27 @@
-﻿import { useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { getSaijDocument } from "../services/saijApi";
+import { getFavoriteByGuid } from "../services/favorites";
 import type { SaijDocumentResponse } from "../types/saij";
 
 export const useSaijDocument = (guid?: string) => {
   const query = useQuery<SaijDocumentResponse>({
     queryKey: ["saij-document", guid],
     enabled: !!guid,
-    queryFn: () => getSaijDocument(guid as string),
+    queryFn: async () => {
+      const key = guid as string;
+      try {
+        return await getSaijDocument(key);
+      } catch (error) {
+        const fallback = await getFavoriteByGuid(key);
+        if (fallback?.snapshot) {
+          return {
+            ok: true,
+            document: fallback.snapshot,
+          };
+        }
+        throw error;
+      }
+    },
   });
 
   return {
@@ -17,3 +32,4 @@ export const useSaijDocument = (guid?: string) => {
     refetch: query.refetch,
   };
 };
+

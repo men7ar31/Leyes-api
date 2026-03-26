@@ -1,4 +1,5 @@
-﻿import { Pressable, StyleSheet, Text, View } from "react-native";
+﻿import { PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
+import { useRef, useState } from "react";
 import type { SaijSearchHit } from "../types/saij";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate, maybeTruncate } from "../utils/format";
@@ -6,9 +7,13 @@ import { cleanText, formatDate, maybeTruncate } from "../utils/format";
 type Props = {
   hit: SaijSearchHit;
   onPress: () => void;
+  onSwipeRight?: () => void;
 };
 
-export const ResultCard = ({ hit, onPress }: Props) => {
+export const ResultCard = ({ hit, onPress, onSwipeRight }: Props) => {
+  const didSwipeRef = useRef(false);
+  const [isFavoriteActionVisible, setIsFavoriteActionVisible] = useState(false);
+
   const jurisdictionSource = cleanText(
     [hit.jurisdiccion || "", hit.subtitle || "", hit.title || ""].filter(Boolean).join(" ")
   );
@@ -74,30 +79,97 @@ export const ResultCard = ({ hit, onPress }: Props) => {
 
   const summary = hit.summary ? maybeTruncate(cleanText(hit.summary), 180) : null;
 
+  const swipeResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+      if (!onSwipeRight) return false;
+      const absDx = Math.abs(gestureState.dx);
+      const absDy = Math.abs(gestureState.dy);
+      return absDx > 18 && absDx > absDy * 1.2;
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (!onSwipeRight) return;
+      if (gestureState.dx >= 56) {
+        didSwipeRef.current = true;
+        setIsFavoriteActionVisible(true);
+        setTimeout(() => {
+          didSwipeRef.current = false;
+        }, 150);
+      } else if (gestureState.dx <= -38) {
+        setIsFavoriteActionVisible(false);
+      }
+    },
+  });
+
   return (
-    <Pressable style={styles.card} onPress={onPress}>
-      <View style={styles.badges}>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{hit.contentType}</Text>
-        </View>
-        {jurisdictionBadge ? (
-          <View style={styles.badgeJurisdiction}>
-            <Text style={styles.badgeJurisdictionText}>{jurisdictionBadge}</Text>
+    <View style={styles.swipeContainer} {...swipeResponder.panHandlers}>
+      {isFavoriteActionVisible && onSwipeRight ? (
+        <Pressable
+          style={styles.favoriteActionBtn}
+          onPress={() => {
+            onSwipeRight();
+            setIsFavoriteActionVisible(false);
+          }}
+        >
+          <Text style={styles.favoriteActionText}>★</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        style={[styles.card, isFavoriteActionVisible ? styles.cardShifted : null]}
+        onPress={() => {
+          if (didSwipeRef.current) return;
+          if (isFavoriteActionVisible) {
+            setIsFavoriteActionVisible(false);
+            return;
+          }
+          onPress();
+        }}
+      >
+        <View style={styles.badges}>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{hit.contentType}</Text>
           </View>
-        ) : null}
-        <View style={styles.badgeMuted}>
-          <Text style={styles.badgeMutedText}>SAIJ</Text>
+          {jurisdictionBadge ? (
+            <View style={styles.badgeJurisdiction}>
+              <Text style={styles.badgeJurisdictionText}>{jurisdictionBadge}</Text>
+            </View>
+          ) : null}
+          <View style={styles.badgeMuted}>
+            <Text style={styles.badgeMutedText}>SAIJ</Text>
+          </View>
         </View>
-      </View>
-      <Text style={styles.title}>{cleanText(hit.title)}</Text>
-      {hit.subtitle ? <Text style={styles.subtitle}>{cleanText(hit.subtitle)}</Text> : null}
-      {metaParts.length > 0 ? <Text style={styles.meta}>{metaParts.join("  •  ")}</Text> : null}
-      {summary ? <Text style={styles.summary}>{summary}</Text> : null}
-    </Pressable>
+        <Text style={styles.title}>{cleanText(hit.title)}</Text>
+        {hit.subtitle ? <Text style={styles.subtitle}>{cleanText(hit.subtitle)}</Text> : null}
+        {metaParts.length > 0 ? <Text style={styles.meta}>{metaParts.join("  •  ")}</Text> : null}
+        {summary ? <Text style={styles.summary}>{summary}</Text> : null}
+      </Pressable>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
+  swipeContainer: {
+    position: "relative",
+  },
+  favoriteActionBtn: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 48,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "#BBD2FF",
+    backgroundColor: "#EAF2FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  favoriteActionText: {
+    color: colors.primaryStrong,
+    fontSize: 20,
+    lineHeight: 22,
+    fontWeight: "700",
+  },
   card: {
     backgroundColor: colors.card,
     borderRadius: radius.lg,
@@ -105,6 +177,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     gap: spacing.xs,
+  },
+  cardShifted: {
+    marginLeft: 54,
   },
   badges: {
     flexDirection: "row",

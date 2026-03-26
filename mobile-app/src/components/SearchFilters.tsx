@@ -66,6 +66,7 @@ type Props = {
 };
 
 const contentOptions: Array<{ label: string; value: SaijSearchRequest["contentType"] }> = [
+  { label: "Todo", value: "todo" },
   { label: "Legislacion", value: "legislacion" },
   { label: "Jurisprudencia", value: "jurisprudencia" },
   { label: "Dictamenes", value: "dictamen" },

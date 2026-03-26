@@ -1,20 +1,33 @@
-﻿import { Alert, Linking, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
-import { useRef, useState } from "react";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+﻿import { Alert, Linking, PanResponder, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import RenderHTML from "react-native-render-html";
 import { useSaijDocument } from "../hooks/useSaijDocument";
 import { LoadingState } from "../components/LoadingState";
 import { ErrorState } from "../components/ErrorState";
-import { DetailHeader } from "../components/DetailHeader";
 import { MetadataRow } from "../components/MetadataRow";
 import { ContentUnavailableCard } from "../components/ContentUnavailableCard";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
 import { searchSaij } from "../services/saijApi";
+import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 
 const DETAIL_SCROLL_OFFSET_BY_GUID: Record<string, number> = {};
+const TOUCH_HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 } as const;
+const MAX_SHARE_MESSAGE_CHARS = 90000;
+
+const getMetadataNormNumber = (metadata: any) => {
+  if (!metadata || typeof metadata !== "object") return null;
+  const keys = ["numeroNorma", "numero_norma", "numero", "nroNorma", "nro_norma", "numeroLey", "numero_ley"];
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+};
 
 const getMetadataDate = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") return null;
@@ -32,6 +45,70 @@ const getMetadataDate = (metadata: any) => {
     if (typeof value === "string") return value;
   }
   return null;
+};
+
+const getMetadataStringValue = (metadata: any, keys: string[]) => {
+  if (!metadata || typeof metadata !== "object") return null;
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+};
+
+const getPublicationDateFromMetadata = (metadata: any) =>
+  getMetadataStringValue(metadata, [
+    "fechaPublicacion",
+    "fecha_publicacion",
+    "fecha-publicacion",
+    "fechaBoletin",
+    "fecha_boletin",
+    "fechaPublicacionBoletin",
+    "fecha_publicacion_boletin",
+    "fecha",
+  ]);
+
+const getLastModificationDateFromMetadata = (metadata: any) =>
+  getMetadataStringValue(metadata, [
+    "fechaUltimaModificacion",
+    "fecha_ultima_modificacion",
+    "ultimaModificacion",
+    "ultima_modificacion",
+    "fechaUltimaActualizacion",
+    "fecha_ultima_actualizacion",
+    "fechaActualizacion",
+    "fecha_actualizacion",
+    "ultimaReforma",
+    "ultima_reforma",
+    "fechaReforma",
+    "fecha_reforma",
+    "actualizado",
+  ]);
+
+const normalizeCitationOptionalValue = (raw?: string | null) => {
+  const value = cleanText(raw);
+  if (!value) return null;
+  const unknownValues = new Set([
+    "no informada",
+    "no informado",
+    "sin informacion",
+    "sin información",
+    "desconocida",
+    "desconocido",
+    "s/d",
+    "sd",
+    "n/a",
+    "na",
+    "null",
+    "undefined",
+    "-",
+    "--",
+  ]);
+  if (unknownValues.has(value.toLowerCase())) return null;
+  const formatted = cleanText(formatDate(value) || value);
+  if (!formatted || unknownValues.has(formatted.toLowerCase())) return null;
+  return formatted;
 };
 
 const getContentTypeLabel = (value?: string | null) => {
@@ -343,9 +420,12 @@ const ARTICLE_SUFFIX_BY_CODE: Record<number, string> = {
 const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: number) => {
   const raw = String(value || "").trim();
   if (!raw) return String(fallbackIndex || "");
-  const compact = raw.replace(/\s+/g, " ");
+  const compact = raw
+    .replace(/[.:;,\-–—]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const annex = compact.match(/^a0*(\d+)$/i);
+  const annex = compact.match(/^a\s*0*(\d+)$/i);
   if (annex) return String(Number(annex[1]));
 
   const withCode = compact.match(/^(\d+)\s+0?(\d{1,2})$/);
@@ -366,6 +446,76 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
   return compact.toLowerCase();
 };
 
+const normalizeArticleSelectorToken = (value?: string | null) => {
+  const normalized = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[°º]/g, " ")
+    .replace(/[\[\]{}()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return "";
+  const withoutPrefix = normalized.replace(/^(art(?:iculo)?\.?\s*)+/i, "").trim();
+  const annex = withoutPrefix.match(/^a\s*0*(\d+)$/i);
+  if (annex) return String(Number(annex[1]));
+  return withoutPrefix.replace(/\s+/g, " ").trim();
+};
+
+const buildArticleShareKey = (articleIndex: number, displayNumber: string) => {
+  const token = normalizeArticleSelectorToken(displayNumber);
+  return `${articleIndex}:${token || cleanText(displayNumber)}`;
+};
+
+const parseArticleSelectorInput = (value: string) => {
+  const chunks = value
+    .split(/[,\n;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const requests: Array<{ raw: string; normalized: string }> = [];
+  const pushRequest = (raw: string) => {
+    const normalized = normalizeArticleSelectorToken(raw);
+    if (normalized) requests.push({ raw: cleanText(raw), normalized });
+  };
+
+  for (const chunk of chunks) {
+    const range = chunk.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        const step = start <= end ? 1 : -1;
+        const distance = Math.abs(end - start);
+        if (distance <= 150) {
+          for (let current = start; step > 0 ? current <= end : current >= end; current += step) {
+            pushRequest(String(current));
+          }
+          continue;
+        }
+      }
+    }
+
+    const whitespaceSplit = chunk.split(/\s+/).filter(Boolean);
+    const allNumeric = whitespaceSplit.length > 1 && whitespaceSplit.every((part) => /^\d+$/.test(part));
+    if (allNumeric) {
+      whitespaceSplit.forEach((part) => pushRequest(part));
+      continue;
+    }
+
+    pushRequest(chunk);
+  }
+
+  const seen = new Set<string>();
+  const deduped: Array<{ raw: string; normalized: string }> = [];
+  for (const request of requests) {
+    const key = request.normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(request);
+  }
+  return deduped;
+};
+
 const countMatchesInText = (text: string, query: string) => {
   const source = String(text || "");
   const needle = String(query || "").trim();
@@ -380,29 +530,44 @@ const countMatchesInText = (text: string, query: string) => {
 };
 
 const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) => {
-  const trimmed = text.trimStart();
-  if (!trimmed) return trimmed;
-  const genericPattern =
-    /^[\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
-  const genericCleaned = trimmed.replace(genericPattern, "").trimStart();
-  if (genericCleaned.length > 0 && genericCleaned !== trimmed) return genericCleaned;
+  let working = text.trimStart();
+  if (!working) return working;
 
-  if (!articleNumber || typeof articleNumber !== "string") return trimmed;
+  const genericPattern =
+    /^[\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
+
+  for (let i = 0; i < 4; i += 1) {
+    const next = working.replace(genericPattern, "").trimStart();
+    if (!next || next === working) break;
+    working = next;
+  }
+
+  if (!articleNumber || typeof articleNumber !== "string") return working;
   const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber);
+  const rawCandidate = articleNumber
+    .replace(/[.:;,\-–—]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   const candidates = Array.from(
-    new Set([articleNumber.trim(), normalizedDisplay].filter((token) => token && token.length > 0))
+    new Set([rawCandidate, normalizedDisplay].filter((token) => token && token.length > 0))
   );
   for (const candidate of candidates) {
-    const escapedNumber = escapeRegExp(candidate);
-    if (!escapedNumber) continue;
+    let numberPattern = "";
+    const annexCandidate = candidate.match(/^a\s*0*(\d+)$/i);
+    if (annexCandidate) {
+      numberPattern = `a\\s*0*${Number(annexCandidate[1])}`;
+    } else {
+      numberPattern = escapeRegExp(candidate).replace(/\\\s+/g, "\\s+");
+    }
+    if (!numberPattern) continue;
     const pattern = new RegExp(
-      `^[\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${escapedNumber}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
+      `^[\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
       "i"
     );
-    const cleaned = trimmed.replace(pattern, "").trimStart();
-    if (cleaned.length > 0 && cleaned !== trimmed) return cleaned;
+    const cleaned = working.replace(pattern, "").trimStart();
+    if (cleaned.length > 0 && cleaned !== working) return cleaned;
   }
-  return trimmed;
+  return working;
 };
 
 const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
@@ -444,19 +609,28 @@ export const DetailScreen = () => {
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
 
   const { document, isLoading, isError, error, refetch } = useSaijDocument(guidParam);
-  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
   const [docSearchQuery, setDocSearchQuery] = useState("");
   const [searchMatchPointer, setSearchMatchPointer] = useState(0);
   const [textZoom, setTextZoom] = useState(0.94);
+  const [isDocSearchOpen, setIsDocSearchOpen] = useState(false);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const [isMultiShareMode, setIsMultiShareMode] = useState(false);
+  const [multiShareArticleInput, setMultiShareArticleInput] = useState("");
+  const [selectedArticleShareKeys, setSelectedArticleShareKeys] = useState<Record<string, boolean>>({});
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [isFavoriteBusy, setIsFavoriteBusy] = useState(false);
   const [activeArticlePreviewIndex, setActiveArticlePreviewIndex] = useState<number>(-1);
+  const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
-  const [stickySectionTranslateY, setStickySectionTranslateY] = useState(0);
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrollRef = useRef<ScrollView | null>(null);
+  const docSearchInputRef = useRef<TextInput | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  const pendingScrollYRef = useRef(0);
   const articleOffsetsRef = useRef<Record<number, number>>({});
   const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null }>>({});
   const articleStickySortedRef = useRef<Array<{ y: number; label: string }>>([]);
@@ -469,10 +643,7 @@ export const DetailScreen = () => {
   const lastDocGuidRef = useRef<string | null>(null);
   const isScrubbingArticlesRef = useRef(false);
   const scrubActiveIndexRef = useRef<number>(-1);
-  const stickySectionCacheRef = useRef<{ label: string | null; translateY: number }>({
-    label: null,
-    translateY: 0,
-  });
+  const stickySectionCacheRef = useRef<{ label: string | null }>({ label: null });
 
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
@@ -485,14 +656,46 @@ export const DetailScreen = () => {
 
   const setActiveSectionSafe = (nextSection: string) => {
     setArticleScrubbing(false);
-    stickySectionCacheRef.current = { label: null, translateY: 0 };
+    stickySectionCacheRef.current = { label: null };
     setStickySectionLabel(null);
-    setStickySectionTranslateY(0);
+    setIsHeaderMenuOpen(false);
+    if (nextSection !== "texto") setIsDocSearchOpen(false);
     setActiveSection(nextSection);
   };
 
   const zoomOut = () => setTextZoom((prev) => Math.max(0.82, Math.round((prev - 0.06) * 100) / 100));
   const zoomIn = () => setTextZoom((prev) => Math.min(1.34, Math.round((prev + 0.06) * 100) / 100));
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsMultiShareMode(false);
+    setMultiShareArticleInput("");
+    setSelectedArticleShareKeys({});
+  }, [guidParam]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadFavoriteState = async () => {
+      if (!guidParam) {
+        if (!cancelled) setIsFavorite(false);
+        return;
+      }
+      const value = await isFavoriteGuid(guidParam);
+      if (!cancelled) setIsFavorite(value);
+    };
+    loadFavoriteState();
+    return () => {
+      cancelled = true;
+    };
+  }, [guidParam]);
 
   if (!guidParam) {
     return (
@@ -538,11 +741,17 @@ export const DetailScreen = () => {
   const bodyFontSize = Math.round(typography.body * clampedTextZoom * 10) / 10;
   const bodyLineHeight = Math.max(18, Math.round(bodyFontSize * 1.45));
   const headingFontSize = Math.round(typography.subtitle * clampedTextZoom * 10) / 10;
-  const stickySearchTop = Math.max(insets.top + 8, 56);
-  const stickySearchHeight = 44;
-  const stickySectionHeight = 34;
-  const stickySectionTop = stickySearchTop + stickySearchHeight + 6;
+  const stickyViewportOffset = 26;
+  const jumpTopOffset = spacing.md;
   const subtitleText = getSubtitleText(document.subtitle);
+  const headerTitleText = (() => {
+    const clean = cleanText(document.title || "").replace(/\r/g, "\n");
+    const firstLine = clean
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    return firstLine || clean;
+  })();
   const cleanedContentText = cleanContentText(document.contentText);
   const extractedRelated =
     document.contentType === "sumario"
@@ -660,6 +869,48 @@ export const DetailScreen = () => {
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
   const searchableArticles = Array.isArray(document.articles) ? document.articles : [];
+  const articleShareItems = searchableArticles.map((article, index) => {
+    const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
+    const parsedTitle = parseArticleTitleContext(article.title);
+    const articleLeadTitle = `ARTICULO ${displayNumber}${parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"}`;
+    const articleBody = stripRepeatedArticleLead(
+      cleanContentText(article.text) ||
+        (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
+      article.number
+    );
+    return {
+      key: buildArticleShareKey(index, displayNumber),
+      index,
+      displayNumber,
+      articleNumberRaw: cleanText(article.number),
+      articleLeadTitle,
+      articleBody,
+    };
+  });
+  const articleShareKeySet = new Set(articleShareItems.map((item) => item.key));
+  const selectedShareCount = Object.keys(selectedArticleShareKeys).reduce(
+    (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
+    0
+  );
+  const articleShareIndex = (() => {
+    const map = new Map<string, string[]>();
+    const registerAlias = (alias: string, key: string) => {
+      const token = normalizeArticleSelectorToken(alias);
+      if (!token) return;
+      const current = map.get(token) || [];
+      if (!current.includes(key)) current.push(key);
+      map.set(token, current);
+    };
+    articleShareItems.forEach((item) => {
+      registerAlias(item.displayNumber, item.key);
+      registerAlias(item.articleNumberRaw, item.key);
+      const directNumeric = item.displayNumber.match(/^(\d+)$/)?.[1];
+      if (directNumeric) registerAlias(directNumeric, item.key);
+      registerAlias(`art ${item.displayNumber}`, item.key);
+      registerAlias(`articulo ${item.displayNumber}`, item.key);
+    });
+    return map;
+  })();
   const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
   const articleSearchMatches = (() => {
     if (!normalizedSearchQuery || !searchableArticles.length) return [] as number[];
@@ -684,7 +935,7 @@ export const DetailScreen = () => {
   const activeSearchArticleIndex =
     articleSearchMatches.length > 0 ? articleSearchMatches[normalizedSearchPointer] : -1;
 
-  const jumpToY = (y: number, animated = true, topOffset = 130) => {
+  const jumpToY = (y: number, animated = true, topOffset = jumpTopOffset) => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTo({ y: Math.max(0, y - topOffset), animated });
   };
@@ -697,7 +948,7 @@ export const DetailScreen = () => {
     }
   ) => {
     const y = articleOffsetsRef.current[articleIndex];
-    if (typeof y === "number") jumpToY(y, options?.animated ?? true, options?.topOffset ?? 130);
+    if (typeof y === "number") jumpToY(y, options?.animated ?? true, options?.topOffset ?? jumpTopOffset);
   };
 
   const getTargetArticleIndexFromLocationY = (locationY: number) => {
@@ -716,7 +967,7 @@ export const DetailScreen = () => {
       setActiveArticlePreviewIndex(nextIndex);
       const measuredY = articleOffsetsRef.current[nextIndex];
       if (typeof measuredY === "number" && scrollRef.current) {
-        scrollRef.current.scrollTo({ y: Math.max(0, measuredY - 96), animated: false });
+        scrollRef.current.scrollTo({ y: Math.max(0, measuredY - jumpTopOffset), animated: false });
       } else {
         const maxScroll = Math.max(0, scrollContentHeightRef.current - scrollViewportHeightRef.current);
         const fallbackY = (nextIndex / Math.max(1, searchableArticles.length - 1)) * maxScroll;
@@ -748,7 +999,7 @@ export const DetailScreen = () => {
     articleStickyMetaRef.current = {};
     articleStickySortedRef.current = [];
     articleStickyDirtyRef.current = true;
-    stickySectionCacheRef.current = { label: null, translateY: 0 };
+    stickySectionCacheRef.current = { label: null };
     restoredGuidRef.current = null;
     scrollOffsetRef.current = DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] ?? 0;
     scrubActiveIndexRef.current = -1;
@@ -792,51 +1043,41 @@ export const DetailScreen = () => {
 
   const updateStickySectionByScroll = (scrollY: number) => {
     if (selectedSection !== "texto") {
-      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
-        stickySectionCacheRef.current = { label: null, translateY: 0 };
+      if (stickySectionCacheRef.current.label !== null) {
+        stickySectionCacheRef.current = { label: null };
         setStickySectionLabel(null);
-        setStickySectionTranslateY(0);
       }
       return;
     }
 
     const entries = getSortedStickyEntries();
     if (!entries.length) {
-      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
-        stickySectionCacheRef.current = { label: null, translateY: 0 };
+      if (stickySectionCacheRef.current.label !== null) {
+        stickySectionCacheRef.current = { label: null };
         setStickySectionLabel(null);
-        setStickySectionTranslateY(0);
       }
       return;
     }
 
-    const anchorY = scrollY + stickySectionTop;
+    const anchorY = scrollY + stickyViewportOffset;
     let currentIndex = -1;
     for (let i = 0; i < entries.length; i += 1) {
       if (entries[i].y <= anchorY) currentIndex = i;
       else break;
     }
     if (currentIndex < 0) {
-      if (stickySectionCacheRef.current.label !== null || stickySectionCacheRef.current.translateY !== 0) {
-        stickySectionCacheRef.current = { label: null, translateY: 0 };
+      if (stickySectionCacheRef.current.label !== null) {
+        stickySectionCacheRef.current = { label: null };
         setStickySectionLabel(null);
-        setStickySectionTranslateY(0);
       }
       return;
     }
 
     const current = entries[currentIndex];
-    const next = entries[currentIndex + 1];
-    const distanceToNext = next ? next.y - anchorY : Number.POSITIVE_INFINITY;
-    const translateY = distanceToNext < stickySectionHeight ? distanceToNext - stickySectionHeight : 0;
 
     if (stickySectionCacheRef.current.label !== current.label) {
       stickySectionCacheRef.current.label = current.label;
       setStickySectionLabel(current.label);
-    }
-    if (Math.abs(stickySectionCacheRef.current.translateY - translateY) > 0.5) {
-      stickySectionCacheRef.current.translateY = translateY;
-      setStickySectionTranslateY(translateY);
     }
   };
 
@@ -854,7 +1095,12 @@ export const DetailScreen = () => {
   const handleDetailScroll = (y: number) => {
     scrollOffsetRef.current = y;
     if (document.guid) DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] = y;
-    updateStickySectionByScroll(y);
+    pendingScrollYRef.current = y;
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      updateStickySectionByScroll(pendingScrollYRef.current);
+    });
   };
 
   const restoreSavedScrollIfNeeded = () => {
@@ -878,6 +1124,33 @@ export const DetailScreen = () => {
     if (isScrubbingArticlesRef.current) setArticleScrubbing(false);
     scrubActiveIndexRef.current = -1;
   };
+
+  const switchSectionBySwipe = (direction: "prev" | "next") => {
+    if (sectionItems.length <= 1) return;
+    const currentIndex = sectionItems.findIndex((item) => item.key === selectedSection);
+    if (currentIndex < 0) return;
+    const delta = direction === "next" ? 1 : -1;
+    const nextIndex = Math.max(0, Math.min(sectionItems.length - 1, currentIndex + delta));
+    if (nextIndex === currentIndex) return;
+    const nextKey = sectionItems[nextIndex]?.key;
+    if (!nextKey) return;
+    setActiveSectionSafe(nextKey);
+  };
+
+  const sectionSwipeResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+      if (sectionItems.length <= 1) return false;
+      const absDx = Math.abs(gestureState.dx);
+      const absDy = Math.abs(gestureState.dy);
+      return absDx > 22 && absDx > absDy * 1.35;
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (gestureState.dx <= -42) switchSectionBySwipe("next");
+      else if (gestureState.dx >= 42) switchSectionBySwipe("prev");
+    },
+  });
 
   const articleScrubberResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => selectedSection === "texto" && searchableArticles.length > 0,
@@ -1045,6 +1318,211 @@ export const DetailScreen = () => {
     Alert.alert("No se pudo abrir el relacionado", "No encontramos el contenido relacionado en SAIJ en este momento.");
   };
 
+  const citationLawName = cleanText(document.title || "Norma");
+  const citationLawNumber = getMetadataNormNumber(document.metadata);
+  const citationPublicationRaw = getPublicationDateFromMetadata(document.metadata);
+  const citationLastModRaw = getLastModificationDateFromMetadata(document.metadata);
+  const citationPublication = normalizeCitationOptionalValue(citationPublicationRaw);
+  const citationLastModification = normalizeCitationOptionalValue(citationLastModRaw);
+  const citationLawNumberLabel = citationLawNumber ? `Ley ${citationLawNumber}` : "Ley s/n";
+
+  const buildCitation = (articleNumber?: string | null) => {
+    const art = String(articleNumber || "").trim();
+    const parts = [
+      art ? `art. ${art}` : null,
+      citationLawName,
+      citationLawNumberLabel,
+      citationPublication ? `publicacion: ${citationPublication}` : null,
+      citationLastModification ? `ultima modificacion: ${citationLastModification}` : null,
+    ].filter(Boolean);
+    return `(${parts.join(", ")})`;
+  };
+
+  const shareTextPayload = async (title: string, message: string) => {
+    try {
+      await Share.share({ title, message });
+    } catch {
+      Alert.alert("No se pudo compartir", "No fue posible abrir el menu de compartir en este momento.");
+    }
+  };
+
+  const trimShareText = (text: string, maxLength = MAX_SHARE_MESSAGE_CHARS) => {
+    if (text.length <= maxLength) return text;
+    const safeLength = Math.max(0, maxLength - 64);
+    return `${text.slice(0, safeLength).trimEnd()}\n\n[Contenido recortado por tamano para compartir]`;
+  };
+
+  const shareWholeDocument = async () => {
+    const heading = cleanText(document.title || "Norma");
+    const citation = buildCitation();
+    const basePrefix = `${heading}\n\n`;
+    const baseSuffix = `\n\n${citation}`;
+    const maxBodyLength = Math.max(1200, MAX_SHARE_MESSAGE_CHARS - basePrefix.length - baseSuffix.length);
+
+    let body = "";
+    let wasTrimmed = false;
+    if (document.articles && document.articles.length > 0) {
+      const articleBlocks: string[] = [];
+      for (let index = 0; index < document.articles.length; index += 1) {
+        const article = document.articles[index];
+        const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
+        const parsedTitle = parseArticleTitleContext(article.title);
+        const lead = `ARTICULO ${displayNumber}${parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"}`;
+        const text = stripRepeatedArticleLead(
+          cleanContentText(article.text) ||
+            (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
+          article.number
+        );
+        const block = `${lead}\n${text}\n${buildCitation(displayNumber)}`;
+        const projected = articleBlocks.length > 0 ? `${articleBlocks.join("\n\n")}\n\n${block}` : block;
+        if (projected.length > maxBodyLength) {
+          wasTrimmed = true;
+          if (articleBlocks.length === 0) {
+            articleBlocks.push(trimShareText(block, maxBodyLength));
+          }
+          break;
+        }
+        articleBlocks.push(block);
+      }
+      body = articleBlocks.join("\n\n");
+      if (wasTrimmed) {
+        body = `${body}\n\n[Se omitieron articulos por tamano al compartir]`;
+      }
+    } else {
+      body = [leadText, extractedRelated.mainText].filter(Boolean).join("\n\n");
+      if (body.length > maxBodyLength) {
+        body = trimShareText(body, maxBodyLength);
+      }
+    }
+
+    const message = trimShareText(`${heading}\n\n${body}\n\n${citation}`.trim());
+    await shareTextPayload(heading, message);
+  };
+
+  const shareSingleArticle = async (params: {
+    displayNumber: string;
+    articleLeadTitle: string;
+    articleBody: string;
+  }) => {
+    const heading = cleanText(document.title || "Norma");
+    const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
+      params.displayNumber
+    )}`.trim();
+    await shareTextPayload(`${heading} · Art. ${params.displayNumber}`, message);
+  };
+
+  const toggleArticleSelectedForShare = (articleKey: string) => {
+    setSelectedArticleShareKeys((prev) => {
+      const next = { ...prev };
+      if (next[articleKey]) delete next[articleKey];
+      else next[articleKey] = true;
+      return next;
+    });
+  };
+
+  const clearMultiShareSelection = () => {
+    setSelectedArticleShareKeys({});
+    setMultiShareArticleInput("");
+  };
+
+  const resolveArticleKeysByInputToken = (normalizedToken: string) => {
+    const exact = articleShareIndex.get(normalizedToken) || [];
+    if (exact.length > 0) return exact;
+
+    const numericToken = normalizedToken.match(/^(\d+)$/)?.[1];
+    if (!numericToken) return [] as string[];
+
+    const candidates = new Set<string>();
+    for (const [alias, keys] of articleShareIndex.entries()) {
+      if (alias.startsWith(`${numericToken} `) || alias.endsWith(` ${numericToken}`)) {
+        keys.forEach((key) => candidates.add(key));
+      }
+    }
+    return Array.from(candidates);
+  };
+
+  const addArticlesToSelectionFromInput = () => {
+    const requests = parseArticleSelectorInput(multiShareArticleInput);
+    if (!requests.length) {
+      Alert.alert("Numeros invalidos", "Ingresa articulos separados por coma. Ejemplo: 1, 2, 10-12.");
+      return;
+    }
+
+    const next = { ...selectedArticleShareKeys };
+    const missing: string[] = [];
+    let added = 0;
+    requests.forEach((request) => {
+      const keys = resolveArticleKeysByInputToken(request.normalized);
+      if (!keys.length) {
+        missing.push(request.raw);
+        return;
+      }
+      keys.forEach((key) => {
+        if (!next[key]) {
+          next[key] = true;
+          added += 1;
+        }
+      });
+    });
+
+    if (added === 0 && missing.length > 0) {
+      Alert.alert("Sin coincidencias", `No encontramos articulos para: ${missing.slice(0, 4).join(", ")}`);
+      return;
+    }
+
+    setSelectedArticleShareKeys(next);
+    setMultiShareArticleInput(missing.length > 0 ? missing.join(", ") : "");
+  };
+
+  const shareSelectedArticles = async () => {
+    const selected = articleShareItems.filter((item) => selectedArticleShareKeys[item.key]);
+    if (!selected.length) {
+      Alert.alert("Sin articulos seleccionados", "Selecciona articulos desde la ley o por numero para compartir.");
+      return;
+    }
+    const heading = cleanText(document.title || "Norma");
+    const body = selected
+      .map(
+        (item) =>
+          `${item.articleLeadTitle}\n${item.articleBody}\n${buildCitation(item.displayNumber)}`
+      )
+      .join("\n\n");
+    const message = `${heading}\n\n${body}`.trim();
+    await shareTextPayload(`${heading} · ${selected.length} articulos`, message);
+  };
+
+  const toggleFavoriteCurrentDocument = async () => {
+    if (isFavoriteBusy) return;
+    try {
+      setIsFavoriteBusy(true);
+      const result = await toggleFavoriteFromDocument(document);
+      setIsFavorite(result.isFavorite);
+      Alert.alert(
+        result.isFavorite ? "Agregado a favoritos" : "Quitado de favoritos",
+        result.isFavorite
+          ? "Este documento quedo guardado y disponible offline."
+          : "Se removio este documento de favoritos."
+      );
+    } catch {
+      Alert.alert("No se pudo actualizar favorito", "Intenta nuevamente.");
+    } finally {
+      setIsFavoriteBusy(false);
+    }
+  };
+
+  const toggleDocSearch = () => {
+    if (selectedSection !== "texto") return;
+    setIsDocSearchOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeout(() => {
+          docSearchInputRef.current?.focus();
+        }, 30);
+      }
+      return next;
+    });
+  };
+
   const renderContent = () => {
     if (document.hasRenderableContent === false) {
       return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
@@ -1072,6 +1550,8 @@ export const DetailScreen = () => {
             const articleTextWithoutDuplicateLabel = stripRepeatedArticleLead(articleText, article.number);
             const parsedTitle = parseArticleTitleContext(article.title);
             const displayArticleNumber = normalizeArticleNumberDisplay(article.number, index + 1);
+            const articleShareKey = buildArticleShareKey(index, displayArticleNumber);
+            const isArticleSelectedForShare = !!selectedArticleShareKeys[articleShareKey];
             const articleLeadTitle = `ARTICULO ${displayArticleNumber}${
               parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"
             }`;
@@ -1131,8 +1611,45 @@ export const DetailScreen = () => {
                     isSearchActive ? styles.articleCardSearchActive : null,
                   ]}
                 >
+                  <View style={styles.articleLeadRow}>
+                    <Text style={[styles.articleLeadInline, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }]}>
+                      {articleLeadTitle}
+                    </Text>
+                    <View style={styles.articleLeadActions}>
+                      <Pressable
+                        style={[
+                          styles.articleShareBtn,
+                          isMultiShareMode && isArticleSelectedForShare ? styles.articleShareBtnActive : null,
+                        ]}
+                        onPress={() => {
+                          if (!isMultiShareMode) {
+                            setIsMultiShareMode(true);
+                            setSelectedArticleShareKeys({ [articleShareKey]: true });
+                            return;
+                          }
+                          toggleArticleSelectedForShare(articleShareKey);
+                        }}
+                        onLongPress={() =>
+                          shareSingleArticle({
+                            displayNumber: displayArticleNumber,
+                            articleLeadTitle,
+                            articleBody: articleTextWithoutDuplicateLabel,
+                          })
+                        }
+                        hitSlop={TOUCH_HIT_SLOP}
+                      >
+                        <Text
+                          style={[
+                            styles.articleShareBtnText,
+                            isMultiShareMode && isArticleSelectedForShare ? styles.articleShareBtnTextActive : null,
+                          ]}
+                        >
+                          {isMultiShareMode ? (isArticleSelectedForShare ? "✓" : "+") : "↗"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
                   <Text style={[styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }]}>
-                    <Text style={styles.articleLeadInline}>{articleLeadTitle} </Text>
                     {renderHighlightedInline(articleTextWithoutDuplicateLabel, `${articleKey}-body`)}
                   </Text>
                   {articlePanels.length > 0 ? (
@@ -1142,7 +1659,8 @@ export const DetailScreen = () => {
                           <Pressable
                             style={styles.articlePanelButton}
                             onPress={() => toggleArticlePanel(panel.key)}
-                            hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                            hitSlop={TOUCH_HIT_SLOP}
+
                           >
                             <Text style={styles.articlePanelButtonText}>
                               {panel.label} ({panel.items.length})
@@ -1155,6 +1673,8 @@ export const DetailScreen = () => {
                                   key={`${panel.key}-${itemIndex}-${item.title}-${item.guid || "na"}`}
                                   style={styles.relatedLinkButton}
                                   onPress={() => openRelatedContent(item)}
+                                  hitSlop={TOUCH_HIT_SLOP}
+
                                 >
                                   <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
                                   {item.subtitle ? (
@@ -1222,10 +1742,11 @@ export const DetailScreen = () => {
     return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
   };
 
-  const renderDocSearchBar = (floating = false) => (
-    <View style={[styles.docSearchBar, floating ? styles.docSearchBarFloating : null]}>
+  const renderDocSearchBar = () => (
+    <View style={styles.docSearchBar}>
       <Text style={styles.docSearchIcon}>⌕</Text>
       <TextInput
+        ref={docSearchInputRef}
         value={docSearchQuery}
         onChangeText={(value) => {
           setDocSearchQuery(value);
@@ -1245,48 +1766,215 @@ export const DetailScreen = () => {
             setDocSearchQuery("");
             setSearchMatchPointer(0);
           }}
+          hitSlop={TOUCH_HIT_SLOP}
+
         >
           <Text style={styles.docSearchClearBtnText}>×</Text>
         </Pressable>
       ) : null}
       {articleSearchMatches.length > 0 ? (
         <View style={styles.docSearchNav}>
-          <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch}>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
             <Text style={styles.docSearchNavBtnText}>‹</Text>
           </Pressable>
-          <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch}>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
             <Text style={styles.docSearchNavBtnText}>›</Text>
           </Pressable>
         </View>
       ) : null}
-      <View style={styles.zoomControls}>
-        <Pressable style={styles.zoomBtn} onPress={zoomOut}>
-          <Text style={styles.zoomBtnText}>A-</Text>
-        </Pressable>
-        <Pressable style={styles.zoomBtn} onPress={zoomIn}>
-          <Text style={styles.zoomBtnText}>A+</Text>
-        </Pressable>
-      </View>
+      <Pressable
+        style={styles.docSearchCloseBtn}
+        onPress={() => {
+          setIsDocSearchOpen(false);
+          setDocSearchQuery("");
+          setSearchMatchPointer(0);
+        }}
+        hitSlop={TOUCH_HIT_SLOP}
+      >
+        <Text style={styles.docSearchCloseBtnText}>✕</Text>
+      </Pressable>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <View
+        style={styles.fixedHeaderWrap}
+        onLayout={(event) => {
+          const nextHeight = Math.ceil(event.nativeEvent.layout.height);
+          if (nextHeight > 0 && nextHeight !== fixedHeaderHeight) {
+            setFixedHeaderHeight(nextHeight);
+            requestAnimationFrame(() => updateStickySectionByScroll(scrollOffsetRef.current));
+          }
+        }}
+      >
+        <View style={styles.headerMainRow}>
+          <View style={styles.headerTextWrap}>
+            <Text style={styles.headerTitle}>{headerTitleText}</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <Pressable
+              style={[styles.headerActionBtn, isHeaderMenuOpen ? styles.headerActionBtnActive : null]}
+              onPress={() => setIsHeaderMenuOpen((prev) => !prev)}
+              hitSlop={TOUCH_HIT_SLOP}
+            >
+              <Text style={[styles.headerActionBtnText, isHeaderMenuOpen ? styles.headerActionBtnTextActive : null]}>⋯</Text>
+            </Pressable>
+          </View>
+        </View>
+        {isHeaderMenuOpen ? (
+          <View style={styles.headerMenu}>
+            {selectedSection === "texto" ? (
+              <Pressable
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setIsHeaderMenuOpen(false);
+                  toggleDocSearch();
+                }}
+              >
+                <Text style={styles.headerMenuItemText}>{isDocSearchOpen ? "Ocultar buscador" : "Buscar en documento"}</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={styles.headerMenuItem}
+              onPress={() => {
+                setIsHeaderMenuOpen(false);
+                toggleFavoriteCurrentDocument();
+              }}
+            >
+              <Text style={styles.headerMenuItemText}>
+                {isFavoriteBusy ? "Actualizando favorito..." : isFavorite ? "Quitar de favoritos" : "Agregar a favoritos"}
+              </Text>
+            </Pressable>
+            {selectedSection === "texto" && articleShareItems.length > 0 ? (
+              <Pressable
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  const next = !isMultiShareMode;
+                  setIsMultiShareMode(next);
+                  if (!next) {
+                    setSelectedArticleShareKeys({});
+                    setMultiShareArticleInput("");
+                  } else if (scrollRef.current) {
+                    scrollRef.current.scrollTo({ y: 0, animated: true });
+                  }
+                  setIsHeaderMenuOpen(false);
+                }}
+              >
+                <Text style={styles.headerMenuItemText}>
+                  {isMultiShareMode ? "Ocultar seleccion multiple" : "Seleccionar varios articulos"}
+                </Text>
+              </Pressable>
+            ) : null}
+            {isMultiShareMode ? (
+              <Pressable
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setIsHeaderMenuOpen(false);
+                  shareSelectedArticles();
+                }}
+              >
+                <Text style={styles.headerMenuItemText}>Compartir seleccion ({selectedShareCount})</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={styles.headerMenuItem}
+              onPress={() => {
+                setIsHeaderMenuOpen(false);
+                zoomOut();
+              }}
+            >
+              <Text style={styles.headerMenuItemText}>Achicar letra (A-)</Text>
+            </Pressable>
+            <Pressable
+              style={styles.headerMenuItem}
+              onPress={() => {
+                setIsHeaderMenuOpen(false);
+                zoomIn();
+              }}
+            >
+              <Text style={styles.headerMenuItemText}>Agrandar letra (A+)</Text>
+            </Pressable>
+            <Pressable
+              style={styles.headerMenuItem}
+              onPress={() => {
+                setIsHeaderMenuOpen(false);
+                shareWholeDocument();
+              }}
+            >
+              <Text style={styles.headerMenuItemText}>Compartir ley completa</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {selectedSection === "texto" && stickySectionLabel ? (
+          <View style={styles.stickySectionWrap}>
+            <Text style={[styles.stickySectionText, { fontSize: Math.max(13, bodyFontSize - 0.2) }]}>
+              {stickySectionLabel}
+            </Text>
+          </View>
+        ) : null}
+        {selectedSection === "texto" && isMultiShareMode && articleShareItems.length > 0 ? (
+          <View style={styles.multiShareTopBar}>
+            <View style={styles.multiShareTopHeader}>
+              <Text style={styles.multiShareTopTitle}>Seleccionados: {selectedShareCount}</Text>
+              <View style={styles.multiShareTopActions}>
+                <Pressable
+                  style={[styles.multiShareTopShareBtn, selectedShareCount < 1 ? styles.multiShareTopShareBtnDisabled : null]}
+                  onPress={shareSelectedArticles}
+                  disabled={selectedShareCount < 1}
+                  hitSlop={TOUCH_HIT_SLOP}
+                >
+                  <Text style={styles.multiShareTopShareText}>Compartir todos</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.multiShareTopCloseBtn}
+                  onPress={() => {
+                    setIsMultiShareMode(false);
+                    clearMultiShareSelection();
+                  }}
+                  hitSlop={TOUCH_HIT_SLOP}
+                >
+                  <Text style={styles.multiShareTopCloseText}>Cerrar</Text>
+                </Pressable>
+              </View>
+            </View>
+            <View style={styles.multiShareTopInputRow}>
+              <TextInput
+                value={multiShareArticleInput}
+                onChangeText={setMultiShareArticleInput}
+                onSubmitEditing={addArticlesToSelectionFromInput}
+                placeholder="Agregar por nro: 1, 2, 10-12"
+                placeholderTextColor={colors.muted}
+                style={styles.multiShareTopInput}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="done"
+              />
+              <Pressable style={styles.multiShareTopAddBtn} onPress={addArticlesToSelectionFromInput} hitSlop={TOUCH_HIT_SLOP}>
+                <Text style={styles.multiShareTopAddText}>Agregar</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+        {selectedSection === "texto" && isDocSearchOpen ? (
+          <View style={styles.headerSearchWrap}>{renderDocSearchBar()}</View>
+        ) : null}
+      </View>
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={[styles.container, selectedSection === "texto" ? { paddingTop: spacing.md + stickySearchHeight + 8 } : null]}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="always"
+        {...sectionSwipeResponder.panHandlers}
         onLayout={(event) => {
           scrollViewportHeightRef.current = event.nativeEvent.layout.height;
         }}
         onScroll={(event) => handleDetailScroll(event.nativeEvent.contentOffset.y)}
-        scrollEventThrottle={48}
+        scrollEventThrottle={16}
         onContentSizeChange={(_, contentHeight) => {
           scrollContentHeightRef.current = contentHeight;
           restoreSavedScrollIfNeeded();
         }}
       >
-        <DetailHeader title={document.title} subtitle={subtitleText} />
-
         <View style={styles.metaCard}>
           <MetadataRow label="Tipo" value={typeLabel} />
           <MetadataRow label={secondaryMeta.label} value={secondaryMeta.value} valueColor={secondaryMeta.color} />
@@ -1296,6 +1984,8 @@ export const DetailScreen = () => {
           <Pressable
             style={styles.attachmentButton}
             onPress={() => Linking.openURL(attachmentUrl)}
+            hitSlop={TOUCH_HIT_SLOP}
+
           >
             <Text style={styles.attachmentButtonText}>{attachmentLabel}</Text>
           </Pressable>
@@ -1307,7 +1997,8 @@ export const DetailScreen = () => {
               key={item.key}
               style={[styles.sectionTab, selectedSection === item.key ? styles.sectionTabActive : null]}
               onPress={() => setActiveSectionSafe(item.key)}
-              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+              hitSlop={TOUCH_HIT_SLOP}
+
             >
               <Text style={[styles.sectionTabText, selectedSection === item.key ? styles.sectionTabTextActive : null]}>
                 {item.label}
@@ -1337,6 +2028,8 @@ export const DetailScreen = () => {
                 key={`normas-comp-${index}-${item.title}-${item.guid || "na"}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedContent(item)}
+                hitSlop={TOUCH_HIT_SLOP}
+
               >
                 <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
                 {item.subtitle ? (
@@ -1355,6 +2048,8 @@ export const DetailScreen = () => {
                 key={`normas-mod-${index}-${item.title}-${item.guid || "na"}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedContent(item)}
+                hitSlop={TOUCH_HIT_SLOP}
+
               >
                 <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
                 {item.subtitle ? (
@@ -1373,6 +2068,8 @@ export const DetailScreen = () => {
                 key={`obs-${index}-${item.title}-${item.guid || "na"}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedContent(item)}
+                hitSlop={TOUCH_HIT_SLOP}
+
               >
                 <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
                 {item.subtitle ? (
@@ -1391,6 +2088,8 @@ export const DetailScreen = () => {
                 key={`rel-${index}-${item.title}-${item.guid || "na"}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedContent(item)}
+                hitSlop={TOUCH_HIT_SLOP}
+
               >
                 <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
                 {item.subtitle ? (
@@ -1409,6 +2108,8 @@ export const DetailScreen = () => {
                 key={`fallo-aplica-${index}-${fallo.title}`}
                 style={styles.relatedLinkButton}
                 onPress={() => openRelatedFallo(fallo)}
+                hitSlop={TOUCH_HIT_SLOP}
+
               >
                 <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(fallo.title))}</Text>
                 {fallo.subtitle ? (
@@ -1419,30 +2120,13 @@ export const DetailScreen = () => {
           </View>
         ) : null}
       </ScrollView>
-      {selectedSection === "texto" ? (
-        <View pointerEvents="box-none" style={[styles.floatingDocSearchWrap, { top: stickySearchTop }]}>
-          <View>{renderDocSearchBar(true)}</View>
-        </View>
-      ) : null}
-      {selectedSection === "texto" && stickySectionLabel ? (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.stickySectionWrap,
-            {
-              top: stickySectionTop,
-              transform: [{ translateY: stickySectionTranslateY }],
-            },
-          ]}
-        >
-          <Text style={[styles.stickySectionText, { fontSize: Math.max(13, bodyFontSize - 0.2) }]}>
-            {stickySectionLabel}
-          </Text>
-        </View>
-      ) : null}
       {selectedSection === "texto" && searchableArticles.length > 0 ? (
         <View
-          style={[styles.articleScrubberTrack, isScrubbingArticles ? styles.articleScrubberTrackActive : null]}
+          style={[
+            styles.articleScrubberTrack,
+            { top: fixedHeaderHeight + 10 },
+            isScrubbingArticles ? styles.articleScrubberTrackActive : null,
+          ]}
           onLayout={(event) => setScrubberHeight(event.nativeEvent.layout.height)}
           {...articleScrubberResponder.panHandlers}
         >
@@ -1468,6 +2152,86 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  fixedHeaderWrap: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+    zIndex: 25,
+  },
+  headerMainRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+  },
+  headerTextWrap: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: colors.text,
+    lineHeight: 27,
+  },
+  headerSubtitle: {
+    fontSize: typography.small + 1,
+    color: colors.muted,
+    fontWeight: "400",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingTop: 1,
+  },
+  headerActionBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerActionBtnActive: {
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#E8EEFF",
+  },
+  headerActionBtnText: {
+    color: colors.primaryStrong,
+    fontSize: typography.small + 1,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  headerActionBtnTextActive: {
+    color: colors.primaryStrong,
+  },
+  headerMenu: {
+    marginTop: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.card,
+    overflow: "hidden",
+  },
+  headerMenuItem: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: "#EEF2F7",
+  },
+  headerMenuItemText: {
+    color: colors.text,
+    fontSize: typography.small + 1,
+    fontWeight: "600",
+  },
+  headerSearchWrap: {
+    marginTop: spacing.xs,
   },
   container: {
     padding: spacing.md,
@@ -1520,6 +2284,95 @@ const styles = StyleSheet.create({
   sectionTabTextActive: {
     color: colors.primaryStrong,
   },
+  multiShareTopBar: {
+    marginTop: spacing.xs,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: "#CBD8FF",
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+  multiShareTopHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.xs,
+  },
+  multiShareTopTitle: {
+    color: colors.primaryStrong,
+    fontSize: typography.small + 1,
+    fontWeight: "700",
+  },
+  multiShareTopActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  multiShareTopShareBtn: {
+    minHeight: 30,
+    borderWidth: 1,
+    borderColor: colors.primaryStrong,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primaryStrong,
+    paddingHorizontal: spacing.sm,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  multiShareTopShareBtnDisabled: {
+    opacity: 0.45,
+  },
+  multiShareTopShareText: {
+    color: "#FFFFFF",
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  multiShareTopCloseBtn: {
+    minHeight: 30,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F5F7FC",
+    paddingHorizontal: spacing.sm,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  multiShareTopCloseText: {
+    color: colors.muted,
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  multiShareTopInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  multiShareTopInput: {
+    flex: 1,
+    minHeight: 34,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F9FBFF",
+    paddingHorizontal: spacing.sm,
+    color: colors.text,
+    fontSize: typography.small + 1,
+  },
+  multiShareTopAddBtn: {
+    minHeight: 34,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#E8EEFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  multiShareTopAddText: {
+    color: colors.primaryStrong,
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
   docSearchBar: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -1536,27 +2389,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
   },
-  docSearchBarFloating: {
-    borderColor: "#BFD0FF",
-  },
-  floatingDocSearchWrap: {
-    position: "absolute",
-    left: spacing.md,
-    right: spacing.md + 18,
-    top: spacing.sm,
-    zIndex: 20,
-  },
   stickySectionWrap: {
-    position: "absolute",
-    left: spacing.md,
-    right: spacing.md + 18,
+    marginTop: spacing.xs,
     backgroundColor: "#EEF3FF",
     borderColor: "#D6E2FF",
     borderWidth: 1,
     borderRadius: radius.sm,
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
-    zIndex: 19,
   },
   stickySectionText: {
     color: colors.primaryStrong,
@@ -1604,28 +2444,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
   },
-  zoomControls: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginLeft: 2,
-  },
-  zoomBtn: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    backgroundColor: "#F5F7FC",
-    minWidth: 28,
-    height: 26,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 4,
-  },
-  zoomBtnText: {
-    color: colors.primaryStrong,
-    fontSize: typography.small,
-    fontWeight: "700",
-  },
   docSearchNavBtn: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -1639,6 +2457,22 @@ const styles = StyleSheet.create({
   docSearchNavBtnText: {
     color: colors.primaryStrong,
     fontSize: typography.body + 1,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  docSearchCloseBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#F5F7FC",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  docSearchCloseBtnText: {
+    color: colors.muted,
+    fontSize: typography.small + 2,
     fontWeight: "700",
     lineHeight: 16,
   },
@@ -1771,6 +2605,64 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.text,
   },
+  articleLeadRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  articleLeadActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  articleSelectBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F5F7FC",
+    minWidth: 30,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  articleSelectBtnActive: {
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#E8EEFF",
+  },
+  articleSelectBtnText: {
+    color: colors.muted,
+    fontSize: typography.body,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  articleSelectBtnTextActive: {
+    color: colors.primaryStrong,
+  },
+  articleShareBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F5F7FC",
+    minWidth: 30,
+    height: 28,
+    paddingHorizontal: spacing.xs,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  articleShareBtnActive: {
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#E8EEFF",
+  },
+  articleShareBtnText: {
+    color: colors.primaryStrong,
+    fontSize: typography.body,
+    fontWeight: "700",
+    lineHeight: 16,
+  },
+  articleShareBtnTextActive: {
+    color: colors.primaryStrong,
+  },
   articleText: {
     fontSize: typography.body - 1,
     color: colors.text,
@@ -1833,6 +2725,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#39BDF3",
   },
 });
+
 
 
 

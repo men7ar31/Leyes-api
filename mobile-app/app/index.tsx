@@ -1,5 +1,5 @@
-﻿import { SearchScreen } from "../src/screens/SearchScreen";
+﻿import { Redirect } from "expo-router";
 
 export default function Index() {
-  return <SearchScreen />;
+  return <Redirect href="/(tabs)/search" />;
 }
