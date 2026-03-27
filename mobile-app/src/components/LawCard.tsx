@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { memo } from "react";
 import { ChevronRight, FileText, Heart, Scale } from "lucide-react-native";
 import type { SaijSearchHit } from "../types/saij";
 import { radius, shadows, spacing, typography } from "../constants/theme";
@@ -60,7 +61,7 @@ const resolveJurisdictionLabel = (hit: SaijSearchHit) => {
   return null;
 };
 
-export const LawCard = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
+const LawCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
   const { colors } = useAppTheme();
   const typeText = cleanText(hit.contentType || "Legislacion");
   const jurisdictionLabel = resolveJurisdictionLabel(hit);
@@ -140,6 +141,8 @@ export const LawCard = ({ hit, onPress, onFavoritePress, isFavorite = false }: P
     </Pressable>
   );
 };
+
+export const LawCard = memo(LawCardComponent);
 
 const styles = StyleSheet.create({
   card: {

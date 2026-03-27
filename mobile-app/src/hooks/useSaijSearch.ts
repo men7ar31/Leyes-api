@@ -19,6 +19,11 @@ export const useSaijSearch = ({
   const query = useInfiniteQuery<SaijSearchResponse>({
     queryKey: ["saij-search", contentType, filters, pageSize],
     enabled,
+    staleTime: 1000 * 60 * 5,
+    gcTime: 1000 * 60 * 20,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     initialPageParam: 0,
     queryFn: ({ pageParam = 0 }) =>
       searchSaij({

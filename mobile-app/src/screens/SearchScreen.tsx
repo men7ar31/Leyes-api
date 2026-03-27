@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -420,7 +420,7 @@ export const SearchScreen = () => {
     setActiveRefineSection((prev) => (prev === section ? null : section));
   };
 
-  const registerRecentOpenedDocument = (item: {
+  const registerRecentOpenedDocument = useCallback((item: {
     guid: string;
     title: string;
     subtitle: string | null;
@@ -438,16 +438,16 @@ export const SearchScreen = () => {
     const next = [nextItem, ...recentSearches.filter((entry) => entry.key !== key)].slice(0, RECENT_SEARCHES_MAX);
     recentSearchesStore = next;
     setRecentSearches(next);
-  };
+  }, [recentSearches]);
 
-  const openRecentDocument = (item: RecentSearchItem) => {
+  const openRecentDocument = useCallback((item: RecentSearchItem) => {
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: item.guid },
     });
-  };
+  }, []);
 
-  const toggleHitFavorite = async (item: (typeof items)[number]) => {
+  const toggleHitFavorite = useCallback(async (item: (typeof items)[number]) => {
     const guid = normalizeGuid(item.guid);
     if (!guid || favoriteBusyMap[guid]) return;
 
@@ -487,7 +487,7 @@ export const SearchScreen = () => {
         return next;
       });
     }
-  };
+  }, [favoriteBusyMap, favoriteMap]);
 
   const onSearch = () => {
     const nextState = { ...formState };
@@ -527,6 +527,35 @@ export const SearchScreen = () => {
       })
       .map((entry) => entry.item);
   }, [canSortByDate, dateOrder, hasSearched, items]);
+
+  const resultKeyExtractor = useCallback((item: (typeof sortedItems)[number], index: number) => {
+    const guid = String(item.guid || "").trim();
+    if (guid) return guid;
+    return `${item.contentType || "na"}::${item.title || "sin-titulo"}::${item.fecha || "sin-fecha"}::${index}`;
+  }, []);
+
+  const renderResultItem = useCallback(
+    ({ item }: { item: (typeof sortedItems)[number] }) => (
+      <ResultCard
+        hit={item}
+        isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
+        onPress={() => {
+          registerRecentOpenedDocument({
+            guid: String(item.guid || ""),
+            title: String(item.title || ""),
+            subtitle: item.subtitle || null,
+            contentType: String(item.contentType || ""),
+          });
+          router.push({
+            pathname: "/detail/[guid]",
+            params: { guid: item.guid },
+          });
+        }}
+        onFavoritePress={() => toggleHitFavorite(item)}
+      />
+    ),
+    [favoriteMap, registerRecentOpenedDocument, toggleHitFavorite]
+  );
 
   const renderEmpty = () => {
     if (!hasSearched) {
@@ -607,26 +636,8 @@ export const SearchScreen = () => {
         updateCellsBatchingPeriod={40}
         windowSize={7}
         decelerationRate="normal"
-        keyExtractor={(item, index) => `${String(item.guid || "no-guid")}-${index}`}
-        renderItem={({ item }) => (
-          <ResultCard
-            hit={item}
-            isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
-            onPress={() => {
-              registerRecentOpenedDocument({
-                guid: String(item.guid || ""),
-                title: String(item.title || ""),
-                subtitle: item.subtitle || null,
-                contentType: String(item.contentType || ""),
-              });
-              router.push({
-                pathname: "/detail/[guid]",
-                params: { guid: item.guid },
-              });
-            }}
-            onFavoritePress={() => toggleHitFavorite(item)}
-          />
-        )}
+        keyExtractor={resultKeyExtractor}
+        renderItem={renderResultItem}
         contentContainerStyle={styles.listContent}
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
         ListHeaderComponent={

@@ -1,5 +1,5 @@
 import { PanResponder, View } from "react-native";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import type { SaijSearchHit } from "../types/saij";
 import { LawCard } from "./LawCard";
 
@@ -10,7 +10,7 @@ type Props = {
   isFavorite?: boolean;
 };
 
-export const ResultCard = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
+const ResultCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
   const didSwipeRef = useRef(false);
 
   const swipeResponder = PanResponder.create({
@@ -47,3 +47,5 @@ export const ResultCard = ({ hit, onPress, onFavoritePress, isFavorite = false }
     </View>
   );
 };
+
+export const ResultCard = memo(ResultCardComponent);

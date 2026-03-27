@@ -2739,7 +2739,9 @@ export const DetailScreen = () => {
             style={[
               styles.articleScrubberThumb,
               {
-                backgroundColor: appColors.primaryStrong,
+                backgroundColor: isDarkMode ? "#233B66" : "#E2EEFF",
+                borderColor: isDarkMode ? "#2D497B" : "#C7DBFF",
+                borderWidth: 1,
                 transform: [{ translateY: scrubberThumbTopAnimRef.current }],
               },
             ]}
@@ -3406,6 +3408,7 @@ const styles = StyleSheet.create({
   },
   articleScrubberThumb: {
     position: "absolute",
+    top: 0,
     left: 1,
     width: 10,
     height: SCRUBBER_THUMB_HEIGHT,

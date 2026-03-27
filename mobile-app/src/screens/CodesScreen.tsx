@@ -70,13 +70,14 @@ const shouldExcludeNationalCode = (hit: { title?: string | null; subtitle?: stri
   const estado = normalize(String(hit.estado || ""));
   const summary = normalize(String(hit.summary || ""));
   const bag = `${title} ${subtitle} ${estado} ${summary}`.trim();
+  const bagCode = normalizeCodeTitle(bag);
 
   if (/\bderogad\w*\b/i.test(bag)) return true;
 
-  if (/\bcodigo civil\b/i.test(title) && !/\bcodigo civil y comercial\b/i.test(title)) return true;
-  if (/\bcodigo de comercio\b/i.test(title)) return true;
+  if (bagCode.includes("codigo civil") && !bagCode.includes("codigo civil y comercial")) return true;
+  if (bagCode.includes("codigo de comercio")) return true;
 
-  if (/\bcodigo procesal penal federal\b/i.test(title) && !/\b(t\.?\s*o\.?\s*2019|texto ordenado 2019)\b/i.test(bag)) {
+  if (bagCode.includes("codigo procesal penal federal") && !/\b(t\.?\s*o\.?\s*2019|texto ordenado 2019)\b/i.test(bag)) {
     return true;
   }
 
@@ -205,16 +206,50 @@ export const CodesScreen = () => {
           if (openingEntryRef.current === entryKey) {
             openingEntryRef.current = null;
           }
-        }, 140);
+        }, 90);
       }
     },
     [openCode, prefetchCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
   );
 
   useEffect(() => {
-    const candidates = nationalCodes.slice(0, 3);
-    candidates.forEach((item) => prefetchCode(item.guid));
+    if (!nationalCodes.length) return;
+    const timer = setTimeout(() => {
+      const candidates = nationalCodes.slice(0, 4);
+      candidates.forEach((item) => prefetchCode(item.guid));
+    }, 180);
+    return () => clearTimeout(timer);
   }, [nationalCodes, prefetchCode]);
+
+  useEffect(() => {
+    if (scope !== "provincial" || !selectedProvince || provincialCatalog.length === 0) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const warmupTasks = provincialCatalog.map(async (entry) => {
+        if (cancelled) return;
+        const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
+        try {
+          let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
+          if (!resolved?.guid) {
+            resolved = await queryClient.fetchQuery({
+              queryKey: resolveKey,
+              queryFn: () => resolveProvincialCode(selectedProvince, entry),
+              staleTime: 1000 * 60 * 30,
+            });
+          }
+          const guid = String(resolved?.guid || "").trim();
+          if (!cancelled && guid) prefetchCode(guid);
+        } catch {
+          // keep background warmup best effort
+        }
+      });
+      await Promise.allSettled(warmupTasks);
+    }, 120);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [scope, selectedProvince, provincialCatalog, queryClient, resolveQueryKeyForEntry, prefetchCode]);
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}> 
@@ -316,18 +351,7 @@ export const CodesScreen = () => {
                         onPressIn={() => {
                           const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
                           const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
-                          if (!cached?.guid) {
-                            resolveProvincialCode(selectedProvince, entry)
-                              .then((resolved) => {
-                                if (resolved?.guid) {
-                                  queryClient.setQueryData(resolveKey, resolved);
-                                  prefetchCode(resolved.guid);
-                                }
-                              })
-                              .catch(() => {
-                                // best effort
-                              });
-                          } else if (cached.guid) {
+                          if (cached?.guid) {
                             prefetchCode(cached.guid);
                           }
                         }}

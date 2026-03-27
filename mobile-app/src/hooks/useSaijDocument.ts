@@ -7,6 +7,11 @@ export const useSaijDocument = (guid?: string) => {
   const query = useQuery<SaijDocumentResponse>({
     queryKey: ["saij-document", guid],
     enabled: !!guid,
+    staleTime: 1000 * 60 * 20,
+    gcTime: 1000 * 60 * 60,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       const key = guid as string;
       try {
@@ -32,4 +37,3 @@ export const useSaijDocument = (guid?: string) => {
     refetch: query.refetch,
   };
 };
-

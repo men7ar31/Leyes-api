@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { memo } from "react";
 import { BookText, ChevronRight } from "lucide-react-native";
 import { radius, shadows, spacing, typography } from "../constants/theme";
 import { useAppTheme } from "../theme/appTheme";
@@ -10,7 +11,7 @@ type Props = {
   onPressIn?: () => void;
 };
 
-export const CodeCard = ({ title, subtitle, onPress, onPressIn }: Props) => {
+const CodeCardComponent = ({ title, subtitle, onPress, onPressIn }: Props) => {
   const { colors } = useAppTheme();
   return (
     <Pressable
@@ -42,6 +43,8 @@ export const CodeCard = ({ title, subtitle, onPress, onPressIn }: Props) => {
     </Pressable>
   );
 };
+
+export const CodeCard = memo(CodeCardComponent);
 
 const styles = StyleSheet.create({
   card: {
