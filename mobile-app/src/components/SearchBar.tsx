@@ -1,5 +1,6 @@
-﻿import { StyleSheet, TextInput, View } from "react-native";
-import { colors, radius, spacing, typography } from "../constants/theme";
+import { StyleSheet, TextInput, View } from "react-native";
+import { radius, spacing, typography } from "../constants/theme";
+import { useAppTheme } from "../theme/appTheme";
 
 type Props = {
   value: string;
@@ -8,10 +9,11 @@ type Props = {
 };
 
 export const SearchBar = ({ value, onChangeText, placeholder }: Props) => {
+  const { colors } = useAppTheme();
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <TextInput
-        style={styles.input}
+        style={[styles.input, { color: colors.text }]}
         placeholder={placeholder || "Buscar texto en norma"}
         placeholderTextColor={colors.muted}
         value={value}
@@ -23,15 +25,12 @@ export const SearchBar = ({ value, onChangeText, placeholder }: Props) => {
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: colors.card,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingVertical: 12,
   },
   input: {
     fontSize: typography.body,
-    color: colors.text,
   },
 });

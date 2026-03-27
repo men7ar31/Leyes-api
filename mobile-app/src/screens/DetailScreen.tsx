@@ -875,30 +875,30 @@ export const DetailScreen = () => {
       ? {
           label: "Sentencia / Tribunal",
           value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" · ") || "No informado",
-          color: colors.text,
+          color: appColors.text,
         }
       : baseTypeLabel === "doctrina"
         ? {
             label: "Autor",
             value: autorDoctrina || "No informado",
-            color: colors.text,
+            color: appColors.text,
           }
         : baseTypeLabel === "dictamen"
           ? {
               label: "Organismo",
               value: (typeof document.organismo === "string" && document.organismo.trim()) || "No informado",
-              color: colors.text,
+              color: appColors.text,
             }
           : baseTypeLabel === "sumario"
             ? {
                 label: "Fecha",
                 value: metadataDate || "No informado",
-                color: colors.text,
+                color: appColors.text,
               }
             : {
                 label: "Estado de vigencia",
                 value: estadoVigencia || "No informado",
-                color: estadoVigencia ? getVigenciaColor(estadoVigencia) : colors.muted,
+                color: estadoVigencia ? getVigenciaColor(estadoVigencia) : appColors.muted,
               };
 
   const sectionItems =
