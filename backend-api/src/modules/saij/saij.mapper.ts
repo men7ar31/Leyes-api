@@ -1308,6 +1308,17 @@ const getStructuredArticleSources = (raw: any) => {
   return { segmento, directArticulo, anexo };
 };
 
+const normalizeArticleNumberToken = (value: string): string => {
+  const normalized = String(value || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[º°]/g, '')
+    .replace(/[.:;,\-–—]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return '';
+  return normalized.replace(/^(?:art[íi]culo|art\.?)\s*/i, '').trim();
+};
+
 const detectArticleNumber = (text: string, item?: any, index?: number): string => {
   const fromItem =
     item?.['numero-articulo'] ??
@@ -1320,11 +1331,11 @@ const detectArticleNumber = (text: string, item?: any, index?: number): string =
     item?.numero_articulo ??
     item?.id;
   if (typeof fromItem === 'number' || typeof fromItem === 'string') {
-    const normalized = String(fromItem).trim();
+    const normalized = normalizeArticleNumberToken(String(fromItem));
     if (normalized.length > 0) return normalized;
   }
   const match = text.match(/^\s*(?:art[íi]culo|art\.?)\s*(\d+[a-zA-Z]?(?:\s*bis)?)\b/i);
-  if (match && match[1]) return match[1];
+  if (match && match[1]) return normalizeArticleNumberToken(match[1]);
   return typeof index === 'number' ? String(index + 1) : '';
 };
 
@@ -1334,11 +1345,36 @@ const normalizeHeadingText = (value: any): string | null => {
   return cleaned.length ? cleaned : null;
 };
 
+const isParagraphHeadingLine = (value?: string | null) => /^par(a|á)grafo\b/i.test(normalizeComparableText(value));
+
 const appendUniqueHeading = (headings: string[], value: string | null) => {
   if (!value) return headings;
+  if (isParagraphHeadingLine(value)) return headings;
   if (headings.some((item) => item.toLowerCase() === value.toLowerCase())) return headings;
   return [...headings, value];
 };
+
+const buildArticleHeaderLine = (articleNumber?: string | null) => {
+  const normalizedNumber = normalizeArticleNumberToken(String(articleNumber || ''));
+  if (!normalizedNumber) return 'ARTICULO.';
+  return `ARTICULO ${normalizedNumber}.`;
+};
+
+const stripArticleLeadFromText = (value?: string | null) => {
+  const cleaned = cleanStructuredText(String(value || ''));
+  if (!cleaned) return '';
+  return cleaned
+    .replace(
+      /^\s*(?:art[íi]culo|art\.?)\s*(?:[a-z]\s*)?\d+[a-z]?(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:º|°)?\s*[\.\-:;]*\s*/i,
+      ''
+    )
+    .trimStart();
+};
+
+const isCivilCommercialCodeTitle = (title?: string | null) =>
+  normalizeComparableText(title).includes('codigo civil y comercial');
+
+const isAnnexHeading = (value?: string | null) => /^anexo\b/i.test(normalizeComparableText(value));
 
 const isLikelyArticleNode = (item: any, cleanedText: string, path: string) => {
   const hasNumberField =
@@ -1943,6 +1979,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   let contentHtmlFinal = contentHtml;
   let contentTextFinal = contentText;
   let articlesFinal = articles;
+  let headerTextFinal = headerText;
 
   if (!fromArticulo && contentType === 'legislacion' && contentTextFinal) {
     const analysis = analyzeLegalBodyText(contentTextFinal, textSourcePath);
@@ -1969,6 +2006,46 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
         contentHtmlFinal = null;
         contentTextFinal = null;
         articlesFinal = [];
+      }
+    }
+  }
+
+  if (contentType === 'legislacion' && Array.isArray(articlesFinal) && articlesFinal.length > 0) {
+    articlesFinal = articlesFinal.map((article: any) => ({
+      ...article,
+      number: normalizeArticleNumberToken(String(article?.number || '')) || String(article?.number || '').trim(),
+      text: cleanStructuredText(String(article?.text || '')),
+    }));
+  }
+
+  if (contentType === 'legislacion' && isCivilCommercialCodeTitle(title) && Array.isArray(articlesFinal) && articlesFinal.length > 0) {
+    let firstAnnexIndex = articlesFinal.findIndex((article: any) => isAnnexHeading(article?.title));
+    if (firstAnnexIndex <= 0) {
+      firstAnnexIndex = articlesFinal.findIndex((article: any, index: number) => {
+        if (index < 1) return false;
+        return normalizeComparableText(String(article?.number || '')) === '1';
+      });
+    }
+    if (firstAnnexIndex > 0) {
+      const preludeArticles = articlesFinal.slice(0, firstAnnexIndex);
+      const annexArticles = articlesFinal.slice(firstAnnexIndex);
+      const preludeText = preludeArticles
+        .map((article: any) => {
+          const header = buildArticleHeaderLine(article?.number);
+          const body = stripArticleLeadFromText(article?.text) || cleanStructuredText(String(article?.text || ''));
+          return body ? `${header}\n${body}` : header;
+        })
+        .filter(Boolean)
+        .join('\n\n');
+
+      if (preludeText) {
+        headerTextFinal = pickBestHeaderText(headerTextFinal, preludeText) ?? preludeText;
+      }
+
+      if (annexArticles.length > 0) {
+        articlesFinal = annexArticles;
+        const annexText = annexArticles.map((article: any) => cleanStructuredText(String(article?.text || ''))).join('\n\n').trim();
+        if (annexText.length > 0) contentTextFinal = annexText;
       }
     }
   }
@@ -2008,7 +2085,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     metadata,
     contentHtml: contentHtmlFinal,
     contentText: contentTextFinal,
-    headerText,
+    headerText: headerTextFinal,
     articles: articlesFinal,
     toc,
     friendlyUrl,

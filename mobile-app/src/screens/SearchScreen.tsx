@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Moon, Sun } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useQueryClient } from "@tanstack/react-query";
 import { SearchBar } from "../components/SearchBar";
 import {
   SearchFilters,
@@ -20,6 +21,7 @@ import { AppHeader } from "../components/AppHeader";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { useSaijSearch } from "../hooks/useSaijSearch";
 import { addFavoriteFromSearchHit, loadFavorites, removeFavoriteByGuid } from "../services/favorites";
+import { getSaijDocument } from "../services/saijApi";
 import { useAppTheme } from "../theme/appTheme";
 import type {
   SaijFacetNode,
@@ -29,6 +31,7 @@ import type {
 } from "../types/saij";
 
 const PAGE_SIZE = 20;
+const SEARCH_PREFETCH_COUNT = 3;
 const RECENT_SEARCHES_MAX = 4;
 const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
 const CC_BY_25_AR_URL = "https://creativecommons.org/licenses/by/2.5/ar/";
@@ -239,6 +242,7 @@ const getDictamenAutoFacets = (subtype: DictamenSubtype): AutoFacetValues => {
 };
 
 export const SearchScreen = () => {
+  const queryClient = useQueryClient();
   const [formState, setFormState] = useState<FormState>(initialState);
   const [appliedState, setAppliedState] = useState<FormState>(initialState);
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>(recentSearchesStore);
@@ -378,6 +382,24 @@ export const SearchScreen = () => {
     pageSize: PAGE_SIZE,
     enabled: hasSearched,
   });
+
+  const prefetchDocument = useCallback(
+    (guid?: string | null) => {
+      const key = String(guid || "").trim();
+      if (!key) return;
+      queryClient
+        .prefetchQuery({
+          queryKey: ["saij-document", key],
+          queryFn: () => getSaijDocument(key),
+          staleTime: 1000 * 60 * 20,
+          gcTime: 1000 * 60 * 60,
+        })
+        .catch(() => {
+          // best effort cache warmup
+        });
+    },
+    [queryClient]
+  );
 
   const provinceRequired =
     formState.jurisdictionKind === "provincial" && formState.province.trim().length === 0;
@@ -528,6 +550,14 @@ export const SearchScreen = () => {
       .map((entry) => entry.item);
   }, [canSortByDate, dateOrder, hasSearched, items]);
 
+  useEffect(() => {
+    if (!hasSearched || sortedItems.length === 0) return;
+    const timer = setTimeout(() => {
+      sortedItems.slice(0, SEARCH_PREFETCH_COUNT).forEach((item) => prefetchDocument(item.guid));
+    }, 140);
+    return () => clearTimeout(timer);
+  }, [hasSearched, prefetchDocument, sortedItems]);
+
   const resultKeyExtractor = useCallback((item: (typeof sortedItems)[number], index: number) => {
     const guid = String(item.guid || "").trim();
     if (guid) return guid;
@@ -539,7 +569,9 @@ export const SearchScreen = () => {
       <ResultCard
         hit={item}
         isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
+        onPressIn={() => prefetchDocument(item.guid)}
         onPress={() => {
+          prefetchDocument(item.guid);
           registerRecentOpenedDocument({
             guid: String(item.guid || ""),
             title: String(item.title || ""),
@@ -554,7 +586,7 @@ export const SearchScreen = () => {
         onFavoritePress={() => toggleHitFavorite(item)}
       />
     ),
-    [favoriteMap, registerRecentOpenedDocument, toggleHitFavorite]
+    [favoriteMap, prefetchDocument, registerRecentOpenedDocument, toggleHitFavorite]
   );
 
   const renderEmpty = () => {
@@ -616,7 +648,7 @@ export const SearchScreen = () => {
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
       <AppHeader
-        title="Buscar en SAIJ"
+        title="Buscar en LexPlora"
         actions={[
           {
             icon: isDarkMode ? Sun : Moon,
@@ -1174,6 +1206,9 @@ const styles = StyleSheet.create({
   legalText: {
     fontSize: typography.small,
     lineHeight: 18,
+    textAlign: "center",
+    alignSelf: "center",
+    maxWidth: "96%",
   },
   legalLink: {
     fontSize: typography.small,

@@ -50,6 +50,9 @@ const PROVINCES: ProvinceOption[] = [
   { name: "Tucuman", abbr: "TUC" },
 ].sort((a, b) => a.name.localeCompare(b.name, "es"));
 
+const PROVINCIAL_WARMUP_LEAD_COUNT = 8;
+const PROVINCIAL_WARMUP_CONCURRENCY = 2;
+
 const normalize = (value: string) =>
   value
     .toLowerCase()
@@ -225,25 +228,37 @@ export const CodesScreen = () => {
     if (scope !== "provincial" || !selectedProvince || provincialCatalog.length === 0) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const warmupTasks = provincialCatalog.map(async (entry) => {
-        if (cancelled) return;
-        const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
-        try {
-          let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
-          if (!resolved?.guid) {
-            resolved = await queryClient.fetchQuery({
-              queryKey: resolveKey,
-              queryFn: () => resolveProvincialCode(selectedProvince, entry),
-              staleTime: 1000 * 60 * 30,
-            });
+      const entriesToWarm = provincialCatalog.slice(0, PROVINCIAL_WARMUP_LEAD_COUNT);
+      if (entriesToWarm.length === 0) return;
+      let cursor = 0;
+
+      const runWorker = async () => {
+        while (!cancelled) {
+          const entry = entriesToWarm[cursor];
+          cursor += 1;
+          if (!entry) return;
+
+          const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
+          try {
+            let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
+            if (!resolved?.guid) {
+              resolved = await queryClient.fetchQuery({
+                queryKey: resolveKey,
+                queryFn: () => resolveProvincialCode(selectedProvince, entry),
+                staleTime: 1000 * 60 * 30,
+              });
+            }
+            const guid = String(resolved?.guid || "").trim();
+            if (!cancelled && guid) prefetchCode(guid);
+          } catch {
+            // keep background warmup best effort
           }
-          const guid = String(resolved?.guid || "").trim();
-          if (!cancelled && guid) prefetchCode(guid);
-        } catch {
-          // keep background warmup best effort
         }
-      });
-      await Promise.allSettled(warmupTasks);
+      };
+
+      const workerCount = Math.min(PROVINCIAL_WARMUP_CONCURRENCY, entriesToWarm.length);
+      const workers = Array.from({ length: workerCount }, () => runWorker());
+      await Promise.allSettled(workers);
     }, 120);
     return () => {
       cancelled = true;

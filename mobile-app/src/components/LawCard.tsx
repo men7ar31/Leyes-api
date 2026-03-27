@@ -9,6 +9,7 @@ import { useAppTheme } from "../theme/appTheme";
 type Props = {
   hit: SaijSearchHit;
   onPress: () => void;
+  onPressIn?: () => void;
   onFavoritePress?: () => void;
   isFavorite?: boolean;
 };
@@ -61,7 +62,7 @@ const resolveJurisdictionLabel = (hit: SaijSearchHit) => {
   return null;
 };
 
-const LawCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
+const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
   const { colors } = useAppTheme();
   const typeText = cleanText(hit.contentType || "Legislacion");
   const jurisdictionLabel = resolveJurisdictionLabel(hit);
@@ -71,6 +72,7 @@ const LawCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false }:
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
       style={({ pressed }) => [
         styles.card,
         {

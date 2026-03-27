@@ -6,11 +6,12 @@ import { LawCard } from "./LawCard";
 type Props = {
   hit: SaijSearchHit;
   onPress: () => void;
+  onPressIn?: () => void;
   onFavoritePress?: () => void;
   isFavorite?: boolean;
 };
 
-const ResultCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
+const ResultCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
   const didSwipeRef = useRef(false);
 
   const swipeResponder = PanResponder.create({
@@ -41,6 +42,7 @@ const ResultCardComponent = ({ hit, onPress, onFavoritePress, isFavorite = false
           if (didSwipeRef.current) return;
           onPress();
         }}
+        onPressIn={onPressIn}
         onFavoritePress={onFavoritePress}
         isFavorite={isFavorite}
       />

@@ -238,11 +238,25 @@ const scoreProvincialCandidate = (
   return score;
 };
 
+const MIN_ACCEPTABLE_PROVINCIAL_SCORE = 30;
+const EARLY_ACCEPT_PROVINCIAL_SCORE = 180;
+
+type ProvincialCandidatePhase = "narrow" | "broad";
+
+const rankProvincialCandidates = (
+  candidates: SaijSearchHit[],
+  provinceTokens: string[],
+  entry: ProvincialCodeCatalogEntry
+) =>
+  candidates
+    .map((hit) => ({ hit, score: scoreProvincialCandidate(hit, provinceTokens, entry) }))
+    .sort((a, b) => b.score - a.score);
+
 const searchProvincialCandidates = async (
   province: string,
-  entry: ProvincialCodeCatalogEntry
+  entry: ProvincialCodeCatalogEntry,
+  phase: ProvincialCandidatePhase
 ): Promise<SaijSearchHit[]> => {
-  const hits: SaijSearchHit[] = [];
   const provinceQueryLabel = getProvinceQueryLabel(province);
   const provinceTermDirect = normalizeProvinceForDirectQuery(province);
   const numberToken = getNumericToken(entry.numeroNorma || entry.reference);
@@ -250,89 +264,85 @@ const searchProvincialCandidates = async (
     .filter(Boolean)
     .join(" ");
 
-  const tasks: Array<Promise<void>> = [];
+  const tasks: Array<Promise<SaijSearchHit[]>> = [];
   const addSearch = (filters: SaijSearchRequest["filters"], pageSize = 25) => {
     tasks.push(
-      (async () => {
-        try {
-          const response = await searchSaij({
-            contentType: "legislacion",
-            filters,
-            offset: 0,
-            pageSize,
-          });
-          if (Array.isArray(response.hits) && response.hits.length) hits.push(...response.hits);
-        } catch {
-          // ignore and continue fallback chain
-        }
-      })()
+      searchSaij({
+        contentType: "legislacion",
+        filters,
+        offset: 0,
+        pageSize,
+      })
+        .then((response) => (Array.isArray(response.hits) ? response.hits : []))
+        .catch(() => [])
     );
   };
 
   const addDirect = (rawQuery: string, pageSize = 160) => {
     tasks.push(
-      (async () => {
-        try {
-          const directHits = await fetchDirectSaijByRawQuery(rawQuery, pageSize);
-          if (directHits.length) hits.push(...directHits);
-        } catch {
-          // ignore and continue fallback chain
-        }
-      })()
+      fetchDirectSaijByRawQuery(rawQuery, pageSize).catch(() => [])
     );
   };
 
-  if (entry.numeroNorma) {
+  if (phase === "narrow") {
+    if (entry.numeroNorma) {
+      addSearch(
+        {
+          numeroNorma: entry.numeroNorma,
+          jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
+        },
+        22
+      );
+      addSearch(
+        {
+          numeroNorma: entry.numeroNorma,
+        },
+        22
+      );
+    }
+
+    if (numberToken) {
+      addSearch(
+        {
+          numeroNorma: numberToken,
+          jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
+        },
+        22
+      );
+      addSearch(
+        {
+          numeroNorma: numberToken,
+        },
+        22
+      );
+      addDirect(`numero-norma:${numberToken}`, 90);
+      if (provinceTermDirect) addDirect(`numero-norma:${numberToken} ${provinceTermDirect}`, 90);
+    }
+  } else {
     addSearch(
       {
-        numeroNorma: entry.numeroNorma,
+        textoEnNorma: `codigo ${fallbackTextTerms}`.trim(),
         jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
       },
-      30
+      28
     );
     addSearch(
       {
-        numeroNorma: entry.numeroNorma,
+        textoEnNorma: `codigo ${fallbackTextTerms}`.trim(),
       },
-      30
+      28
     );
+    if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ${normalizeCompact(entry.area)}`, 110);
+    if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect}`, 120);
   }
 
-  if (numberToken) {
-    addSearch(
-      {
-        numeroNorma: numberToken,
-        jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
-      },
-      30
-    );
-    addSearch(
-      {
-        numeroNorma: numberToken,
-      },
-      30
-    );
-    addDirect(`numero-norma:${numberToken}`, 120);
-    if (provinceTermDirect) addDirect(`numero-norma:${numberToken} ${provinceTermDirect}`, 120);
+  const resolved = await Promise.allSettled(tasks);
+  const hits: SaijSearchHit[] = [];
+  for (const result of resolved) {
+    if (result.status !== "fulfilled") continue;
+    if (!Array.isArray(result.value) || result.value.length === 0) continue;
+    hits.push(...result.value);
   }
-
-  addSearch(
-    {
-      textoEnNorma: `codigo ${fallbackTextTerms}`.trim(),
-      jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
-    },
-    35
-  );
-  addSearch(
-    {
-      textoEnNorma: `codigo ${fallbackTextTerms}`.trim(),
-    },
-    35
-  );
-  if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ${normalizeCompact(entry.area)}`, 140);
-  if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect}`, 160);
-
-  await Promise.allSettled(tasks);
   return dedupeHitsByGuid(hits);
 };
 
@@ -341,15 +351,18 @@ export const resolveProvincialCode = async (
   entry: ProvincialCodeCatalogEntry
 ): Promise<SaijSearchHit | null> => {
   const provinceTokens = buildProvinceTokens(province);
-  const candidates = await searchProvincialCandidates(province, entry);
+  const narrowCandidates = await searchProvincialCandidates(province, entry, "narrow");
+  if (narrowCandidates.length > 0) {
+    const bestNarrow = rankProvincialCandidates(narrowCandidates, provinceTokens, entry)[0];
+    if (bestNarrow && bestNarrow.score >= EARLY_ACCEPT_PROVINCIAL_SCORE) return bestNarrow.hit;
+  }
+
+  const broadCandidates = await searchProvincialCandidates(province, entry, "broad");
+  const candidates = dedupeHitsByGuid([...narrowCandidates, ...broadCandidates]);
   if (!candidates.length) return null;
 
-  const ranked = candidates
-    .map((hit) => ({ hit, score: scoreProvincialCandidate(hit, provinceTokens, entry) }))
-    .sort((a, b) => b.score - a.score);
-
-  const best = ranked[0];
-  if (!best || best.score < 30) return null;
+  const best = rankProvincialCandidates(candidates, provinceTokens, entry)[0];
+  if (!best || best.score < MIN_ACCEPTABLE_PROVINCIAL_SCORE) return null;
   return best.hit;
 };
 

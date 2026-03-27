@@ -12,7 +12,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 25;
+const DOCUMENT_EXTRACTOR_VERSION = 26;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
@@ -722,7 +722,6 @@ const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
 export const SaijService = {
   async search(input: SaijSearchRequest): Promise<SaijSearchResponse> {
     warnUnimplementedFilters(input.filters);
-    console.log('DEBUG FLAG:', input.debug);
 
     const query = buildSaijQuery(input);
     const cacheKey = `saij-search:v5:${hashString(JSON.stringify(query))}`;
@@ -730,20 +729,15 @@ export const SaijService = {
     if (!input.debug) {
       const cachedMem = cache.getSearch(query);
       if (cachedMem) {
-        console.log('search cache hit: memory');
         return { ...cachedMem, query };
       }
 
       const cachedDb = await CacheService.getSearch(cacheKey);
       if (cachedDb) {
-        console.log('search cache hit: mongo');
         const response = cachedDb as SaijSearchResponse;
         cache.setSearch(query, response);
         return { ...response, query };
       }
-      console.log('search cache miss');
-    } else {
-      console.log('search cache skipped ×‘×’×œ×œ debug');
     }
 
     logger.info({ query }, 'Executing SAIJ search');
@@ -803,7 +797,9 @@ export const SaijService = {
       };
     } else {
       cache.setSearch(query, response);
-      await CacheService.saveSearch(cacheKey, input, response, Math.floor(SEARCH_CACHE_TTL_MS / 1000));
+      void CacheService.saveSearch(cacheKey, input, response, Math.floor(SEARCH_CACHE_TTL_MS / 1000)).catch((err) => {
+        logger.warn({ err }, 'Failed to persist search cache');
+      });
     }
     return response;
   },
@@ -1173,9 +1169,9 @@ async function finalizeDocument(
 
   if (!debugParams.debug) {
     cache.setDocument({ guid, payload: docWithMeta, fetchedAt }, DOCUMENT_CACHE_TTL_MS / 1000);
-    await NormService.save({
+    const persistentDoc = {
       guid,
-      source: 'saij',
+      source: 'saij' as const,
       extractorVersion: DOCUMENT_EXTRACTOR_VERSION,
       contentType: mapped.contentType,
       documentSubtype: typeof (mapped as any).documentSubtype === 'string' ? (mapped as any).documentSubtype : null,
@@ -1203,6 +1199,9 @@ async function finalizeDocument(
       rawPayload,
       fetchedAt: new Date(fetchedAt),
       expiresAt,
+    };
+    void NormService.save(persistentDoc).catch((err) => {
+      logger.warn({ guid, err }, 'Failed to persist document cache');
     });
   }
 
