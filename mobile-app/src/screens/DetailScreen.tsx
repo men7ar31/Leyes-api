@@ -474,58 +474,99 @@ const extractDetachedInlineArticleLabel = (text?: string | null) => {
   return normalizeDetachedInlineLabelCandidate(match[1]);
 };
 
+const extractLeadingSentenceArticleLabel = (text?: string | null) => {
+  const source = String(text || "").replace(/\r\n/g, "\n").trimStart();
+  if (!source) return null;
+
+  const match = source.match(/^([^.\n]{3,120})\.\s+([\s\S]+)$/);
+  if (!match || !match[1] || !match[2]) return null;
+
+  const candidate = normalizeDetachedInlineLabelCandidate(match[1]);
+  if (!candidate) return null;
+
+  const words = candidate.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 10) return null;
+  if (/[,:;!?]/.test(candidate)) return null;
+  if (/\d/.test(candidate)) return null;
+
+  const finiteVerbPattern = /\b(?:es|son|era|eran|fue|fueron|sera|sera\u0301|seran|sera\u0301n|debe|deben|puede|pueden|podra|podra\u0301|podran|podra\u0301n|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden)\b/i;
+  if (finiteVerbPattern.test(candidate)) return null;
+
+  const remainder = String(match[2] || "").trimStart();
+  if (remainder.length < 24) return null;
+
+  return candidate;
+};
+
 const removeDetachedInlineArticleLabel = (text: string, label?: string | null) => {
   const working = String(text || "").replace(/\r\n/g, "\n").trimStart();
-  if (!working || !label) return working.trim();
+  const normalizedLabel = normalizeDetachedInlineLabelCandidate(label) || cleanText(String(label || "")).trim();
+  if (!working || !normalizedLabel) return working.trim();
 
-  const firstLine = working.split("\n")[0] || "";
-  if (firstLine) {
-    const firstLineMatch = firstLine.match(/^[\*"'\s]*(?:[\u00BA\u00B0\u2022\u00B7\u25E6o0])?\s*[-.:;]{1,4}\s*(.+)$/i);
-    if (firstLineMatch && firstLineMatch[1]) {
-      const firstCandidate = normalizeDetachedInlineLabelCandidate(firstLineMatch[1]);
-      const targetNorm = normalizeHeadingToken(label);
-      const firstNorm = normalizeHeadingToken(firstCandidate || "");
-      const sameLabel =
-        !!targetNorm &&
-        !!firstNorm &&
-        (targetNorm === firstNorm || firstNorm.includes(targetNorm) || targetNorm.includes(firstNorm));
-      if (sameLabel) {
-        const rest = working.slice(firstLine.length).replace(/^\n+/, "").trimStart();
-        if (rest.length > 0) return rest.trim();
+  const escaped = escapeRegExp(normalizedLabel).replace(/\s+/g, "\\s+");
+  const detachedPattern = new RegExp(
+    "^[\\*\"'\\s]*(?:[\\u00BA\\u00B0\\u2022\\u00B7\\u25E6o0])?\\s*[-.:;]{1,4}\\s*" +
+      escaped +
+      "\\s*(?:\\n+|$|[.:;\\-\\u2013\\u2014]+\\s*)",
+    "i"
+  );
+  let next = working.replace(detachedPattern, "").trimStart();
 
-        const inlineEscaped = escapeRegExp(firstCandidate || label).replace(/\\\s+/g, "\\s+");
-        const inlinePattern = new RegExp(
-          `^[\\*"'\\s]*(?:[\u00BA\u00B0\u2022\u00B7\u25E6o0])?\\s*[-.:;]{1,4}\\s*${inlineEscaped}\\s*[.:;\-\u2013\u2014]*\\s*`,
-          "i"
-        );
-        const inlineNext = working.replace(inlinePattern, "").trimStart();
-        if (inlineNext.length > 0 && inlineNext.length < working.length) return inlineNext.trim();
-      }
+  const firstLine = next.split("\n")[0] || "";
+  const firstLineMatch = firstLine.match(/^[\*"'\s]*(?:[\u00BA\u00B0\u2022\u00B7\u25E6o0])?\s*[-.:;]{1,4}\s*(.+)$/i);
+  if (firstLineMatch && firstLineMatch[1]) {
+    const firstCandidate = normalizeDetachedInlineLabelCandidate(firstLineMatch[1]);
+    const targetNorm = normalizeHeadingToken(normalizedLabel);
+    const firstNorm = normalizeHeadingToken(firstCandidate || "");
+    const sameLabel =
+      !!targetNorm &&
+      !!firstNorm &&
+      (targetNorm === firstNorm || firstNorm.includes(targetNorm) || targetNorm.includes(firstNorm));
+    if (sameLabel) {
+      const inlineEscaped = escapeRegExp(firstCandidate || normalizedLabel).replace(/\s+/g, "\\s+");
+      const inlinePattern = new RegExp(
+        "^[\\*\"'\\s]*(?:[\\u00BA\\u00B0\\u2022\\u00B7\\u25E6o0])?\\s*[-.:;]{1,4}\\s*" +
+          inlineEscaped +
+          "\\s*[.:;\\-\\u2013\\u2014]*\\s*",
+        "i"
+      );
+      const inlineNext = next.replace(inlinePattern, "").trimStart();
+      if (inlineNext.length < next.length) next = inlineNext;
     }
   }
 
-  const escaped = escapeRegExp(label).replace(/\\\s+/g, "\\s+");
-  const pattern = new RegExp(`^[\\*"'\\s]*(?:[\\u00BA\\u00B0\\u2022\\u00B7\\u25E6o0])?\\s*[-.:;]{1,4}\\s*${escaped}\\s*(?:\\n+|$|[.:;\\-\\u2013\\u2014]+\\s*)`, "i");
-  const next = working.replace(pattern, "").trimStart();
-  return (next || working).trim();
+  const repeatedLabelPattern = new RegExp(
+    "^[\\*\"'\\s]*" + escaped + "\\s*(?:[.:;\\-\\u2013\\u2014]+\\s*)",
+    "i"
+  );
+  const deduped = next.replace(repeatedLabelPattern, "").trimStart();
+  if (deduped.length < next.length) return deduped.trim();
+
+  return next.trim();
 };
 
 const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | null) => {
   const bodyBase = String(text || "").trim();
   const inlineFromTitle = getSafeArticleInlineLabel(articleLabel);
-  if (inlineFromTitle) {
-    return { inlineLabel: inlineFromTitle, body: bodyBase };
-  }
-
   const detached = extractDetachedInlineArticleLabel(bodyBase);
   const safeDetached = getSafeArticleInlineLabel(detached);
-  if (!safeDetached) {
+  const inferred = extractLeadingSentenceArticleLabel(bodyBase);
+  const safeInferred = getSafeArticleInlineLabel(inferred);
+  const inlineLabel = inlineFromTitle || safeDetached || safeInferred || null;
+
+  if (!inlineLabel) {
     return { inlineLabel: null as string | null, body: bodyBase };
   }
 
+  const labelsToClean = Array.from(new Set([inlineLabel, safeDetached, safeInferred].filter(Boolean) as string[]));
+  let body = bodyBase;
+  labelsToClean.forEach((candidate) => {
+    body = removeDetachedInlineArticleLabel(body, candidate);
+  });
+
   return {
-    inlineLabel: safeDetached,
-    body: removeDetachedInlineArticleLabel(bodyBase, safeDetached),
+    inlineLabel,
+    body,
   };
 };
 
