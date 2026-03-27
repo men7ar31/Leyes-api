@@ -1,4 +1,17 @@
-﻿import { Alert, Linking, PanResponder, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+﻿import {
+  Alert,
+  Linking,
+  Modal,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { useEffect, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
@@ -13,9 +26,10 @@ import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
 import { searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
+import { useAppTheme } from "../theme/appTheme";
 
 const DETAIL_SCROLL_OFFSET_BY_GUID: Record<string, number> = {};
-const TOUCH_HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 } as const;
+const TOUCH_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 } as const;
 const MAX_SHARE_MESSAGE_CHARS = 90000;
 
 const getMetadataNormNumber = (metadata: any) => {
@@ -447,16 +461,39 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
 };
 
 const normalizeArticleSelectorToken = (value?: string | null) => {
+  const withAsciiDigits = String(value || "").replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (char) => {
+    const code = char.charCodeAt(0);
+    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+    if (code >= 0x06f0 && code <= 0x06f9) return String(code - 0x06f0);
+    return char;
+  });
   const normalized = String(value || "")
+    .replace(/[^\w\s\u00C0-\u017F.,;:\-]/g, " ")
+    .replace(/[_]/g, " ")
+    .replace(/\./g, " ")
+    .replace(/:/g, " ")
+    .replace(/,/g, " ")
+    .replace(/;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  const normalizedSafe = withAsciiDigits
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[°º]/g, " ")
     .replace(/[\[\]{}()]/g, " ")
+    .replace(/[^\w\s\.\,\;\:\-]/g, " ")
+    .replace(/[_]/g, " ")
+    .replace(/\./g, " ")
+    .replace(/:/g, " ")
+    .replace(/,/g, " ")
+    .replace(/;/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
-  if (!normalized) return "";
-  const withoutPrefix = normalized.replace(/^(art(?:iculo)?\.?\s*)+/i, "").trim();
+  const candidate = normalizedSafe || normalized;
+  if (!candidate) return "";
+  const withoutPrefix = candidate.replace(/^(art(?:iculo)?\.?\s*)+/i, "").trim();
   const annex = withoutPrefix.match(/^a\s*0*(\d+)$/i);
   if (annex) return String(Number(annex[1]));
   return withoutPrefix.replace(/\s+/g, " ").trim();
@@ -468,7 +505,13 @@ const buildArticleShareKey = (articleIndex: number, displayNumber: string) => {
 };
 
 const parseArticleSelectorInput = (value: string) => {
-  const chunks = value
+  const rawValue = String(value || "");
+  const directNumeric = rawValue.trim().match(/^\d+$/);
+  if (directNumeric) {
+    const normalized = normalizeArticleSelectorToken(directNumeric[0]);
+    return normalized ? [{ raw: directNumeric[0], normalized }] : [];
+  }
+  const chunks = rawValue
     .split(/[,\n;]+/)
     .map((part) => part.trim())
     .filter(Boolean);
@@ -505,6 +548,11 @@ const parseArticleSelectorInput = (value: string) => {
     pushRequest(chunk);
   }
 
+  if (!requests.length) {
+    const extracted = rawValue.match(/(?:a\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?/gi) || [];
+    extracted.forEach((token) => pushRequest(token));
+  }
+
   const seen = new Set<string>();
   const deduped: Array<{ raw: string; normalized: string }> = [];
   for (const request of requests) {
@@ -533,16 +581,20 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
   let working = text.trimStart();
   if (!working) return working;
 
+  const safeReplaceLead = (pattern: RegExp) => {
+    const next = working.replace(pattern, "").trimStart();
+    if (!next || next === working) return;
+    // Avoid destructive trims: only replace when substantial text remains.
+    if (next.length >= Math.max(14, Math.round(working.length * 0.22))) {
+      working = next;
+    }
+  };
+
   const genericPattern =
-    /^[\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
+    /^[\*\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
+  safeReplaceLead(genericPattern);
 
-  for (let i = 0; i < 4; i += 1) {
-    const next = working.replace(genericPattern, "").trimStart();
-    if (!next || next === working) break;
-    working = next;
-  }
-
-  if (!articleNumber || typeof articleNumber !== "string") return working;
+  if (!articleNumber || typeof articleNumber !== "string") return working.trim();
   const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber);
   const rawCandidate = articleNumber
     .replace(/[.:;,\-–—]+$/g, "")
@@ -561,13 +613,12 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
     }
     if (!numberPattern) continue;
     const pattern = new RegExp(
-      `^[\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
+      `^[\\*\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
       "i"
     );
-    const cleaned = working.replace(pattern, "").trimStart();
-    if (cleaned.length > 0 && cleaned !== working) return cleaned;
+    safeReplaceLead(pattern);
   }
-  return working;
+  return working.trim();
 };
 
 const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
@@ -605,6 +656,7 @@ const getHighlightedParts = (text: string, query: string) => {
 };
 
 export const DetailScreen = () => {
+  const { colors: appColors, isDarkMode } = useAppTheme();
   const params = useLocalSearchParams<{ guid?: string }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
 
@@ -625,10 +677,14 @@ export const DetailScreen = () => {
   const [activeArticlePreviewIndex, setActiveArticlePreviewIndex] = useState<number>(-1);
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
+  const [isStickyIndexOpen, setIsStickyIndexOpen] = useState(false);
+  const [stickyIndexEntries, setStickyIndexEntries] = useState<Array<{ y: number; label: string }>>([]);
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrollRef = useRef<ScrollView | null>(null);
   const docSearchInputRef = useRef<TextInput | null>(null);
+  const multiShareInputRef = useRef<TextInput | null>(null);
+  const multiShareInputValueRef = useRef("");
   const scrollRafRef = useRef<number | null>(null);
   const pendingScrollYRef = useRef(0);
   const articleOffsetsRef = useRef<Record<number, number>>({});
@@ -659,6 +715,7 @@ export const DetailScreen = () => {
     stickySectionCacheRef.current = { label: null };
     setStickySectionLabel(null);
     setIsHeaderMenuOpen(false);
+    setIsStickyIndexOpen(false);
     if (nextSection !== "texto") setIsDocSearchOpen(false);
     setActiveSection(nextSection);
   };
@@ -679,6 +736,8 @@ export const DetailScreen = () => {
     setIsMultiShareMode(false);
     setMultiShareArticleInput("");
     setSelectedArticleShareKeys({});
+    setIsStickyIndexOpen(false);
+    setStickyIndexEntries([]);
   }, [guidParam]);
 
   useEffect(() => {
@@ -699,7 +758,7 @@ export const DetailScreen = () => {
 
   if (!guidParam) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message="No se encontro el documento." />
       </SafeAreaView>
     );
@@ -707,7 +766,7 @@ export const DetailScreen = () => {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <LoadingState message="Cargando documento..." />
       </SafeAreaView>
     );
@@ -715,7 +774,7 @@ export const DetailScreen = () => {
 
   if (isError || !document) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
       </SafeAreaView>
     );
@@ -892,25 +951,6 @@ export const DetailScreen = () => {
     (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
     0
   );
-  const articleShareIndex = (() => {
-    const map = new Map<string, string[]>();
-    const registerAlias = (alias: string, key: string) => {
-      const token = normalizeArticleSelectorToken(alias);
-      if (!token) return;
-      const current = map.get(token) || [];
-      if (!current.includes(key)) current.push(key);
-      map.set(token, current);
-    };
-    articleShareItems.forEach((item) => {
-      registerAlias(item.displayNumber, item.key);
-      registerAlias(item.articleNumberRaw, item.key);
-      const directNumeric = item.displayNumber.match(/^(\d+)$/)?.[1];
-      if (directNumeric) registerAlias(directNumeric, item.key);
-      registerAlias(`art ${item.displayNumber}`, item.key);
-      registerAlias(`articulo ${item.displayNumber}`, item.key);
-    });
-    return map;
-  })();
   const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
   const articleSearchMatches = (() => {
     if (!normalizedSearchQuery || !searchableArticles.length) return [] as number[];
@@ -1041,6 +1081,19 @@ export const DetailScreen = () => {
     return articleStickySortedRef.current;
   };
 
+  const openStickySectionIndex = () => {
+    if (selectedSection !== "texto") return;
+    const entries = getSortedStickyEntries();
+    if (!entries.length) return;
+    setStickyIndexEntries(entries);
+    setIsStickyIndexOpen(true);
+  };
+
+  const jumpToStickyEntry = (entry: { y: number; label: string }) => {
+    setIsStickyIndexOpen(false);
+    jumpToY(entry.y, true, jumpTopOffset);
+  };
+
   const updateStickySectionByScroll = (scrollY: number) => {
     if (selectedSection !== "texto") {
       if (stickySectionCacheRef.current.label !== null) {
@@ -1144,11 +1197,11 @@ export const DetailScreen = () => {
       if (sectionItems.length <= 1) return false;
       const absDx = Math.abs(gestureState.dx);
       const absDy = Math.abs(gestureState.dy);
-      return absDx > 22 && absDx > absDy * 1.35;
+      return absDx > 14 && absDx > absDy * 1.2;
     },
     onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx <= -42) switchSectionBySwipe("next");
-      else if (gestureState.dx >= 42) switchSectionBySwipe("prev");
+      if (gestureState.dx <= -28) switchSectionBySwipe("next");
+      else if (gestureState.dx >= 28) switchSectionBySwipe("prev");
     },
   });
 
@@ -1423,26 +1476,46 @@ export const DetailScreen = () => {
   const clearMultiShareSelection = () => {
     setSelectedArticleShareKeys({});
     setMultiShareArticleInput("");
+    multiShareInputValueRef.current = "";
   };
 
   const resolveArticleKeysByInputToken = (normalizedToken: string) => {
-    const exact = articleShareIndex.get(normalizedToken) || [];
-    if (exact.length > 0) return exact;
+    const token = normalizeArticleSelectorToken(normalizedToken);
+    if (!token) return [] as string[];
 
-    const numericToken = normalizedToken.match(/^(\d+)$/)?.[1];
-    if (!numericToken) return [] as string[];
+    const numericToken = token.match(/^(\d+)$/)?.[1] || "";
+    const matches = new Set<string>();
 
-    const candidates = new Set<string>();
-    for (const [alias, keys] of articleShareIndex.entries()) {
-      if (alias.startsWith(`${numericToken} `) || alias.endsWith(` ${numericToken}`)) {
-        keys.forEach((key) => candidates.add(key));
+    articleShareItems.forEach((item) => {
+      const displayToken = normalizeArticleSelectorToken(item.displayNumber);
+      const rawToken = normalizeArticleSelectorToken(item.articleNumberRaw);
+      const aliases = [displayToken, rawToken].filter(Boolean) as string[];
+      if (aliases.includes(token)) {
+        matches.add(item.key);
+        return;
       }
-    }
-    return Array.from(candidates);
+      if (numericToken) {
+        for (const alias of aliases) {
+          const leadingNumeric = alias.match(/^(\d+)/)?.[1] || "";
+          if (
+            alias === numericToken ||
+            alias.startsWith(`${numericToken} `) ||
+            alias.endsWith(` ${numericToken}`) ||
+            leadingNumeric === numericToken
+          ) {
+            matches.add(item.key);
+            return;
+          }
+        }
+      }
+    });
+
+    return Array.from(matches);
   };
 
-  const addArticlesToSelectionFromInput = () => {
-    const requests = parseArticleSelectorInput(multiShareArticleInput);
+  const addArticlesToSelectionFromInput = (rawInput?: string) => {
+    const source = String(rawInput ?? multiShareInputValueRef.current ?? multiShareArticleInput ?? "");
+    const requests = parseArticleSelectorInput(source);
     if (!requests.length) {
       Alert.alert("Numeros invalidos", "Ingresa articulos separados por coma. Ejemplo: 1, 2, 10-12.");
       return;
@@ -1471,7 +1544,9 @@ export const DetailScreen = () => {
     }
 
     setSelectedArticleShareKeys(next);
-    setMultiShareArticleInput(missing.length > 0 ? missing.join(", ") : "");
+    const remaining = missing.length > 0 ? missing.join(", ") : "";
+    multiShareInputValueRef.current = remaining;
+    setMultiShareArticleInput(remaining);
   };
 
   const shareSelectedArticles = async () => {
@@ -1497,12 +1572,6 @@ export const DetailScreen = () => {
       setIsFavoriteBusy(true);
       const result = await toggleFavoriteFromDocument(document);
       setIsFavorite(result.isFavorite);
-      Alert.alert(
-        result.isFavorite ? "Agregado a favoritos" : "Quitado de favoritos",
-        result.isFavorite
-          ? "Este documento quedo guardado y disponible offline."
-          : "Se removio este documento de favoritos."
-      );
     } catch {
       Alert.alert("No se pudo actualizar favorito", "Intenta nuevamente.");
     } finally {
@@ -1599,7 +1668,13 @@ export const DetailScreen = () => {
                 {headingLines.map((heading, headingIndex) => (
                   <Text
                     key={`${articleKey}-h-${headingIndex}`}
-                    style={[styles.sectionHeading, { fontSize: Math.max(17, headingFontSize + 1) }]}
+                    style={[
+                      styles.sectionHeading,
+                      {
+                        fontSize: Math.max(17, headingFontSize + 1),
+                        color: appColors.primary,
+                      },
+                    ]}
                   >
                     {cleanText(heading)}
                   </Text>
@@ -1607,12 +1682,21 @@ export const DetailScreen = () => {
                 <View
                   style={[
                     styles.articleCard,
+                    {
+                      backgroundColor: appColors.card,
+                      borderColor: appColors.border,
+                    },
                     isSearchHit ? styles.articleCardSearchHit : null,
                     isSearchActive ? styles.articleCardSearchActive : null,
                   ]}
                 >
                   <View style={styles.articleLeadRow}>
-                    <Text style={[styles.articleLeadInline, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }]}>
+                    <Text
+                      style={[
+                        styles.articleLeadInline,
+                        { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: appColors.text },
+                      ]}
+                    >
                       {articleLeadTitle}
                     </Text>
                     <View style={styles.articleLeadActions}>
@@ -1644,12 +1728,17 @@ export const DetailScreen = () => {
                             isMultiShareMode && isArticleSelectedForShare ? styles.articleShareBtnTextActive : null,
                           ]}
                         >
-                          {isMultiShareMode ? (isArticleSelectedForShare ? "✓" : "+") : "↗"}
+                          {isMultiShareMode ? (isArticleSelectedForShare ? "\u2713" : "+") : "\u2197"}
                         </Text>
                       </Pressable>
                     </View>
                   </View>
-                  <Text style={[styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }]}>
+                  <Text
+                    style={[
+                      styles.articleText,
+                      { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: appColors.text },
+                    ]}
+                  >
                     {renderHighlightedInline(articleTextWithoutDuplicateLabel, `${articleKey}-body`)}
                   </Text>
                   {articlePanels.length > 0 ? (
@@ -1671,14 +1760,21 @@ export const DetailScreen = () => {
                               {panel.items.map((item, itemIndex) => (
                                 <Pressable
                                   key={`${panel.key}-${itemIndex}-${item.title}-${item.guid || "na"}`}
-                                  style={styles.relatedLinkButton}
+                                  style={[
+                                    styles.relatedLinkButton,
+                                    { backgroundColor: appColors.card, borderColor: appColors.border },
+                                  ]}
                                   onPress={() => openRelatedContent(item)}
                                   hitSlop={TOUCH_HIT_SLOP}
 
                                 >
-                                  <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
+                                  <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                                    {cleanText(prettifyNormLabel(item.title))}
+                                  </Text>
                                   {item.subtitle ? (
-                                    <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(item.subtitle))}</Text>
+                                    <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                                      {cleanText(prettifyNormLabel(item.subtitle))}
+                                    </Text>
                                   ) : null}
                                 </Pressable>
                               ))}
@@ -1744,7 +1840,7 @@ export const DetailScreen = () => {
 
   const renderDocSearchBar = () => (
     <View style={styles.docSearchBar}>
-      <Text style={styles.docSearchIcon}>⌕</Text>
+      <Text style={styles.docSearchIcon}>{"\u2315"}</Text>
       <TextInput
         ref={docSearchInputRef}
         value={docSearchQuery}
@@ -1791,15 +1887,21 @@ export const DetailScreen = () => {
         }}
         hitSlop={TOUCH_HIT_SLOP}
       >
-        <Text style={styles.docSearchCloseBtnText}>✕</Text>
+        <Text style={styles.docSearchCloseBtnText}>{"\u00D7"}</Text>
       </Pressable>
     </View>
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
       <View
-        style={styles.fixedHeaderWrap}
+        style={[
+          styles.fixedHeaderWrap,
+          {
+            backgroundColor: appColors.background,
+            borderBottomColor: appColors.border,
+          },
+        ]}
         onLayout={(event) => {
           const nextHeight = Math.ceil(event.nativeEvent.layout.height);
           if (nextHeight > 0 && nextHeight !== fixedHeaderHeight) {
@@ -1810,45 +1912,70 @@ export const DetailScreen = () => {
       >
         <View style={styles.headerMainRow}>
           <View style={styles.headerTextWrap}>
-            <Text style={styles.headerTitle}>{headerTitleText}</Text>
+            <Text style={[styles.headerTitle, { color: appColors.text }]}>{headerTitleText}</Text>
           </View>
           <View style={styles.headerActions}>
             <Pressable
-              style={[styles.headerActionBtn, isHeaderMenuOpen ? styles.headerActionBtnActive : null]}
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                isFavorite ? styles.headerActionBtnActive : null,
+                pressed ? styles.headerActionBtnPressed : null,
+              ]}
+              onPress={toggleFavoriteCurrentDocument}
+              disabled={isFavoriteBusy}
+              hitSlop={TOUCH_HIT_SLOP}
+            >
+              <Text style={[styles.headerActionBtnText, isFavorite ? styles.headerActionBtnTextActive : null]}>
+                {isFavorite ? "\u2605" : "\u2606"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                isHeaderMenuOpen ? styles.headerActionBtnActive : null,
+                pressed ? styles.headerActionBtnPressed : null,
+              ]}
               onPress={() => setIsHeaderMenuOpen((prev) => !prev)}
               hitSlop={TOUCH_HIT_SLOP}
             >
-              <Text style={[styles.headerActionBtnText, isHeaderMenuOpen ? styles.headerActionBtnTextActive : null]}>⋯</Text>
+              <Text
+                style={[
+                  styles.headerActionBtnText,
+                  { color: appColors.primaryStrong },
+                  isHeaderMenuOpen ? styles.headerActionBtnTextActive : null,
+                ]}
+              >
+                {"\u22EF"}
+              </Text>
             </Pressable>
           </View>
         </View>
         {isHeaderMenuOpen ? (
-          <View style={styles.headerMenu}>
+          <View style={[styles.headerMenu, { borderColor: appColors.border, backgroundColor: appColors.card }]}>
             {selectedSection === "texto" ? (
               <Pressable
-                style={styles.headerMenuItem}
+                style={({ pressed }) => [
+                  styles.headerMenuItem,
+                  { borderTopColor: appColors.border },
+                  pressed ? styles.headerMenuItemPressed : null,
+                ]}
                 onPress={() => {
                   setIsHeaderMenuOpen(false);
                   toggleDocSearch();
                 }}
               >
-                <Text style={styles.headerMenuItemText}>{isDocSearchOpen ? "Ocultar buscador" : "Buscar en documento"}</Text>
+                <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>
+                  {isDocSearchOpen ? "Ocultar buscador" : "Buscar en documento"}
+                </Text>
               </Pressable>
             ) : null}
-            <Pressable
-              style={styles.headerMenuItem}
-              onPress={() => {
-                setIsHeaderMenuOpen(false);
-                toggleFavoriteCurrentDocument();
-              }}
-            >
-              <Text style={styles.headerMenuItemText}>
-                {isFavoriteBusy ? "Actualizando favorito..." : isFavorite ? "Quitar de favoritos" : "Agregar a favoritos"}
-              </Text>
-            </Pressable>
             {selectedSection === "texto" && articleShareItems.length > 0 ? (
               <Pressable
-                style={styles.headerMenuItem}
+                style={({ pressed }) => [
+                  styles.headerMenuItem,
+                  { borderTopColor: appColors.border },
+                  pressed ? styles.headerMenuItemPressed : null,
+                ]}
                 onPress={() => {
                   const next = !isMultiShareMode;
                   setIsMultiShareMode(next);
@@ -1861,57 +1988,92 @@ export const DetailScreen = () => {
                   setIsHeaderMenuOpen(false);
                 }}
               >
-                <Text style={styles.headerMenuItemText}>
+                <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>
                   {isMultiShareMode ? "Ocultar seleccion multiple" : "Seleccionar varios articulos"}
                 </Text>
               </Pressable>
             ) : null}
             {isMultiShareMode ? (
               <Pressable
-                style={styles.headerMenuItem}
+                style={({ pressed }) => [
+                  styles.headerMenuItem,
+                  { borderTopColor: appColors.border },
+                  pressed ? styles.headerMenuItemPressed : null,
+                ]}
                 onPress={() => {
                   setIsHeaderMenuOpen(false);
                   shareSelectedArticles();
                 }}
               >
-                <Text style={styles.headerMenuItemText}>Compartir seleccion ({selectedShareCount})</Text>
+                <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>
+                  Compartir seleccion ({selectedShareCount})
+                </Text>
               </Pressable>
             ) : null}
             <Pressable
-              style={styles.headerMenuItem}
+              style={({ pressed }) => [
+                styles.headerMenuItem,
+                { borderTopColor: appColors.border },
+                pressed ? styles.headerMenuItemPressed : null,
+              ]}
               onPress={() => {
                 setIsHeaderMenuOpen(false);
                 zoomOut();
               }}
             >
-              <Text style={styles.headerMenuItemText}>Achicar letra (A-)</Text>
+              <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>Achicar letra (A-)</Text>
             </Pressable>
             <Pressable
-              style={styles.headerMenuItem}
+              style={({ pressed }) => [
+                styles.headerMenuItem,
+                { borderTopColor: appColors.border },
+                pressed ? styles.headerMenuItemPressed : null,
+              ]}
               onPress={() => {
                 setIsHeaderMenuOpen(false);
                 zoomIn();
               }}
             >
-              <Text style={styles.headerMenuItemText}>Agrandar letra (A+)</Text>
+              <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>Agrandar letra (A+)</Text>
             </Pressable>
             <Pressable
-              style={styles.headerMenuItem}
+              style={({ pressed }) => [
+                styles.headerMenuItem,
+                { borderTopColor: appColors.border },
+                pressed ? styles.headerMenuItemPressed : null,
+              ]}
               onPress={() => {
                 setIsHeaderMenuOpen(false);
                 shareWholeDocument();
               }}
             >
-              <Text style={styles.headerMenuItemText}>Compartir ley completa</Text>
+              <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>Compartir ley completa</Text>
             </Pressable>
           </View>
         ) : null}
         {selectedSection === "texto" && stickySectionLabel ? (
-          <View style={styles.stickySectionWrap}>
-            <Text style={[styles.stickySectionText, { fontSize: Math.max(13, bodyFontSize - 0.2) }]}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.stickySectionWrap,
+              {
+                backgroundColor: isDarkMode ? "#16213B" : "#EEF3FF",
+                borderColor: isDarkMode ? "#2B3B64" : "#D6E2FF",
+              },
+              pressed ? styles.stickySectionWrapPressed : null,
+            ]}
+            onPress={openStickySectionIndex}
+            hitSlop={TOUCH_HIT_SLOP}
+          >
+            <Text
+              style={[
+                styles.stickySectionText,
+                { fontSize: Math.max(13, bodyFontSize - 0.2), color: appColors.primaryStrong },
+              ]}
+            >
               {stickySectionLabel}
             </Text>
-          </View>
+            <Text style={[styles.stickySectionHint, { color: appColors.primaryStrong }]}>Tocar para abrir indice rapido</Text>
+          </Pressable>
         ) : null}
         {selectedSection === "texto" && isMultiShareMode && articleShareItems.length > 0 ? (
           <View style={styles.multiShareTopBar}>
@@ -1940,9 +2102,13 @@ export const DetailScreen = () => {
             </View>
             <View style={styles.multiShareTopInputRow}>
               <TextInput
+                ref={multiShareInputRef}
                 value={multiShareArticleInput}
-                onChangeText={setMultiShareArticleInput}
-                onSubmitEditing={addArticlesToSelectionFromInput}
+                onChangeText={(value) => {
+                  multiShareInputValueRef.current = value;
+                  setMultiShareArticleInput(value);
+                }}
+                onSubmitEditing={(event) => addArticlesToSelectionFromInput(event.nativeEvent.text)}
                 placeholder="Agregar por nro: 1, 2, 10-12"
                 placeholderTextColor={colors.muted}
                 style={styles.multiShareTopInput}
@@ -1950,7 +2116,11 @@ export const DetailScreen = () => {
                 autoCorrect={false}
                 returnKeyType="done"
               />
-              <Pressable style={styles.multiShareTopAddBtn} onPress={addArticlesToSelectionFromInput} hitSlop={TOUCH_HIT_SLOP}>
+              <Pressable
+                style={styles.multiShareTopAddBtn}
+                onPress={() => addArticlesToSelectionFromInput(multiShareInputValueRef.current)}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
                 <Text style={styles.multiShareTopAddText}>Agregar</Text>
               </Pressable>
             </View>
@@ -1975,19 +2145,25 @@ export const DetailScreen = () => {
           restoreSavedScrollIfNeeded();
         }}
       >
-        <View style={styles.metaCard}>
+        <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
           <MetadataRow label="Tipo" value={typeLabel} />
           <MetadataRow label={secondaryMeta.label} value={secondaryMeta.value} valueColor={secondaryMeta.color} />
         </View>
 
         {attachmentUrl ? (
           <Pressable
-            style={styles.attachmentButton}
+            style={[
+              styles.attachmentButton,
+              {
+                backgroundColor: appColors.card,
+                borderColor: appColors.primaryStrong,
+              },
+            ]}
             onPress={() => Linking.openURL(attachmentUrl)}
             hitSlop={TOUCH_HIT_SLOP}
 
           >
-            <Text style={styles.attachmentButtonText}>{attachmentLabel}</Text>
+            <Text style={[styles.attachmentButtonText, { color: appColors.primaryStrong }]}>{attachmentLabel}</Text>
           </Pressable>
         ) : null}
 
@@ -1995,12 +2171,26 @@ export const DetailScreen = () => {
           {sectionItems.map((item) => (
             <Pressable
               key={item.key}
-              style={[styles.sectionTab, selectedSection === item.key ? styles.sectionTabActive : null]}
+              style={({ pressed }) => [
+                styles.sectionTab,
+                {
+                  borderColor: appColors.border,
+                  backgroundColor: appColors.card,
+                },
+                selectedSection === item.key ? styles.sectionTabActive : null,
+                pressed ? styles.sectionTabPressed : null,
+              ]}
               onPress={() => setActiveSectionSafe(item.key)}
               hitSlop={TOUCH_HIT_SLOP}
 
             >
-              <Text style={[styles.sectionTabText, selectedSection === item.key ? styles.sectionTabTextActive : null]}>
+              <Text
+                style={[
+                  styles.sectionTabText,
+                  { color: appColors.muted },
+                  selectedSection === item.key ? [styles.sectionTabTextActive, { color: appColors.primaryStrong }] : null,
+                ]}
+              >
                 {item.label}
                 {typeof item.count === "number" ? ` (${item.count})` : ""}
               </Text>
@@ -2026,14 +2216,18 @@ export const DetailScreen = () => {
             {normasComplementarias.map((item, index) => (
               <Pressable
                 key={`normas-comp-${index}-${item.title}-${item.guid || "na"}`}
-                style={styles.relatedLinkButton}
+                style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
                 hitSlop={TOUCH_HIT_SLOP}
 
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
+                <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                  {cleanText(prettifyNormLabel(item.title))}
+                </Text>
                 {item.subtitle ? (
-                  <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(item.subtitle))}</Text>
+                  <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                    {cleanText(prettifyNormLabel(item.subtitle))}
+                  </Text>
                 ) : null}
               </Pressable>
             ))}
@@ -2046,14 +2240,18 @@ export const DetailScreen = () => {
             {normasQueModifica.map((item, index) => (
               <Pressable
                 key={`normas-mod-${index}-${item.title}-${item.guid || "na"}`}
-                style={styles.relatedLinkButton}
+                style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
                 hitSlop={TOUCH_HIT_SLOP}
 
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
+                <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                  {cleanText(prettifyNormLabel(item.title))}
+                </Text>
                 {item.subtitle ? (
-                  <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(item.subtitle))}</Text>
+                  <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                    {cleanText(prettifyNormLabel(item.subtitle))}
+                  </Text>
                 ) : null}
               </Pressable>
             ))}
@@ -2066,14 +2264,18 @@ export const DetailScreen = () => {
             {observacionesItems.map((item, index) => (
               <Pressable
                 key={`obs-${index}-${item.title}-${item.guid || "na"}`}
-                style={styles.relatedLinkButton}
+                style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
                 hitSlop={TOUCH_HIT_SLOP}
 
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
+                <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                  {cleanText(prettifyNormLabel(item.title))}
+                </Text>
                 {item.subtitle ? (
-                  <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(item.subtitle))}</Text>
+                  <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                    {cleanText(prettifyNormLabel(item.subtitle))}
+                  </Text>
                 ) : null}
               </Pressable>
             ))}
@@ -2086,14 +2288,18 @@ export const DetailScreen = () => {
             {relatedContentItems.map((item, index) => (
               <Pressable
                 key={`rel-${index}-${item.title}-${item.guid || "na"}`}
-                style={styles.relatedLinkButton}
+                style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
                 hitSlop={TOUCH_HIT_SLOP}
 
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(item.title))}</Text>
+                <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                  {cleanText(prettifyNormLabel(item.title))}
+                </Text>
                 {item.subtitle ? (
-                  <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(item.subtitle))}</Text>
+                  <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                    {cleanText(prettifyNormLabel(item.subtitle))}
+                  </Text>
                 ) : null}
               </Pressable>
             ))}
@@ -2106,14 +2312,18 @@ export const DetailScreen = () => {
             {relatedFallos.map((fallo, index) => (
               <Pressable
                 key={`fallo-aplica-${index}-${fallo.title}`}
-                style={styles.relatedLinkButton}
+                style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedFallo(fallo)}
                 hitSlop={TOUCH_HIT_SLOP}
 
               >
-                <Text style={styles.relatedLinkTitle}>{cleanText(prettifyNormLabel(fallo.title))}</Text>
+                <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
+                  {cleanText(prettifyNormLabel(fallo.title))}
+                </Text>
                 {fallo.subtitle ? (
-                  <Text style={styles.relatedLinkSubtitle}>{cleanText(prettifyNormLabel(fallo.subtitle))}</Text>
+                  <Text style={[styles.relatedLinkSubtitle, { color: appColors.muted }]}>
+                    {cleanText(prettifyNormLabel(fallo.subtitle))}
+                  </Text>
                 ) : null}
               </Pressable>
             ))}
@@ -2144,6 +2354,50 @@ export const DetailScreen = () => {
           ) : null}
         </View>
       ) : null}
+      <Modal
+        visible={isStickyIndexOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsStickyIndexOpen(false)}
+      >
+        <Pressable style={styles.stickyIndexBackdrop} onPress={() => setIsStickyIndexOpen(false)}>
+          <Pressable
+            style={[styles.stickyIndexCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}
+            onPress={() => {}}
+          >
+            <View style={[styles.stickyIndexHeader, { borderBottomColor: appColors.border, backgroundColor: appColors.card }]}>
+              <Text style={[styles.stickyIndexTitle, { color: appColors.text }]}>Indice rapido</Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.stickyIndexCloseBtn,
+                  { borderColor: appColors.border, backgroundColor: appColors.card },
+                  pressed ? styles.stickyIndexCloseBtnPressed : null,
+                ]}
+                onPress={() => setIsStickyIndexOpen(false)}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={[styles.stickyIndexCloseText, { color: appColors.muted }]}>Cerrar</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.stickyIndexList} keyboardShouldPersistTaps="handled">
+              {stickyIndexEntries.map((entry, index) => (
+                <Pressable
+                  key={`${entry.label}-${entry.y}-${index}`}
+                  style={({ pressed }) => [
+                    styles.stickyIndexItem,
+                    { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
+                    pressed ? styles.stickyIndexItemPressed : null,
+                  ]}
+                  onPress={() => jumpToStickyEntry(entry)}
+                  hitSlop={TOUCH_HIT_SLOP}
+                >
+                  <Text style={[styles.stickyIndexItemText, { color: appColors.primaryStrong }]}>{entry.label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -2185,28 +2439,31 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingTop: 1,
+    gap: 2,
+    paddingTop: 0,
   },
   headerActionBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
+    minWidth: 32,
+    height: 32,
+    borderRadius: 0,
+    borderWidth: 0,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+    paddingHorizontal: 3,
     alignItems: "center",
     justifyContent: "center",
   },
   headerActionBtnActive: {
-    borderColor: colors.primaryStrong,
-    backgroundColor: "#E8EEFF",
+    backgroundColor: "transparent",
+  },
+  headerActionBtnPressed: {
+    opacity: 0.7,
   },
   headerActionBtnText: {
     color: colors.primaryStrong,
-    fontSize: typography.small + 1,
+    fontSize: 24,
     fontWeight: "700",
-    lineHeight: 17,
+    lineHeight: 24,
   },
   headerActionBtnTextActive: {
     color: colors.primaryStrong,
@@ -2224,6 +2481,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderTopWidth: 1,
     borderTopColor: "#EEF2F7",
+  },
+  headerMenuItemPressed: {
+    backgroundColor: "#F1F5FF",
   },
   headerMenuItemText: {
     color: colors.text,
@@ -2275,6 +2535,9 @@ const styles = StyleSheet.create({
   sectionTabActive: {
     borderColor: colors.primaryStrong,
     backgroundColor: "#E8EEFF",
+  },
+  sectionTabPressed: {
+    opacity: 0.75,
   },
   sectionTabText: {
     color: colors.muted,
@@ -2398,12 +2661,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
   },
+  stickySectionWrapPressed: {
+    backgroundColor: "#E2EAFF",
+  },
   stickySectionText: {
     color: colors.primaryStrong,
     fontWeight: "700",
     letterSpacing: 0.2,
     textAlign: "center",
     lineHeight: 17,
+  },
+  stickySectionHint: {
+    marginTop: 2,
+    color: colors.primaryStrong,
+    fontSize: typography.small - 1,
+    textAlign: "center",
+    opacity: 0.8,
   },
   docSearchIcon: {
     color: colors.muted,
@@ -2724,7 +2997,78 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 4,
     backgroundColor: "#39BDF3",
   },
+  stickyIndexBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(6, 13, 30, 0.5)",
+    paddingHorizontal: spacing.md,
+    justifyContent: "center",
+  },
+  stickyIndexCard: {
+    maxHeight: "72%",
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    overflow: "hidden",
+  },
+  stickyIndexHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: "#F8FAFF",
+  },
+  stickyIndexTitle: {
+    color: colors.text,
+    fontSize: typography.subtitle,
+    fontWeight: "700",
+  },
+  stickyIndexCloseBtn: {
+    minHeight: 28,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    justifyContent: "center",
+    backgroundColor: colors.card,
+  },
+  stickyIndexCloseBtnPressed: {
+    backgroundColor: "#EEF3FF",
+    borderColor: "#C7D2FE",
+  },
+  stickyIndexCloseText: {
+    color: colors.muted,
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  stickyIndexList: {
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+  stickyIndexItem: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  stickyIndexItemPressed: {
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#EAF0FF",
+  },
+  stickyIndexItemText: {
+    color: colors.primaryStrong,
+    fontSize: typography.small + 1,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
 });
+
+
 
 
 

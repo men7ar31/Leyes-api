@@ -85,7 +85,7 @@ export const ResultCard = ({ hit, onPress, onSwipeRight }: Props) => {
       if (!onSwipeRight) return false;
       const absDx = Math.abs(gestureState.dx);
       const absDy = Math.abs(gestureState.dy);
-      return absDx > 18 && absDx > absDy * 1.2;
+      return absDx > 24 && absDx > absDy * 1.6;
     },
     onPanResponderRelease: (_, gestureState) => {
       if (!onSwipeRight) return;

@@ -5,8 +5,10 @@ import { router, useFocusEffect } from "expo-router";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { formatDate } from "../utils/format";
 import { type FavoriteItem, loadFavorites, removeFavoriteByGuid } from "../services/favorites";
+import { useAppTheme } from "../theme/appTheme";
 
 export const FavoritesScreen = () => {
+  const { colors: appColors, isDarkMode } = useAppTheme();
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -36,15 +38,17 @@ export const FavoritesScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Favoritos</Text>
-        <Text style={styles.subtitle}>Disponibles sin conexion cuando tengan snapshot guardado.</Text>
+        <Text style={[styles.title, { color: appColors.text }]}>Favoritos</Text>
+        <Text style={[styles.subtitle, { color: appColors.muted }]}>
+          Disponibles sin conexion cuando tengan snapshot guardado.
+        </Text>
       </View>
 
       {isLoading ? (
         <View style={styles.emptyWrap}>
-          <Text style={styles.emptyText}>Cargando favoritos...</Text>
+          <Text style={[styles.emptyText, { color: appColors.text }]}>Cargando favoritos...</Text>
         </View>
       ) : (
         <FlatList
@@ -53,27 +57,51 @@ export const FavoritesScreen = () => {
           contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
           renderItem={({ item }) => (
-            <Pressable style={styles.card} onPress={() => openDetail(item.guid)}>
+            <Pressable
+              style={[
+                styles.card,
+                {
+                  backgroundColor: appColors.card,
+                  borderColor: appColors.border,
+                },
+              ]}
+              onPress={() => openDetail(item.guid)}
+            >
               <View style={styles.row}>
-                <View style={styles.typeBadge}>
-                  <Text style={styles.typeBadgeText}>{item.contentType || "legislacion"}</Text>
+                <View style={[styles.typeBadge, { backgroundColor: appColors.badgeBg }]}>
+                  <Text style={[styles.typeBadgeText, { color: appColors.badgeText }]}>
+                    {item.contentType || "legislacion"}
+                  </Text>
                 </View>
-                <Text style={styles.offlineText}>{item.offlineReady ? "Offline listo" : "Sin snapshot offline"}</Text>
+                <Text style={[styles.offlineText, { color: appColors.primaryStrong }]}>
+                  {item.offlineReady ? "Offline listo" : "Sin snapshot offline"}
+                </Text>
               </View>
-              <Text style={styles.itemTitle}>{item.title || "Sin titulo"}</Text>
-              {item.subtitle ? <Text style={styles.itemSubtitle}>{item.subtitle}</Text> : null}
+              <Text style={[styles.itemTitle, { color: appColors.text }]}>{item.title || "Sin titulo"}</Text>
+              {item.subtitle ? <Text style={[styles.itemSubtitle, { color: appColors.muted }]}>{item.subtitle}</Text> : null}
               <View style={styles.rowBetween}>
-                <Text style={styles.savedAt}>Guardado: {formatDate(item.savedAt) || item.savedAt}</Text>
-                <Pressable onPress={() => removeItem(item.guid)} style={styles.removeBtn}>
-                  <Text style={styles.removeBtnText}>Quitar</Text>
+                <Text style={[styles.savedAt, { color: appColors.muted }]}>
+                  Guardado: {formatDate(item.savedAt) || item.savedAt}
+                </Text>
+                <Pressable
+                  onPress={() => removeItem(item.guid)}
+                  style={[
+                    styles.removeBtn,
+                    {
+                      borderColor: isDarkMode ? "#7F1D1D" : "#F2C7C7",
+                      backgroundColor: isDarkMode ? "#2B1111" : "#FFF5F5",
+                    },
+                  ]}
+                >
+                  <Text style={[styles.removeBtnText, { color: appColors.danger }]}>Quitar</Text>
                 </Pressable>
               </View>
             </Pressable>
           )}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>No hay favoritos guardados.</Text>
-              <Text style={styles.emptyHint}>
+              <Text style={[styles.emptyText, { color: appColors.text }]}>No hay favoritos guardados.</Text>
+              <Text style={[styles.emptyHint, { color: appColors.muted }]}>
                 Desliza a la derecha en resultados o usa el menu de tres puntos en el detalle.
               </Text>
             </View>

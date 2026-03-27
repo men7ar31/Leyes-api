@@ -17,6 +17,7 @@ import { ErrorState } from "../components/ErrorState";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { useSaijSearch } from "../hooks/useSaijSearch";
 import { addFavoriteFromSearchHit } from "../services/favorites";
+import { useAppTheme } from "../theme/appTheme";
 import type {
   SaijFacetNode,
   SaijLegislationSubtype,
@@ -84,7 +85,7 @@ const getDateTimestamp = (value?: string | null) => {
 const initialState: FormState = {
   textoEnNorma: "",
   numeroNorma: "",
-  contentType: "legislacion",
+  contentType: "todo",
   legislationSubtype: "todas",
   jurisprudenceSubtype: "todas",
   doctrinaSubtype: "todas",
@@ -240,6 +241,7 @@ export const SearchScreen = () => {
   const [collapseToken, setCollapseToken] = useState(0);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
   const [activeRefineSection, setActiveRefineSection] = useState<RefineSection | null>(null);
+  const { isDarkMode, toggleThemeMode, colors: appColors } = useAppTheme();
 
   useEffect(() => {
     let cancelled = false;
@@ -270,6 +272,7 @@ export const SearchScreen = () => {
       // ignore storage write failures
     });
   }, [recentSearches]);
+
 
   const filters = useMemo<SaijSearchFilters>(() => {
     const next: SaijSearchFilters = {};
@@ -492,10 +495,24 @@ export const SearchScreen = () => {
     );
   };
 
+  const screenBackgroundColor = appColors.background;
+  const headerTitleColor = appColors.text;
+  const themeToggleBg = isDarkMode ? "#111827" : "#F3F4F6";
+  const themeToggleBorder = appColors.border;
+  const themeToggleTextColor = appColors.primaryStrong;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBackgroundColor }]}>
       <FlatList
         data={hasSearched ? sortedItems : []}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="on-drag"
+        removeClippedSubviews={true}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={40}
+        windowSize={7}
+        decelerationRate="normal"
         keyExtractor={(item, index) => `${String(item.guid || "no-guid")}-${index}`}
         renderItem={({ item }) => (
           <ResultCard
@@ -521,7 +538,21 @@ export const SearchScreen = () => {
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
         ListHeaderComponent={
           <View style={styles.header}>
-            <Text style={styles.title}>Buscar en SAIJ</Text>
+            <View style={styles.headerTopRow}>
+              <Text style={[styles.title, { color: headerTitleColor }]}>Buscar en SAIJ</Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.themeToggleBtn,
+                  { backgroundColor: themeToggleBg, borderColor: themeToggleBorder },
+                  pressed ? styles.themeToggleBtnPressed : null,
+                ]}
+                onPress={toggleThemeMode}
+              >
+                <Text style={[styles.themeToggleText, { color: themeToggleTextColor }]}>
+                  {isDarkMode ? "\u2600" : "\u263D"}
+                </Text>
+              </Pressable>
+            </View>
             <SearchBar
               value={formState.textoEnNorma}
               onChangeText={(textoEnNorma) => setFormState((prev) => ({ ...prev, textoEnNorma }))}
@@ -601,7 +632,7 @@ export const SearchScreen = () => {
             {showRefiners ? (
               <View style={styles.refineCard}>
                 <Pressable
-                  style={styles.refineToggle}
+                  style={({ pressed }) => [styles.refineToggle, pressed ? styles.refineTogglePressed : null]}
                   onPress={() => {
                     setIsRefineOpen((prev) => !prev);
                     if (isRefineOpen) setActiveRefineSection(null);
@@ -613,7 +644,10 @@ export const SearchScreen = () => {
 
                 {isRefineOpen ? (
                   <View style={styles.refineMenu}>
-                    <Pressable style={styles.refineSectionButton} onPress={() => toggleRefineSection("anio")}>
+                    <Pressable
+                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      onPress={() => toggleRefineSection("anio")}
+                    >
                       <Text style={styles.refineSectionText}>
                         Años {appliedState.facetFecha ? `· ${getLeafLabel(appliedState.facetFecha)}` : ""}
                       </Text>
@@ -631,7 +665,10 @@ export const SearchScreen = () => {
                       />
                     ) : null}
 
-                    <Pressable style={styles.refineSectionButton} onPress={() => toggleRefineSection("tema")}>
+                    <Pressable
+                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      onPress={() => toggleRefineSection("tema")}
+                    >
                       <Text style={styles.refineSectionText}>
                         Tema {appliedState.facetTema ? `· ${getLeafLabel(appliedState.facetTema)}` : ""}
                       </Text>
@@ -649,7 +686,10 @@ export const SearchScreen = () => {
                       />
                     ) : null}
 
-                    <Pressable style={styles.refineSectionButton} onPress={() => toggleRefineSection("estado")}>
+                    <Pressable
+                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      onPress={() => toggleRefineSection("estado")}
+                    >
                       <Text style={styles.refineSectionText}>
                         Estado de vigencia {appliedState.facetEstadoVigencia ? `· ${getLeafLabel(appliedState.facetEstadoVigencia)}` : ""}
                       </Text>
@@ -667,7 +707,10 @@ export const SearchScreen = () => {
                       />
                     ) : null}
 
-                    <Pressable style={styles.refineSectionButton} onPress={() => toggleRefineSection("organismo")}>
+                    <Pressable
+                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      onPress={() => toggleRefineSection("organismo")}
+                    >
                       <Text style={styles.refineSectionText}>
                         Organismo {appliedState.facetOrganismo ? `· ${getLeafLabel(appliedState.facetOrganismo)}` : ""}
                       </Text>
@@ -685,7 +728,10 @@ export const SearchScreen = () => {
                       />
                     ) : null}
 
-                    <Pressable style={styles.clearRefineButton} onPress={clearRefiners}>
+                    <Pressable
+                      style={({ pressed }) => [styles.clearRefineButton, pressed ? styles.clearRefineButtonPressed : null]}
+                      onPress={clearRefiners}
+                    >
                       <Text style={styles.clearRefineText}>Limpiar refinadores</Text>
                     </Pressable>
                   </View>
@@ -699,14 +745,22 @@ export const SearchScreen = () => {
 
             <View style={styles.filterActions}>
               <Pressable
-                style={[styles.searchButton, styles.actionButton, provinceRequired ? styles.searchButtonDisabled : null]}
+                style={({ pressed }) => [
+                  styles.searchButton,
+                  styles.actionButton,
+                  provinceRequired ? styles.searchButtonDisabled : null,
+                  pressed ? styles.actionButtonPressed : null,
+                ]}
                 onPress={onSearch}
                 disabled={provinceRequired}
               >
                 <Text style={styles.searchButtonText}>Buscar</Text>
               </Pressable>
 
-              <Pressable style={[styles.clearButton, styles.actionButton]} onPress={clearAllFilters}>
+              <Pressable
+                style={({ pressed }) => [styles.clearButton, styles.actionButton, pressed ? styles.actionButtonPressed : null]}
+                onPress={clearAllFilters}
+              >
                 <Text style={styles.clearButtonText}>Borrar filtros</Text>
               </Pressable>
             </View>
@@ -718,7 +772,7 @@ export const SearchScreen = () => {
                   {recentSearches.map((entry) => (
                     <Pressable
                       key={entry.key}
-                      style={styles.recentItem}
+                      style={({ pressed }) => [styles.recentItem, pressed ? styles.recentItemPressed : null]}
                       onPress={() => openRecentDocument(entry)}
                     >
                       <Text style={styles.recentItemType} numberOfLines={1}>
@@ -743,7 +797,10 @@ export const SearchScreen = () => {
               <View style={styles.resultsMetaRow}>
                 <Text style={styles.totalText}>{total} resultados</Text>
                 {canSortByDate ? (
-                  <Pressable style={styles.sortToggleButton} onPress={() => setDateOrder((prev) => (prev === "desc" ? "asc" : "desc"))}>
+                  <Pressable
+                    style={({ pressed }) => [styles.sortToggleButton, pressed ? styles.sortToggleButtonPressed : null]}
+                    onPress={() => setDateOrder((prev) => (prev === "desc" ? "asc" : "desc"))}
+                  >
                     <Text style={styles.sortToggleButtonText}>
                       A/Z · {dateOrder === "desc" ? "Mas recientes" : "Mas antiguas"}
                     </Text>
@@ -781,9 +838,10 @@ const FacetGroup = ({ title, options, selected, onSelect }: FacetGroupProps) => 
         {options.map((option) => (
           <Pressable
             key={`${title}-${option.value}`}
-            style={[
+            style={({ pressed }) => [
               styles.refineChip,
               selected === option.value ? styles.refineChipActive : styles.refineChipInactive,
+              pressed ? styles.refineChipPressed : null,
             ]}
             onPress={() => onSelect(option.value)}
           >
@@ -815,6 +873,12 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     marginBottom: spacing.md,
   },
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
   refineCard: {
     backgroundColor: colors.card,
     borderRadius: radius.md,
@@ -827,6 +891,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+  },
+  refineTogglePressed: {
+    opacity: 0.75,
   },
   refineTitle: {
     color: colors.text,
@@ -850,6 +917,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },
+  refineSectionButtonPressed: {
+    backgroundColor: "#EEF3FF",
+    borderColor: "#C7D2FE",
+  },
   refineSectionText: {
     color: colors.text,
     fontSize: typography.small,
@@ -872,6 +943,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
+  },
+  refineChipPressed: {
+    opacity: 0.75,
   },
   refineChipActive: {
     backgroundColor: colors.primaryStrong,
@@ -900,6 +974,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     backgroundColor: colors.background,
   },
+  clearRefineButtonPressed: {
+    backgroundColor: "#EEF3FF",
+    borderColor: "#C7D2FE",
+  },
   clearRefineText: {
     color: colors.muted,
     fontSize: typography.small,
@@ -910,12 +988,32 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.text,
   },
+  themeToggleBtn: {
+    minWidth: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  themeToggleBtnPressed: {
+    opacity: 0.75,
+  },
+  themeToggleText: {
+    fontSize: 19,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
   filterActions: {
     flexDirection: "row",
     gap: spacing.sm,
   },
   actionButton: {
     flex: 1,
+  },
+  actionButtonPressed: {
+    opacity: 0.8,
   },
   searchButton: {
     backgroundColor: colors.primaryStrong,
@@ -966,6 +1064,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
   },
+  sortToggleButtonPressed: {
+    backgroundColor: "#EEF3FF",
+    borderColor: "#C7D2FE",
+  },
   sortToggleButtonText: {
     color: colors.primaryStrong,
     fontSize: typography.small,
@@ -994,6 +1096,10 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
+  },
+  recentItemPressed: {
+    backgroundColor: "#EEF3FF",
+    borderColor: "#C7D2FE",
   },
   recentItemType: {
     color: colors.primaryStrong,

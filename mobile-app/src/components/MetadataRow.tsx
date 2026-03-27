@@ -1,5 +1,6 @@
-﻿import { StyleSheet, Text, View } from "react-native";
-import { colors, spacing, typography } from "../constants/theme";
+import { StyleSheet, Text, View } from "react-native";
+import { spacing, typography } from "../constants/theme";
+import { useAppTheme } from "../theme/appTheme";
 
 type Props = {
   label: string;
@@ -8,11 +9,12 @@ type Props = {
 };
 
 export const MetadataRow = ({ label, value, valueColor }: Props) => {
+  const { colors } = useAppTheme();
   if (!value) return null;
   return (
     <View style={styles.row}>
-      <Text style={styles.label}>{label}</Text>
-      <Text style={[styles.value, valueColor ? { color: valueColor } : null]}>{value}</Text>
+      <Text style={[styles.label, { color: colors.muted }]}>{label}</Text>
+      <Text style={[styles.value, { color: colors.text }, valueColor ? { color: valueColor } : null]}>{value}</Text>
     </View>
   );
 };
@@ -25,11 +27,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   label: {
-    color: colors.muted,
     fontSize: typography.small,
   },
   value: {
-    color: colors.text,
     fontSize: typography.small,
     fontWeight: "600",
     flexShrink: 1,

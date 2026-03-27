@@ -273,7 +273,7 @@ export const SearchFilters = ({
       {contentType === "legislacion" ? (
         <View style={styles.field}>
           <Pressable
-            style={styles.mainAccordionHeader}
+            style={({ pressed }) => [styles.mainAccordionHeader, pressed ? styles.mainAccordionHeaderPressed : null]}
             onPress={() => setIsLegislationPanelOpen((prev) => !prev)}
           >
             <Text style={styles.mainAccordionTitle}>Subfiltro de legislacion</Text>
@@ -293,7 +293,7 @@ export const SearchFilters = ({
               {legislationSubtypeGroups.map((group) => (
                 <View key={group.title} style={styles.subGroup}>
                   <Pressable
-                    style={styles.accordionHeader}
+                    style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
                     onPress={() =>
                       setOpenLegislationGroup((prev) => (prev === group.title ? null : group.title))
                     }
@@ -326,7 +326,7 @@ export const SearchFilters = ({
       {isJurisprudenceType ? (
         <View style={styles.field}>
           <Pressable
-            style={styles.mainAccordionHeader}
+            style={({ pressed }) => [styles.mainAccordionHeader, pressed ? styles.mainAccordionHeaderPressed : null]}
             onPress={() => setIsJurisprudencePanelOpen((prev) => !prev)}
           >
             <Text style={styles.mainAccordionTitle}>Subfiltro de jurisprudencia</Text>
@@ -338,7 +338,7 @@ export const SearchFilters = ({
               {jurisprudenceSubtypeGroups.map((group) => (
                 <View key={group.title} style={styles.subGroup}>
                   <Pressable
-                    style={styles.accordionHeader}
+                    style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
                     onPress={() =>
                       setOpenJurisprudenceGroup((prev) => (prev === group.title ? null : group.title))
                     }
@@ -387,7 +387,7 @@ export const SearchFilters = ({
             {doctrinaSubtypeGroups.map((group) => (
               <View key={group.title} style={styles.subGroup}>
                 <Pressable
-                  style={styles.accordionHeader}
+                  style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
                   onPress={() => setOpenDoctrinaGroup((prev) => (prev === group.title ? null : group.title))}
                 >
                   <Text style={styles.subGroupTitle}>{group.title}</Text>
@@ -469,7 +469,11 @@ type ChipProps = {
 const FilterChip = ({ label, selected, onPress }: ChipProps) => (
   <Pressable
     onPress={onPress}
-    style={[styles.chip, selected ? styles.chipActive : styles.chipInactive]}
+    style={({ pressed }) => [
+      styles.chip,
+      selected ? styles.chipActive : styles.chipInactive,
+      pressed ? styles.chipPressed : null,
+    ]}
   >
     <Text style={[styles.chipText, selected ? styles.chipTextActive : styles.chipTextInactive]}>
       {label}
@@ -514,6 +518,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },
+  mainAccordionHeaderPressed: {
+    backgroundColor: "#F1F5FF",
+  },
   mainAccordionTitle: {
     color: colors.text,
     fontSize: typography.body,
@@ -536,6 +543,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },
+  accordionHeaderPressed: {
+    backgroundColor: "#F1F5FF",
+  },
   subGroupTitle: {
     color: colors.muted,
     fontSize: typography.small,
@@ -552,6 +562,9 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: radius.sm,
     borderWidth: 1,
+  },
+  chipPressed: {
+    opacity: 0.78,
   },
   chipActive: {
     backgroundColor: colors.primaryStrong,

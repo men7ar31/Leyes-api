@@ -1,5 +1,6 @@
-﻿import { Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, radius, spacing, typography } from "../constants/theme";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { radius, spacing, typography } from "../constants/theme";
+import { useAppTheme } from "../theme/appTheme";
 
 type Props = {
   message?: string;
@@ -7,11 +8,12 @@ type Props = {
 };
 
 export const ErrorState = ({ message = "Ocurrio un error.", onRetry }: Props) => {
+  const { colors } = useAppTheme();
   return (
     <View style={styles.container}>
-      <Text style={styles.text}>{message}</Text>
+      <Text style={[styles.text, { color: colors.danger }]}>{message}</Text>
       {onRetry ? (
-        <Pressable style={styles.button} onPress={onRetry}>
+        <Pressable style={[styles.button, { backgroundColor: colors.primaryStrong }]} onPress={onRetry}>
           <Text style={styles.buttonText}>Reintentar</Text>
         </Pressable>
       ) : null}
@@ -26,12 +28,10 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   text: {
-    color: colors.danger,
     fontSize: typography.body,
     textAlign: "center",
   },
   button: {
-    backgroundColor: colors.primaryStrong,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.lg,
     borderRadius: radius.md,
