@@ -18,11 +18,15 @@ export const LoadingState = ({ message = "Cargando..." }: Props) => {
 
 const styles = StyleSheet.create({
   container: {
-    padding: spacing.md,
+    width: "100%",
+    minHeight: 180,
     alignItems: "center",
+    justifyContent: "center",
     gap: spacing.sm,
+    padding: spacing.md,
   },
   text: {
     fontSize: typography.body,
+    textAlign: "center",
   },
 });

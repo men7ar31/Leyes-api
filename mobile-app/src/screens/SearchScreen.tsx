@@ -1,7 +1,8 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
+import { Moon, Sun } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SearchBar } from "../components/SearchBar";
 import {
@@ -14,6 +15,8 @@ import { ResultCard } from "../components/ResultCard";
 import { LoadingState } from "../components/LoadingState";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
+import { FullScreenLoader } from "../components/FullScreenLoader";
+import { AppHeader } from "../components/AppHeader";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { useSaijSearch } from "../hooks/useSaijSearch";
 import { addFavoriteFromSearchHit } from "../services/favorites";
@@ -239,6 +242,7 @@ export const SearchScreen = () => {
   const [hasSearched, setHasSearched] = useState(false);
   const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
   const [collapseToken, setCollapseToken] = useState(0);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
   const [activeRefineSection, setActiveRefineSection] = useState<RefineSection | null>(null);
   const { isDarkMode, toggleThemeMode, colors: appColors } = useAppTheme();
@@ -473,12 +477,17 @@ export const SearchScreen = () => {
 
   const renderEmpty = () => {
     if (!hasSearched) {
-      return <EmptyState message="Ingresa un criterio y presiona Buscar." />;
+      return (
+        <EmptyState
+          message="Ingresa un criterio para comenzar"
+          hint="Busca por texto, numero de norma o tipo de contenido."
+        />
+      );
     }
-    if (isLoading) {
-      return <LoadingState message="Buscando en SAIJ..." />;
+    if (isLoading && items.length === 0) {
+      return <FullScreenLoader message="Buscando en SAIJ..." />;
     }
-    if (isError) {
+    if (isError && items.length === 0) {
       return <ErrorState message={(error as Error)?.message || "Fallo la busqueda."} onRetry={refetch} />;
     }
     return <EmptyState message="No encontramos resultados." />;
@@ -489,25 +498,37 @@ export const SearchScreen = () => {
     if (isFetchingNextPage) return <LoadingState message="Cargando mas..." />;
     if (!hasNextPage) return null;
     return (
-      <Pressable style={styles.loadMore} onPress={() => fetchNextPage()}>
-        <Text style={styles.loadMoreText}>Cargar mas</Text>
+      <Pressable
+        style={({ pressed }) => [
+          styles.loadMore,
+          { borderColor: appColors.border, backgroundColor: appColors.card },
+          pressed ? styles.pressed : null,
+        ]}
+        onPress={() => fetchNextPage()}
+      >
+        <Text style={[styles.loadMoreText, { color: appColors.primaryStrong }]}>Cargar mas</Text>
       </Pressable>
     );
   };
 
-  const screenBackgroundColor = appColors.background;
-  const headerTitleColor = appColors.text;
-  const themeToggleBg = isDarkMode ? "#111827" : "#F3F4F6";
-  const themeToggleBorder = appColors.border;
-  const themeToggleTextColor = appColors.primaryStrong;
-
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBackgroundColor }]}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+      <AppHeader
+        title="Buscar en SAIJ"
+        actions={[
+          {
+            icon: isDarkMode ? Sun : Moon,
+            onPress: toggleThemeMode,
+            label: isDarkMode ? "Modo claro" : "Modo oscuro",
+          },
+        ]}
+      />
+
       <FlatList
         data={hasSearched ? sortedItems : []}
         keyboardShouldPersistTaps="always"
         keyboardDismissMode="on-drag"
-        removeClippedSubviews={true}
+        removeClippedSubviews
         initialNumToRender={8}
         maxToRenderPerBatch={8}
         updateCellsBatchingPeriod={40}
@@ -537,118 +558,116 @@ export const SearchScreen = () => {
         contentContainerStyle={styles.listContent}
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
         ListHeaderComponent={
-          <View style={styles.header}>
-            <View style={styles.headerTopRow}>
-              <Text style={[styles.title, { color: headerTitleColor }]}>Buscar en SAIJ</Text>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.themeToggleBtn,
-                  { backgroundColor: themeToggleBg, borderColor: themeToggleBorder },
-                  pressed ? styles.themeToggleBtnPressed : null,
-                ]}
-                onPress={toggleThemeMode}
-              >
-                <Text style={[styles.themeToggleText, { color: themeToggleTextColor }]}>
-                  {isDarkMode ? "\u2600" : "\u263D"}
-                </Text>
-              </Pressable>
-            </View>
+          <View style={styles.headerContent}>
             <SearchBar
               value={formState.textoEnNorma}
               onChangeText={(textoEnNorma) => setFormState((prev) => ({ ...prev, textoEnNorma }))}
-              placeholder="Texto en norma"
-            />
-            <SearchFilters
-              numeroNorma={formState.numeroNorma}
-              onChangeNumeroNorma={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
-              contentType={formState.contentType}
-              onChangeContentType={(contentType) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  contentType,
-                  legislationSubtype: contentType === "legislacion" ? prev.legislationSubtype : "todas",
-                  jurisprudenceSubtype: contentType === "jurisprudencia" ? prev.jurisprudenceSubtype : "todas",
-                  doctrinaSubtype: contentType === "doctrina" ? prev.doctrinaSubtype : "todas",
-                  dictamenSubtype: contentType === "dictamen" ? prev.dictamenSubtype : "todas",
-                  facetFecha: "",
-                  facetTema: "",
-                  facetEstadoVigencia: "",
-                  facetOrganismo: "",
-                }))
-              }
-              legislationSubtype={formState.legislationSubtype}
-              onChangeLegislationSubtype={(legislationSubtype) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  legislationSubtype,
-                  facetFecha: "",
-                  facetTema: "",
-                  facetEstadoVigencia: "",
-                  facetOrganismo: "",
-                }))
-              }
-              jurisprudenceSubtype={formState.jurisprudenceSubtype}
-              onChangeJurisprudenceSubtype={(jurisprudenceSubtype) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  jurisprudenceSubtype,
-                  facetFecha: "",
-                  facetTema: "",
-                  facetEstadoVigencia: "",
-                  facetOrganismo: "",
-                }))
-              }
-              doctrinaSubtype={formState.doctrinaSubtype}
-              onChangeDoctrinaSubtype={(doctrinaSubtype) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  doctrinaSubtype,
-                  facetFecha: "",
-                  facetTema: "",
-                  facetEstadoVigencia: "",
-                  facetOrganismo: "",
-                }))
-              }
-              dictamenSubtype={formState.dictamenSubtype}
-              onChangeDictamenSubtype={(dictamenSubtype) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  dictamenSubtype,
-                  facetFecha: "",
-                  facetTema: "",
-                  facetEstadoVigencia: "",
-                  facetOrganismo: "",
-                }))
-              }
-              jurisdictionKind={formState.jurisdictionKind}
-              onChangeJurisdictionKind={(jurisdictionKind) =>
-                setFormState((prev) => ({ ...prev, jurisdictionKind }))
-              }
-              province={formState.province}
-              onChangeProvince={(province) => setFormState((prev) => ({ ...prev, province }))}
-              collapseToken={collapseToken}
+              placeholder="Buscar leyes, articulos o palabras clave"
+              onFilterPress={() => setIsFiltersOpen((prev) => !prev)}
+              filterActive={isFiltersOpen}
             />
 
+            {isFiltersOpen ? (
+              <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+                <SearchFilters
+                  numeroNorma={formState.numeroNorma}
+                  onChangeNumeroNorma={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
+                  contentType={formState.contentType}
+                  onChangeContentType={(contentType) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      contentType,
+                      legislationSubtype: contentType === "legislacion" ? prev.legislationSubtype : "todas",
+                      jurisprudenceSubtype: contentType === "jurisprudencia" ? prev.jurisprudenceSubtype : "todas",
+                      doctrinaSubtype: contentType === "doctrina" ? prev.doctrinaSubtype : "todas",
+                      dictamenSubtype: contentType === "dictamen" ? prev.dictamenSubtype : "todas",
+                      facetFecha: "",
+                      facetTema: "",
+                      facetEstadoVigencia: "",
+                      facetOrganismo: "",
+                    }))
+                  }
+                  legislationSubtype={formState.legislationSubtype}
+                  onChangeLegislationSubtype={(legislationSubtype) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      legislationSubtype,
+                      facetFecha: "",
+                      facetTema: "",
+                      facetEstadoVigencia: "",
+                      facetOrganismo: "",
+                    }))
+                  }
+                  jurisprudenceSubtype={formState.jurisprudenceSubtype}
+                  onChangeJurisprudenceSubtype={(jurisprudenceSubtype) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      jurisprudenceSubtype,
+                      facetFecha: "",
+                      facetTema: "",
+                      facetEstadoVigencia: "",
+                      facetOrganismo: "",
+                    }))
+                  }
+                  doctrinaSubtype={formState.doctrinaSubtype}
+                  onChangeDoctrinaSubtype={(doctrinaSubtype) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      doctrinaSubtype,
+                      facetFecha: "",
+                      facetTema: "",
+                      facetEstadoVigencia: "",
+                      facetOrganismo: "",
+                    }))
+                  }
+                  dictamenSubtype={formState.dictamenSubtype}
+                  onChangeDictamenSubtype={(dictamenSubtype) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      dictamenSubtype,
+                      facetFecha: "",
+                      facetTema: "",
+                      facetEstadoVigencia: "",
+                      facetOrganismo: "",
+                    }))
+                  }
+                  jurisdictionKind={formState.jurisdictionKind}
+                  onChangeJurisdictionKind={(jurisdictionKind) =>
+                    setFormState((prev) => ({ ...prev, jurisdictionKind }))
+                  }
+                  province={formState.province}
+                  onChangeProvince={(province) => setFormState((prev) => ({ ...prev, province }))}
+                  collapseToken={collapseToken}
+                />
+              </View>
+            ) : null}
+
             {showRefiners ? (
-              <View style={styles.refineCard}>
+              <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
                 <Pressable
-                  style={({ pressed }) => [styles.refineToggle, pressed ? styles.refineTogglePressed : null]}
+                  style={({ pressed }) => [styles.refineToggle, pressed ? styles.pressed : null]}
                   onPress={() => {
                     setIsRefineOpen((prev) => !prev);
                     if (isRefineOpen) setActiveRefineSection(null);
                   }}
                 >
-                  <Text style={styles.refineTitle}>Refinar resultados</Text>
-                  <Text style={styles.refineToggleHint}>{isRefineOpen ? "Ocultar" : "Mostrar"}</Text>
+                  <Text style={[styles.refineTitle, { color: appColors.text }]}>Refinar resultados</Text>
+                  <Text style={[styles.refineHint, { color: appColors.primaryStrong }]}>
+                    {isRefineOpen ? "Ocultar" : "Mostrar"}
+                  </Text>
                 </Pressable>
 
                 {isRefineOpen ? (
-                  <View style={styles.refineMenu}>
+                  <View style={styles.refineBody}>
                     <Pressable
-                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      style={({ pressed }) => [
+                        styles.refineButton,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={() => toggleRefineSection("anio")}
                     >
-                      <Text style={styles.refineSectionText}>
+                      <Text style={[styles.refineButtonText, { color: appColors.text }]}>
                         Años {appliedState.facetFecha ? `· ${getLeafLabel(appliedState.facetFecha)}` : ""}
                       </Text>
                     </Pressable>
@@ -666,10 +685,14 @@ export const SearchScreen = () => {
                     ) : null}
 
                     <Pressable
-                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      style={({ pressed }) => [
+                        styles.refineButton,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={() => toggleRefineSection("tema")}
                     >
-                      <Text style={styles.refineSectionText}>
+                      <Text style={[styles.refineButtonText, { color: appColors.text }]}>
                         Tema {appliedState.facetTema ? `· ${getLeafLabel(appliedState.facetTema)}` : ""}
                       </Text>
                     </Pressable>
@@ -687,10 +710,14 @@ export const SearchScreen = () => {
                     ) : null}
 
                     <Pressable
-                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      style={({ pressed }) => [
+                        styles.refineButton,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={() => toggleRefineSection("estado")}
                     >
-                      <Text style={styles.refineSectionText}>
+                      <Text style={[styles.refineButtonText, { color: appColors.text }]}> 
                         Estado de vigencia {appliedState.facetEstadoVigencia ? `· ${getLeafLabel(appliedState.facetEstadoVigencia)}` : ""}
                       </Text>
                     </Pressable>
@@ -708,10 +735,14 @@ export const SearchScreen = () => {
                     ) : null}
 
                     <Pressable
-                      style={({ pressed }) => [styles.refineSectionButton, pressed ? styles.refineSectionButtonPressed : null]}
+                      style={({ pressed }) => [
+                        styles.refineButton,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={() => toggleRefineSection("organismo")}
                     >
-                      <Text style={styles.refineSectionText}>
+                      <Text style={[styles.refineButtonText, { color: appColors.text }]}> 
                         Organismo {appliedState.facetOrganismo ? `· ${getLeafLabel(appliedState.facetOrganismo)}` : ""}
                       </Text>
                     </Pressable>
@@ -729,10 +760,14 @@ export const SearchScreen = () => {
                     ) : null}
 
                     <Pressable
-                      style={({ pressed }) => [styles.clearRefineButton, pressed ? styles.clearRefineButtonPressed : null]}
+                      style={({ pressed }) => [
+                        styles.clearRefine,
+                        { borderColor: appColors.border, backgroundColor: appColors.card },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={clearRefiners}
                     >
-                      <Text style={styles.clearRefineText}>Limpiar refinadores</Text>
+                      <Text style={[styles.clearRefineText, { color: appColors.muted }]}>Limpiar refinadores</Text>
                     </Pressable>
                   </View>
                 ) : null}
@@ -740,53 +775,60 @@ export const SearchScreen = () => {
             ) : null}
 
             {provinceRequired ? (
-              <Text style={styles.warning}>Ingresa una provincia para buscar por jurisdiccion provincial.</Text>
+              <Text style={[styles.warning, { color: appColors.danger }]}>Ingresa una provincia para jurisdiccion provincial.</Text>
             ) : null}
 
-            <View style={styles.filterActions}>
+            <View style={styles.actionsRow}>
               <Pressable
                 style={({ pressed }) => [
-                  styles.searchButton,
-                  styles.actionButton,
-                  provinceRequired ? styles.searchButtonDisabled : null,
-                  pressed ? styles.actionButtonPressed : null,
+                  styles.primaryAction,
+                  { backgroundColor: appColors.primaryStrong, borderColor: appColors.primaryStrong },
+                  provinceRequired ? styles.disabled : null,
+                  pressed ? styles.pressed : null,
                 ]}
                 onPress={onSearch}
                 disabled={provinceRequired}
               >
-                <Text style={styles.searchButtonText}>Buscar</Text>
+                <Text style={[styles.primaryActionText, { color: appColors.white }]}>Buscar</Text>
               </Pressable>
 
               <Pressable
-                style={({ pressed }) => [styles.clearButton, styles.actionButton, pressed ? styles.actionButtonPressed : null]}
+                style={({ pressed }) => [
+                  styles.secondaryAction,
+                  { backgroundColor: appColors.card, borderColor: appColors.border },
+                  pressed ? styles.pressed : null,
+                ]}
                 onPress={clearAllFilters}
               >
-                <Text style={styles.clearButtonText}>Borrar filtros</Text>
+                <Text style={[styles.secondaryActionText, { color: appColors.text }]}>Borrar filtros</Text>
               </Pressable>
             </View>
 
             {!hasSearched && recentSearches.length > 0 ? (
-              <View style={styles.recentsCard}>
-                <Text style={styles.recentsTitle}>Ultimos documentos abiertos</Text>
+              <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+                <Text style={[styles.blockTitle, { color: appColors.text }]}>Ultimos documentos abiertos</Text>
                 <View style={styles.recentsList}>
                   {recentSearches.map((entry) => (
                     <Pressable
                       key={entry.key}
-                      style={({ pressed }) => [styles.recentItem, pressed ? styles.recentItemPressed : null]}
+                      style={({ pressed }) => [
+                        styles.recentItem,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.pressed : null,
+                      ]}
                       onPress={() => openRecentDocument(entry)}
                     >
-                      <Text style={styles.recentItemType} numberOfLines={1}>
+                      <Text style={[styles.recentType, { color: appColors.primaryStrong }]} numberOfLines={1}>
                         {entry.contentType}
                       </Text>
-                      <Text style={styles.recentItemText} numberOfLines={2}>
+                      <Text style={[styles.recentTitle, { color: appColors.text }]} numberOfLines={2}>
                         {entry.title}
                       </Text>
                       {entry.subtitle ? (
-                        <Text style={styles.recentItemSubtitle} numberOfLines={1}>
+                        <Text style={[styles.recentSubtitle, { color: appColors.muted }]} numberOfLines={1}>
                           {entry.subtitle}
                         </Text>
                       ) : null}
-                      <Text style={styles.recentItemOpen}>Abrir</Text>
                     </Pressable>
                   ))}
                 </View>
@@ -795,13 +837,17 @@ export const SearchScreen = () => {
 
             {hasSearched ? (
               <View style={styles.resultsMetaRow}>
-                <Text style={styles.totalText}>{total} resultados</Text>
+                <Text style={[styles.totalText, { color: appColors.muted }]}>{total} resultados</Text>
                 {canSortByDate ? (
                   <Pressable
-                    style={({ pressed }) => [styles.sortToggleButton, pressed ? styles.sortToggleButtonPressed : null]}
+                    style={({ pressed }) => [
+                      styles.sortBtn,
+                      { borderColor: appColors.border, backgroundColor: appColors.card },
+                      pressed ? styles.pressed : null,
+                    ]}
                     onPress={() => setDateOrder((prev) => (prev === "desc" ? "asc" : "desc"))}
                   >
-                    <Text style={styles.sortToggleButtonText}>
+                    <Text style={[styles.sortBtnText, { color: appColors.primaryStrong }]}> 
                       A/Z · {dateOrder === "desc" ? "Mas recientes" : "Mas antiguas"}
                     </Text>
                   </Pressable>
@@ -829,26 +875,30 @@ type FacetGroupProps = {
 };
 
 const FacetGroup = ({ title, options, selected, onSelect }: FacetGroupProps) => {
+  const { colors: appColors } = useAppTheme();
   if (!options.length) return null;
 
   return (
     <View style={styles.refineGroup}>
-      <Text style={styles.refineGroupTitle}>{title}</Text>
+      <Text style={[styles.refineGroupTitle, { color: appColors.muted }]}>{title}</Text>
       <View style={styles.refineChips}>
         {options.map((option) => (
           <Pressable
             key={`${title}-${option.value}`}
             style={({ pressed }) => [
               styles.refineChip,
-              selected === option.value ? styles.refineChipActive : styles.refineChipInactive,
-              pressed ? styles.refineChipPressed : null,
+              {
+                borderColor: selected === option.value ? appColors.primaryStrong : appColors.border,
+                backgroundColor: selected === option.value ? appColors.primarySoft : appColors.card,
+              },
+              pressed ? styles.pressed : null,
             ]}
             onPress={() => onSelect(option.value)}
           >
             <Text
               style={[
                 styles.refineChipText,
-                selected === option.value ? styles.refineChipTextActive : styles.refineChipTextInactive,
+                { color: selected === option.value ? appColors.primaryStrong : appColors.text },
               ]}
             >
               {option.label} ({option.hits})
@@ -863,28 +913,19 @@ const FacetGroup = ({ title, options, selected, onSelect }: FacetGroupProps) => 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: colors.background,
   },
   listContent: {
     padding: spacing.md,
     paddingBottom: spacing.xl,
   },
-  header: {
+  headerContent: {
     gap: spacing.md,
     marginBottom: spacing.md,
   },
-  headerTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  refineCard: {
-    backgroundColor: colors.card,
-    borderRadius: radius.md,
+  filtersCard: {
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
+    padding: spacing.sm,
     gap: spacing.sm,
   },
   refineToggle: {
@@ -892,37 +933,24 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
-  refineTogglePressed: {
-    opacity: 0.75,
-  },
   refineTitle: {
-    color: colors.text,
     fontSize: typography.body,
     fontWeight: "700",
-    textTransform: "uppercase",
   },
-  refineToggleHint: {
-    color: colors.primaryStrong,
+  refineHint: {
     fontSize: typography.small,
     fontWeight: "700",
   },
-  refineMenu: {
+  refineBody: {
     gap: spacing.sm,
   },
-  refineSectionButton: {
-    backgroundColor: colors.background,
+  refineButton: {
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
-  refineSectionButtonPressed: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "#C7D2FE",
-  },
-  refineSectionText: {
-    color: colors.text,
+  refineButtonText: {
     fontSize: typography.small,
     fontWeight: "700",
   },
@@ -930,8 +958,8 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   refineGroupTitle: {
-    color: colors.muted,
     fontSize: typography.small,
+    fontWeight: "600",
   },
   refineChips: {
     flexDirection: "row",
@@ -939,116 +967,90 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   refineChip: {
-    borderRadius: radius.sm,
+    borderRadius: radius.pill,
     borderWidth: 1,
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
-  },
-  refineChipPressed: {
-    opacity: 0.75,
-  },
-  refineChipActive: {
-    backgroundColor: colors.primaryStrong,
-    borderColor: colors.primaryStrong,
-  },
-  refineChipInactive: {
-    backgroundColor: colors.background,
-    borderColor: colors.border,
   },
   refineChipText: {
     fontSize: typography.small,
     fontWeight: "600",
   },
-  refineChipTextActive: {
-    color: "#FFFFFF",
-  },
-  refineChipTextInactive: {
-    color: colors.text,
-  },
-  clearRefineButton: {
+  clearRefine: {
     alignSelf: "flex-start",
+    borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
-    backgroundColor: colors.background,
-  },
-  clearRefineButtonPressed: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "#C7D2FE",
   },
   clearRefineText: {
-    color: colors.muted,
     fontSize: typography.small,
-    fontWeight: "600",
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: colors.text,
-  },
-  themeToggleBtn: {
-    minWidth: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 8,
-  },
-  themeToggleBtnPressed: {
-    opacity: 0.75,
-  },
-  themeToggleText: {
-    fontSize: 19,
-    fontWeight: "700",
-    lineHeight: 20,
-  },
-  filterActions: {
-    flexDirection: "row",
-    gap: spacing.sm,
-  },
-  actionButton: {
-    flex: 1,
-  },
-  actionButtonPressed: {
-    opacity: 0.8,
-  },
-  searchButton: {
-    backgroundColor: colors.primaryStrong,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    alignItems: "center",
-  },
-  clearButton: {
-    backgroundColor: colors.card,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  clearButtonText: {
-    color: colors.text,
-    fontSize: typography.body,
-    fontWeight: "600",
-  },
-  searchButtonDisabled: {
-    opacity: 0.6,
-  },
-  searchButtonText: {
-    color: "#FFFFFF",
-    fontSize: typography.body,
     fontWeight: "600",
   },
   warning: {
-    color: colors.danger,
+    fontSize: typography.small,
+    fontWeight: "600",
+  },
+  actionsRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  primaryAction: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryAction: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryActionText: {
+    fontSize: typography.body,
+    fontWeight: "700",
+  },
+  secondaryActionText: {
+    fontSize: typography.body,
+    fontWeight: "700",
+  },
+  disabled: {
+    opacity: 0.6,
+  },
+  pressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.995 }],
+  },
+  recentsList: {
+    gap: spacing.xs,
+  },
+  recentItem: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    gap: 2,
+  },
+  recentType: {
+    fontSize: typography.small,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+  recentTitle: {
+    fontSize: typography.small,
+    fontWeight: "600",
+  },
+  recentSubtitle: {
     fontSize: typography.small,
   },
-  totalText: {
-    color: colors.muted,
-    fontSize: typography.small,
+  blockTitle: {
+    fontSize: typography.body,
+    fontWeight: "700",
   },
   resultsMetaRow: {
     flexDirection: "row",
@@ -1056,84 +1058,29 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
-  sortToggleButton: {
+  totalText: {
+    fontSize: typography.small,
+  },
+  sortBtn: {
+    borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    backgroundColor: colors.card,
     paddingHorizontal: spacing.sm,
     paddingVertical: 6,
   },
-  sortToggleButtonPressed: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "#C7D2FE",
-  },
-  sortToggleButtonText: {
-    color: colors.primaryStrong,
-    fontSize: typography.small,
-    fontWeight: "700",
-  },
-  recentsCard: {
-    backgroundColor: colors.card,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.sm,
-    gap: spacing.xs,
-  },
-  recentsTitle: {
-    color: colors.text,
-    fontSize: typography.body,
-    fontWeight: "700",
-  },
-  recentsList: {
-    gap: spacing.xs,
-  },
-  recentItem: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
-  },
-  recentItemPressed: {
-    backgroundColor: "#EEF3FF",
-    borderColor: "#C7D2FE",
-  },
-  recentItemType: {
-    color: colors.primaryStrong,
-    fontSize: typography.small,
-    fontWeight: "700",
-    textTransform: "capitalize",
-  },
-  recentItemText: {
-    color: colors.text,
-    fontSize: typography.small,
-    fontWeight: "600",
-  },
-  recentItemSubtitle: {
-    color: colors.muted,
-    fontSize: typography.small,
-  },
-  recentItemOpen: {
-    color: colors.primaryStrong,
+  sortBtnText: {
     fontSize: typography.small,
     fontWeight: "700",
   },
   loadMore: {
     marginTop: spacing.md,
+    minHeight: 40,
     alignItems: "center",
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
+    justifyContent: "center",
+    borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
   },
   loadMoreText: {
-    color: colors.primaryStrong,
     fontSize: typography.body,
-    fontWeight: "600",
+    fontWeight: "700",
   },
 });
-

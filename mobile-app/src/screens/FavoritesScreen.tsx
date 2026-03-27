@@ -2,13 +2,18 @@ import { useCallback, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
-import { colors, radius, spacing, typography } from "../constants/theme";
+import { Heart, Trash2 } from "lucide-react-native";
+import { radius, shadows, spacing, typography } from "../constants/theme";
 import { formatDate } from "../utils/format";
 import { type FavoriteItem, loadFavorites, removeFavoriteByGuid } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
+import { AppHeader } from "../components/AppHeader";
+import { EmptyState } from "../components/EmptyState";
+import { FullScreenLoader } from "../components/FullScreenLoader";
+import { OfflineBanner } from "../components/OfflineBanner";
 
 export const FavoritesScreen = () => {
-  const { colors: appColors, isDarkMode } = useAppTheme();
+  const { colors } = useAppTheme();
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -37,77 +42,89 @@ export const FavoritesScreen = () => {
     setItems(result.favorites);
   };
 
-  return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-      <View style={styles.header}>
-        <Text style={[styles.title, { color: appColors.text }]}>Favoritos</Text>
-        <Text style={[styles.subtitle, { color: appColors.muted }]}>
-          Disponibles sin conexion cuando tengan snapshot guardado.
-        </Text>
-      </View>
+  if (isLoading) {
+    return (
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}>
+        <AppHeader title="Favoritos" />
+        <FullScreenLoader message="Cargando favoritos..." />
+      </SafeAreaView>
+    );
+  }
 
-      {isLoading ? (
-        <View style={styles.emptyWrap}>
-          <Text style={[styles.emptyText, { color: appColors.text }]}>Cargando favoritos...</Text>
-        </View>
-      ) : (
+  return (
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}>
+      <AppHeader title="Favoritos" />
+
+      <View style={styles.contentWrap}>
+        <OfflineBanner text="Disponible sin conexión cuando exista snapshot" />
+
         <FlatList
           data={items}
           keyExtractor={(item) => item.guid}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, items.length === 0 ? styles.listContentEmpty : null]}
           ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
           renderItem={({ item }) => (
             <Pressable
-              style={[
+              style={({ pressed }) => [
                 styles.card,
                 {
-                  backgroundColor: appColors.card,
-                  borderColor: appColors.border,
+                  backgroundColor: colors.card,
+                  borderColor: colors.border,
                 },
+                shadows.card,
+                pressed ? styles.cardPressed : null,
               ]}
               onPress={() => openDetail(item.guid)}
             >
-              <View style={styles.row}>
-                <View style={[styles.typeBadge, { backgroundColor: appColors.badgeBg }]}>
-                  <Text style={[styles.typeBadgeText, { color: appColors.badgeText }]}>
+              <View style={styles.rowBetween}>
+                <View style={[styles.typeBadge, { backgroundColor: colors.primarySoft }]}>
+                  <Text style={[styles.typeBadgeText, { color: colors.primaryStrong }]}>
                     {item.contentType || "legislacion"}
                   </Text>
                 </View>
-                <Text style={[styles.offlineText, { color: appColors.primaryStrong }]}>
-                  {item.offlineReady ? "Offline listo" : "Sin snapshot offline"}
+                <Text style={[styles.offlineText, { color: item.offlineReady ? colors.success : colors.muted }]}>
+                  {item.offlineReady ? "Offline" : "Sin snapshot"}
                 </Text>
               </View>
-              <Text style={[styles.itemTitle, { color: appColors.text }]}>{item.title || "Sin titulo"}</Text>
-              {item.subtitle ? <Text style={[styles.itemSubtitle, { color: appColors.muted }]}>{item.subtitle}</Text> : null}
+
+              <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={3}>
+                {item.title || "Sin titulo"}
+              </Text>
+
+              {item.subtitle ? (
+                <Text style={[styles.itemSubtitle, { color: colors.muted }]} numberOfLines={2}>
+                  {item.subtitle}
+                </Text>
+              ) : null}
+
               <View style={styles.rowBetween}>
-                <Text style={[styles.savedAt, { color: appColors.muted }]}>
+                <Text style={[styles.savedAt, { color: colors.muted }]}>
                   Guardado: {formatDate(item.savedAt) || item.savedAt}
                 </Text>
+
                 <Pressable
                   onPress={() => removeItem(item.guid)}
-                  style={[
+                  style={({ pressed }) => [
                     styles.removeBtn,
-                    {
-                      borderColor: isDarkMode ? "#7F1D1D" : "#F2C7C7",
-                      backgroundColor: isDarkMode ? "#2B1111" : "#FFF5F5",
-                    },
+                    { borderColor: colors.border, backgroundColor: colors.card },
+                    pressed ? styles.removeBtnPressed : null,
                   ]}
                 >
-                  <Text style={[styles.removeBtnText, { color: appColors.danger }]}>Quitar</Text>
+                  <Trash2 size={15} color={colors.danger} strokeWidth={2} />
+                  <Text style={[styles.removeBtnText, { color: colors.danger }]}>Quitar</Text>
                 </Pressable>
               </View>
             </Pressable>
           )}
           ListEmptyComponent={
-            <View style={styles.emptyWrap}>
-              <Text style={[styles.emptyText, { color: appColors.text }]}>No hay favoritos guardados.</Text>
-              <Text style={[styles.emptyHint, { color: appColors.muted }]}>
-                Desliza a la derecha en resultados o usa el menu de tres puntos en el detalle.
-              </Text>
-            </View>
+            <EmptyState
+              icon={Heart}
+              message="No tenés favoritos guardados"
+              hint="Agregá desde resultados o desde la vista de cada ley."
+            />
           }
         />
-      )}
+      </View>
     </SafeAreaView>
   );
 };
@@ -115,108 +132,76 @@ export const FavoritesScreen = () => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: colors.background,
   },
-  header: {
+  contentWrap: {
+    flex: 1,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
-    gap: spacing.xs,
-  },
-  title: {
-    fontSize: typography.title,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  subtitle: {
-    color: colors.muted,
-    fontSize: typography.small + 1,
+    gap: spacing.sm,
   },
   listContent: {
-    paddingHorizontal: spacing.md,
     paddingBottom: spacing.xl,
   },
+  listContentEmpty: {
+    flex: 1,
+    justifyContent: "center",
+  },
   card: {
-    backgroundColor: colors.card,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
     padding: spacing.md,
     gap: spacing.xs,
   },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.xs,
+  cardPressed: {
+    opacity: 0.9,
   },
   rowBetween: {
-    marginTop: spacing.xs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     gap: spacing.sm,
   },
   typeBadge: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.badgeBg,
-    borderRadius: radius.sm,
+    borderRadius: radius.pill,
     paddingHorizontal: spacing.sm,
     paddingVertical: 4,
   },
   typeBadgeText: {
-    color: colors.badgeText,
     fontSize: typography.small,
     fontWeight: "700",
     textTransform: "capitalize",
   },
   itemTitle: {
-    color: colors.text,
     fontSize: typography.subtitle,
     fontWeight: "700",
   },
   itemSubtitle: {
-    color: colors.muted,
     fontSize: typography.body,
+    lineHeight: 19,
   },
   offlineText: {
-    color: colors.primaryStrong,
     fontSize: typography.small,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   savedAt: {
-    color: colors.muted,
+    flex: 1,
     fontSize: typography.small,
   },
   removeBtn: {
-    borderWidth: 1,
-    borderColor: "#F2C7C7",
-    backgroundColor: "#FFF5F5",
-    borderRadius: radius.sm,
     minHeight: 30,
+    borderRadius: radius.pill,
+    borderWidth: 1,
     paddingHorizontal: spacing.sm,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 5,
+  },
+  removeBtnPressed: {
+    opacity: 0.82,
   },
   removeBtnText: {
-    color: colors.danger,
     fontWeight: "700",
-    fontSize: typography.small + 1,
-  },
-  emptyWrap: {
-    padding: spacing.lg,
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  emptyText: {
-    color: colors.text,
-    fontSize: typography.subtitle,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  emptyHint: {
-    color: colors.muted,
-    fontSize: typography.body,
-    textAlign: "center",
+    fontSize: typography.small,
   },
 });

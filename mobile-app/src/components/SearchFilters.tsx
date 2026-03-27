@@ -1,7 +1,8 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import type { SaijLegislationSubtype, SaijSearchRequest } from "../types/saij";
+import { useAppTheme } from "../theme/appTheme";
 
 export type JurisdictionKind = "todas" | "nacional" | "provincial" | "internacional";
 
@@ -211,11 +212,22 @@ export const SearchFilters = ({
   onChangeProvince,
   collapseToken,
 }: Props) => {
+  const { colors: appColors } = useAppTheme();
   const [isLegislationPanelOpen, setIsLegislationPanelOpen] = useState(true);
   const [openLegislationGroup, setOpenLegislationGroup] = useState<string | null>("Leyes y tratados");
   const [isJurisprudencePanelOpen, setIsJurisprudencePanelOpen] = useState(true);
   const [openJurisprudenceGroup, setOpenJurisprudenceGroup] = useState<string | null>("Tipo");
   const [openDoctrinaGroup, setOpenDoctrinaGroup] = useState<string | null>("Derecho privado");
+
+  const raisedSurfaceStyle = {
+    backgroundColor: appColors.card,
+    borderColor: appColors.border,
+  } as const;
+
+  const insetSurfaceStyle = {
+    backgroundColor: appColors.card,
+    borderColor: appColors.border,
+  } as const;
 
   const isJurisprudenceType = contentType === "jurisprudencia" || contentType === "fallo" || contentType === "sumario";
 
@@ -243,11 +255,11 @@ export const SearchFilters = ({
   return (
     <View style={styles.container}>
       <View style={styles.field}>
-        <Text style={styles.label}>Numero de norma (opcional)</Text>
+        <Text style={[styles.label, { color: appColors.muted }]}>Numero de norma (opcional)</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, insetSurfaceStyle, { color: appColors.text }]}
           placeholder="Ej: 70/2023"
-          placeholderTextColor={colors.muted}
+          placeholderTextColor={appColors.muted}
           value={numeroNorma}
           onChangeText={onChangeNumeroNorma}
           keyboardType="default"
@@ -257,7 +269,7 @@ export const SearchFilters = ({
       </View>
 
       <View style={styles.field}>
-        <Text style={styles.label}>Tipo de contenido</Text>
+        <Text style={[styles.label, { color: appColors.muted }]}>Tipo de contenido</Text>
         <View style={styles.chips}>
           {contentOptions.map((option) => (
             <FilterChip
@@ -273,11 +285,17 @@ export const SearchFilters = ({
       {contentType === "legislacion" ? (
         <View style={styles.field}>
           <Pressable
-            style={({ pressed }) => [styles.mainAccordionHeader, pressed ? styles.mainAccordionHeaderPressed : null]}
+            style={({ pressed }) => [
+              styles.mainAccordionHeader,
+              raisedSurfaceStyle,
+              pressed ? styles.mainAccordionHeaderPressed : null,
+            ]}
             onPress={() => setIsLegislationPanelOpen((prev) => !prev)}
           >
-            <Text style={styles.mainAccordionTitle}>Subfiltro de legislacion</Text>
-            <Text style={styles.accordionHint}>{isLegislationPanelOpen ? "Ocultar" : "Mostrar"}</Text>
+            <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de legislacion</Text>
+            <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
+              {isLegislationPanelOpen ? "Ocultar" : "Mostrar"}
+            </Text>
           </Pressable>
 
           {isLegislationPanelOpen ? (
@@ -293,13 +311,17 @@ export const SearchFilters = ({
               {legislationSubtypeGroups.map((group) => (
                 <View key={group.title} style={styles.subGroup}>
                   <Pressable
-                    style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
+                    style={({ pressed }) => [
+                      styles.accordionHeader,
+                      raisedSurfaceStyle,
+                      pressed ? styles.accordionHeaderPressed : null,
+                    ]}
                     onPress={() =>
                       setOpenLegislationGroup((prev) => (prev === group.title ? null : group.title))
                     }
                   >
-                    <Text style={styles.subGroupTitle}>{group.title}</Text>
-                    <Text style={styles.accordionHint}>
+                    <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
+                    <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
                       {openLegislationGroup === group.title ? "Ocultar" : "Mostrar"}
                     </Text>
                   </Pressable>
@@ -326,11 +348,17 @@ export const SearchFilters = ({
       {isJurisprudenceType ? (
         <View style={styles.field}>
           <Pressable
-            style={({ pressed }) => [styles.mainAccordionHeader, pressed ? styles.mainAccordionHeaderPressed : null]}
+            style={({ pressed }) => [
+              styles.mainAccordionHeader,
+              raisedSurfaceStyle,
+              pressed ? styles.mainAccordionHeaderPressed : null,
+            ]}
             onPress={() => setIsJurisprudencePanelOpen((prev) => !prev)}
           >
-            <Text style={styles.mainAccordionTitle}>Subfiltro de jurisprudencia</Text>
-            <Text style={styles.accordionHint}>{isJurisprudencePanelOpen ? "Ocultar" : "Mostrar"}</Text>
+            <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de jurisprudencia</Text>
+            <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
+              {isJurisprudencePanelOpen ? "Ocultar" : "Mostrar"}
+            </Text>
           </Pressable>
 
           {isJurisprudencePanelOpen ? (
@@ -338,13 +366,17 @@ export const SearchFilters = ({
               {jurisprudenceSubtypeGroups.map((group) => (
                 <View key={group.title} style={styles.subGroup}>
                   <Pressable
-                    style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
+                    style={({ pressed }) => [
+                      styles.accordionHeader,
+                      raisedSurfaceStyle,
+                      pressed ? styles.accordionHeaderPressed : null,
+                    ]}
                     onPress={() =>
                       setOpenJurisprudenceGroup((prev) => (prev === group.title ? null : group.title))
                     }
                   >
-                    <Text style={styles.subGroupTitle}>{group.title}</Text>
-                    <Text style={styles.accordionHint}>
+                    <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
+                    <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
                       {openJurisprudenceGroup === group.title ? "Ocultar" : "Mostrar"}
                     </Text>
                   </Pressable>
@@ -370,7 +402,7 @@ export const SearchFilters = ({
 
       {contentType === "doctrina" ? (
         <View style={styles.field}>
-          <Text style={styles.mainAccordionTitle}>Subfiltro de doctrina</Text>
+          <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de doctrina</Text>
           <View style={styles.chips}>
             <FilterChip
               label="Todas"
@@ -387,11 +419,15 @@ export const SearchFilters = ({
             {doctrinaSubtypeGroups.map((group) => (
               <View key={group.title} style={styles.subGroup}>
                 <Pressable
-                  style={({ pressed }) => [styles.accordionHeader, pressed ? styles.accordionHeaderPressed : null]}
+                  style={({ pressed }) => [
+                    styles.accordionHeader,
+                    raisedSurfaceStyle,
+                    pressed ? styles.accordionHeaderPressed : null,
+                  ]}
                   onPress={() => setOpenDoctrinaGroup((prev) => (prev === group.title ? null : group.title))}
                 >
-                  <Text style={styles.subGroupTitle}>{group.title}</Text>
-                  <Text style={styles.accordionHint}>
+                  <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
+                  <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
                     {openDoctrinaGroup === group.title ? "Ocultar" : "Mostrar"}
                   </Text>
                 </Pressable>
@@ -415,7 +451,7 @@ export const SearchFilters = ({
 
       {contentType === "dictamen" ? (
         <View style={styles.field}>
-          <Text style={styles.mainAccordionTitle}>Subfiltro de dictamenes</Text>
+          <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de dictamenes</Text>
           <View style={styles.chips}>
             {dictamenSubtypeOptions.map((option) => (
               <FilterChip
@@ -430,7 +466,7 @@ export const SearchFilters = ({
       ) : null}
 
       <View style={styles.field}>
-        <Text style={styles.label}>Jurisdiccion</Text>
+        <Text style={[styles.label, { color: appColors.muted }]}>Jurisdiccion</Text>
         <View style={styles.chips}>
           {jurisdictionOptions.map((option) => (
             <FilterChip
@@ -445,11 +481,11 @@ export const SearchFilters = ({
 
       {jurisdictionKind === "provincial" ? (
         <View style={styles.field}>
-          <Text style={styles.label}>Provincia</Text>
+          <Text style={[styles.label, { color: appColors.muted }]}>Provincia</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, insetSurfaceStyle, { color: appColors.text }]}
             placeholder="Ej: Buenos Aires"
-            placeholderTextColor={colors.muted}
+            placeholderTextColor={appColors.muted}
             value={province}
             onChangeText={onChangeProvince}
             autoCapitalize="words"
@@ -466,20 +502,31 @@ type ChipProps = {
   onPress: () => void;
 };
 
-const FilterChip = ({ label, selected, onPress }: ChipProps) => (
-  <Pressable
-    onPress={onPress}
-    style={({ pressed }) => [
-      styles.chip,
-      selected ? styles.chipActive : styles.chipInactive,
-      pressed ? styles.chipPressed : null,
-    ]}
-  >
-    <Text style={[styles.chipText, selected ? styles.chipTextActive : styles.chipTextInactive]}>
-      {label}
-    </Text>
-  </Pressable>
-);
+const FilterChip = ({ label, selected, onPress }: ChipProps) => {
+  const { colors: appColors } = useAppTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.chip,
+        selected
+          ? [styles.chipActive, { backgroundColor: appColors.primaryStrong, borderColor: appColors.primaryStrong }]
+          : [
+              styles.chipInactive,
+              {
+                backgroundColor: appColors.surface,
+                borderColor: appColors.border,
+              },
+            ],
+        pressed ? styles.chipPressed : null,
+      ]}
+    >
+      <Text style={[styles.chipText, selected ? styles.chipTextActive : [styles.chipTextInactive, { color: appColors.text }]]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -493,14 +540,11 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
   },
   input: {
-    backgroundColor: colors.card,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
     fontSize: typography.body,
-    color: colors.text,
   },
   chips: {
     flexDirection: "row",
@@ -512,14 +556,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: radius.sm,
-    backgroundColor: colors.card,
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },
   mainAccordionHeaderPressed: {
-    backgroundColor: "#F1F5FF",
+    transform: [{ scale: 0.994 }],
+    opacity: 0.86,
   },
   mainAccordionTitle: {
     color: colors.text,
@@ -537,14 +580,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: radius.sm,
-    backgroundColor: colors.card,
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },
   accordionHeaderPressed: {
-    backgroundColor: "#F1F5FF",
+    transform: [{ scale: 0.994 }],
+    opacity: 0.86,
   },
   subGroupTitle: {
     color: colors.muted,
@@ -564,7 +606,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   chipPressed: {
-    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+    opacity: 0.84,
   },
   chipActive: {
     backgroundColor: colors.primaryStrong,
@@ -585,3 +628,4 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
 });
+

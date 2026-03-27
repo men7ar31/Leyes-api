@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
+import { Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
 import { useSaijDocument } from "../hooks/useSaijDocument";
 import { LoadingState } from "../components/LoadingState";
@@ -1925,9 +1926,12 @@ export const DetailScreen = () => {
               disabled={isFavoriteBusy}
               hitSlop={TOUCH_HIT_SLOP}
             >
-              <Text style={[styles.headerActionBtnText, isFavorite ? styles.headerActionBtnTextActive : null]}>
-                {isFavorite ? "\u2605" : "\u2606"}
-              </Text>
+              <Heart
+                size={20}
+                color={isFavorite ? "#D22F2F" : appColors.primaryStrong}
+                fill={isFavorite ? "#D22F2F" : "transparent"}
+                strokeWidth={2}
+              />
             </Pressable>
             <Pressable
               style={({ pressed }) => [
@@ -1938,15 +1942,7 @@ export const DetailScreen = () => {
               onPress={() => setIsHeaderMenuOpen((prev) => !prev)}
               hitSlop={TOUCH_HIT_SLOP}
             >
-              <Text
-                style={[
-                  styles.headerActionBtnText,
-                  { color: appColors.primaryStrong },
-                  isHeaderMenuOpen ? styles.headerActionBtnTextActive : null,
-                ]}
-              >
-                {"\u22EF"}
-              </Text>
+              <Ellipsis size={20} color={appColors.primaryStrong} strokeWidth={2} />
             </Pressable>
           </View>
         </View>
