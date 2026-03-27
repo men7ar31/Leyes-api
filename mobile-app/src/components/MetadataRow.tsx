@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
-import { spacing, typography } from "../constants/theme";
+import { spacing } from "../constants/theme";
 import { useAppTheme } from "../theme/appTheme";
+import { readingTypography } from "../theme/readingTypography";
 
 type Props = {
   label: string;
@@ -27,10 +28,13 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   label: {
-    fontSize: typography.small,
+    fontSize: readingTypography.metadataSize,
+    lineHeight: readingTypography.metadataLineHeight,
+    letterSpacing: 0.2,
   },
   value: {
-    fontSize: typography.small,
+    fontSize: readingTypography.metadataSize + 1,
+    lineHeight: readingTypography.metadataLineHeight,
     fontWeight: "600",
     flexShrink: 1,
     textAlign: "right",

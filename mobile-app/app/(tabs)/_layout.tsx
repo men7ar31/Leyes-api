@@ -22,6 +22,8 @@ export default function TabsLayout() {
           backgroundColor: colors.card,
         },
         tabBarHideOnKeyboard: true,
+        lazy: true,
+        freezeOnBlur: true,
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "600",

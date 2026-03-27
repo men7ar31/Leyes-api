@@ -1,32 +1,31 @@
 import { PanResponder, View } from "react-native";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import type { SaijSearchHit } from "../types/saij";
 import { LawCard } from "./LawCard";
 
 type Props = {
   hit: SaijSearchHit;
   onPress: () => void;
-  onSwipeRight?: () => void;
+  onFavoritePress?: () => void;
+  isFavorite?: boolean;
 };
 
-export const ResultCard = ({ hit, onPress, onSwipeRight }: Props) => {
+export const ResultCard = ({ hit, onPress, onFavoritePress, isFavorite = false }: Props) => {
   const didSwipeRef = useRef(false);
-  const [isFavVisual, setIsFavVisual] = useState(false);
 
   const swipeResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponderCapture: (_, gestureState) => {
-      if (!onSwipeRight) return false;
+      if (!onFavoritePress) return false;
       const absDx = Math.abs(gestureState.dx);
       const absDy = Math.abs(gestureState.dy);
       return absDx > 24 && absDx > absDy * 1.6;
     },
     onPanResponderRelease: (_, gestureState) => {
-      if (!onSwipeRight) return;
+      if (!onFavoritePress) return;
       if (gestureState.dx >= 56) {
         didSwipeRef.current = true;
-        onSwipeRight();
-        setIsFavVisual(true);
+        onFavoritePress();
         setTimeout(() => {
           didSwipeRef.current = false;
         }, 120);
@@ -42,15 +41,8 @@ export const ResultCard = ({ hit, onPress, onSwipeRight }: Props) => {
           if (didSwipeRef.current) return;
           onPress();
         }}
-        onFavoritePress={
-          onSwipeRight
-            ? () => {
-                onSwipeRight();
-                setIsFavVisual(true);
-              }
-            : undefined
-        }
-        isFavorite={isFavVisual}
+        onFavoritePress={onFavoritePress}
+        isFavorite={isFavorite}
       />
     </View>
   );

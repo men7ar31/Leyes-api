@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Moon, Sun } from "lucide-react-native";
@@ -19,7 +19,7 @@ import { FullScreenLoader } from "../components/FullScreenLoader";
 import { AppHeader } from "../components/AppHeader";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { useSaijSearch } from "../hooks/useSaijSearch";
-import { addFavoriteFromSearchHit } from "../services/favorites";
+import { addFavoriteFromSearchHit, loadFavorites, removeFavoriteByGuid } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
 import type {
   SaijFacetNode,
@@ -31,6 +31,7 @@ import type {
 const PAGE_SIZE = 20;
 const RECENT_SEARCHES_MAX = 4;
 const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
+const CC_BY_25_AR_URL = "https://creativecommons.org/licenses/by/2.5/ar/";
 
 type FormState = {
   textoEnNorma: string;
@@ -100,6 +101,8 @@ const initialState: FormState = {
   facetEstadoVigencia: "",
   facetOrganismo: "",
 };
+
+const normalizeGuid = (value?: string | null) => String(value || "").trim();
 
 const normalizeFacetText = (value: string) =>
   value
@@ -239,6 +242,8 @@ export const SearchScreen = () => {
   const [formState, setFormState] = useState<FormState>(initialState);
   const [appliedState, setAppliedState] = useState<FormState>(initialState);
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>(recentSearchesStore);
+  const [favoriteMap, setFavoriteMap] = useState<Record<string, true>>({});
+  const [favoriteBusyMap, setFavoriteBusyMap] = useState<Record<string, boolean>>({});
   const [hasSearched, setHasSearched] = useState(false);
   const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
   const [collapseToken, setCollapseToken] = useState(0);
@@ -276,6 +281,28 @@ export const SearchScreen = () => {
       // ignore storage write failures
     });
   }, [recentSearches]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadFavoriteGuids = async () => {
+      try {
+        const list = await loadFavorites();
+        if (cancelled) return;
+        const next: Record<string, true> = {};
+        list.forEach((item) => {
+          const key = normalizeGuid(item.guid);
+          if (key) next[key] = true;
+        });
+        setFavoriteMap(next);
+      } catch {
+        // ignore local favorites read errors
+      }
+    };
+    loadFavoriteGuids();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
 
   const filters = useMemo<SaijSearchFilters>(() => {
@@ -420,19 +447,45 @@ export const SearchScreen = () => {
     });
   };
 
-  const addHitToFavorites = async (item: (typeof items)[number]) => {
-    try {
-      const result = await addFavoriteFromSearchHit(item);
-      if (result.added) {
-        Alert.alert(
-          "Favorito agregado",
-          result.offlineReady ? "Quedo guardado para usar sin conexion." : "Quedo guardado, pero sin snapshot offline."
-        );
+  const toggleHitFavorite = async (item: (typeof items)[number]) => {
+    const guid = normalizeGuid(item.guid);
+    if (!guid || favoriteBusyMap[guid]) return;
+
+    const wasFavorite = Boolean(favoriteMap[guid]);
+    setFavoriteBusyMap((prev) => ({ ...prev, [guid]: true }));
+    setFavoriteMap((prev) => {
+      const next = { ...prev };
+      if (wasFavorite) {
+        delete next[guid];
       } else {
-        Alert.alert("Ya estaba en favoritos", "Ese documento ya estaba guardado.");
+        next[guid] = true;
+      }
+      return next;
+    });
+
+    try {
+      if (wasFavorite) {
+        await removeFavoriteByGuid(guid);
+      } else {
+        await addFavoriteFromSearchHit(item);
       }
     } catch {
-      Alert.alert("No se pudo agregar favorito", "Intenta nuevamente.");
+      setFavoriteMap((prev) => {
+        const next = { ...prev };
+        if (wasFavorite) {
+          next[guid] = true;
+        } else {
+          delete next[guid];
+        }
+        return next;
+      });
+      Alert.alert("No se pudo actualizar favorito", "Intenta nuevamente.");
+    } finally {
+      setFavoriteBusyMap((prev) => {
+        const next = { ...prev };
+        delete next[guid];
+        return next;
+      });
     }
   };
 
@@ -494,20 +547,40 @@ export const SearchScreen = () => {
   };
 
   const renderFooter = () => {
-    if (!hasSearched) return null;
-    if (isFetchingNextPage) return <LoadingState message="Cargando mas..." />;
-    if (!hasNextPage) return null;
+    const openLicense = () => {
+      Linking.openURL(CC_BY_25_AR_URL).catch(() => {
+        Alert.alert("No se pudo abrir el enlace", CC_BY_25_AR_URL);
+      });
+    };
+
+    const loadMoreNode =
+      hasSearched && isFetchingNextPage ? (
+        <LoadingState message="Cargando mas..." />
+      ) : hasSearched && hasNextPage ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.loadMore,
+            { borderColor: appColors.border, backgroundColor: appColors.card },
+            pressed ? styles.pressed : null,
+          ]}
+          onPress={() => fetchNextPage()}
+        >
+          <Text style={[styles.loadMoreText, { color: appColors.primaryStrong }]}>Cargar mas</Text>
+        </Pressable>
+      ) : null;
+
     return (
-      <Pressable
-        style={({ pressed }) => [
-          styles.loadMore,
-          { borderColor: appColors.border, backgroundColor: appColors.card },
-          pressed ? styles.pressed : null,
-        ]}
-        onPress={() => fetchNextPage()}
-      >
-        <Text style={[styles.loadMoreText, { color: appColors.primaryStrong }]}>Cargar mas</Text>
-      </Pressable>
+      <View style={styles.footerWrap}>
+        {loadMoreNode}
+        <Text style={[styles.legalText, { color: appColors.muted }]}>
+          La información se obtiene de SAIJ, dependiente del Ministerio de Justicia de la Nación, y se distribuye bajo
+          licencia{" "}
+          <Text style={[styles.legalLink, { color: appColors.primaryStrong }]} onPress={openLicense}>
+            CCBY 2.5 AR
+          </Text>
+          .
+        </Text>
+      </View>
     );
   };
 
@@ -538,6 +611,7 @@ export const SearchScreen = () => {
         renderItem={({ item }) => (
           <ResultCard
             hit={item}
+            isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
             onPress={() => {
               registerRecentOpenedDocument({
                 guid: String(item.guid || ""),
@@ -550,9 +624,7 @@ export const SearchScreen = () => {
                 params: { guid: item.guid },
               });
             }}
-            onSwipeRight={() => {
-              addHitToFavorites(item);
-            }}
+            onFavoritePress={() => toggleHitFavorite(item)}
           />
         )}
         contentContainerStyle={styles.listContent}
@@ -1082,5 +1154,19 @@ const styles = StyleSheet.create({
   loadMoreText: {
     fontSize: typography.body,
     fontWeight: "700",
+  },
+  footerWrap: {
+    marginTop: spacing.md,
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
+  legalText: {
+    fontSize: typography.small,
+    lineHeight: 18,
+  },
+  legalLink: {
+    fontSize: typography.small,
+    fontWeight: "700",
+    textDecorationLine: "underline",
   },
 });

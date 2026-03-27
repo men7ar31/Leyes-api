@@ -64,6 +64,25 @@ const normalizeCodeTitle = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const shouldExcludeNationalCode = (hit: { title?: string | null; subtitle?: string | null; estado?: string | null; summary?: string | null }) => {
+  const title = normalize(String(hit.title || ""));
+  const subtitle = normalize(String(hit.subtitle || ""));
+  const estado = normalize(String(hit.estado || ""));
+  const summary = normalize(String(hit.summary || ""));
+  const bag = `${title} ${subtitle} ${estado} ${summary}`.trim();
+
+  if (/\bderogad\w*\b/i.test(bag)) return true;
+
+  if (/\bcodigo civil\b/i.test(title) && !/\bcodigo civil y comercial\b/i.test(title)) return true;
+  if (/\bcodigo de comercio\b/i.test(title)) return true;
+
+  if (/\bcodigo procesal penal federal\b/i.test(title) && !/\b(t\.?\s*o\.?\s*2019|texto ordenado 2019)\b/i.test(bag)) {
+    return true;
+  }
+
+  return false;
+};
+
 const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
   [normalize(province), normalize(entry.area), normalize(entry.reference), normalize(entry.numeroNorma || "")].join("|");
 
@@ -104,6 +123,7 @@ export const CodesScreen = () => {
       if (!guid) continue;
       const title = String(hit.title || "");
       if (!normalize(title).includes("codigo")) continue;
+      if (shouldExcludeNationalCode(hit)) continue;
       if (!byGuid.has(guid)) byGuid.set(guid, hit);
     }
 
@@ -152,7 +172,7 @@ export const CodesScreen = () => {
       if (openingGuidRef.current === normalizedGuid) {
         openingGuidRef.current = null;
       }
-    }, 200);
+    }, 90);
   }, []);
 
   const resolveAndOpenProvincialCode = useCallback(
@@ -246,6 +266,7 @@ export const CodesScreen = () => {
                     key={code.guid}
                     title={code.title}
                     subtitle={code.subtitle || undefined}
+                    onPressIn={() => prefetchCode(code.guid)}
                     onPress={() => openCode(code.guid)}
                   />
                 ))
@@ -292,6 +313,24 @@ export const CodesScreen = () => {
                         key={rowKey}
                         title={entry.area}
                         subtitle={entry.reference}
+                        onPressIn={() => {
+                          const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
+                          const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
+                          if (!cached?.guid) {
+                            resolveProvincialCode(selectedProvince, entry)
+                              .then((resolved) => {
+                                if (resolved?.guid) {
+                                  queryClient.setQueryData(resolveKey, resolved);
+                                  prefetchCode(resolved.guid);
+                                }
+                              })
+                              .catch(() => {
+                                // best effort
+                              });
+                          } else if (cached.guid) {
+                            prefetchCode(cached.guid);
+                          }
+                        }}
                         onPress={() => resolveAndOpenProvincialCode(entry)}
                       />
                     );

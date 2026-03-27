@@ -6,7 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { enableScreens } from "react-native-screens";
 import { AppThemeProvider } from "../src/theme/appTheme";
 
-enableScreens(false);
+enableScreens(true);
 
 export default function RootLayout() {
   const [client] = useState(

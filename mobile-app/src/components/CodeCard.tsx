@@ -7,13 +7,17 @@ type Props = {
   title: string;
   subtitle?: string;
   onPress: () => void;
+  onPressIn?: () => void;
 };
 
-export const CodeCard = ({ title, subtitle, onPress }: Props) => {
+export const CodeCard = ({ title, subtitle, onPress, onPressIn }: Props) => {
   const { colors } = useAppTheme();
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
+      unstable_pressDelay={0}
+      android_ripple={{ color: colors.primarySoft }}
       style={({ pressed }) => [
         styles.card,
         { backgroundColor: colors.card, borderColor: colors.border },

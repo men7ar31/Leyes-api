@@ -1,4 +1,5 @@
-﻿import {
+import {
+  Animated,
   Alert,
   Linking,
   Modal,
@@ -12,8 +13,8 @@
   View,
   useWindowDimensions,
 } from "react-native";
-import { useEffect, useRef, useState } from "react";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
@@ -28,10 +29,15 @@ import { sanitizeHtml } from "../utils/content";
 import { searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
+import { getReadingBodyMetrics, readingTypography } from "../theme/readingTypography";
 
-const DETAIL_SCROLL_OFFSET_BY_GUID: Record<string, number> = {};
 const TOUCH_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 } as const;
 const MAX_SHARE_MESSAGE_CHARS = 90000;
+const SCRUBBER_THUMB_HEIGHT = 36;
+const SCRUBBER_BUBBLE_HEIGHT = 48;
+const SCRUBBER_TAIL_SIZE = 14;
+const SCRUBBER_DRAG_TOUCH_RADIUS = 30;
+const SCRUBBER_INDEX_HYSTERESIS_PX = 26;
 
 const getMetadataNormNumber = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") return null;
@@ -108,7 +114,7 @@ const normalizeCitationOptionalValue = (raw?: string | null) => {
     "no informada",
     "no informado",
     "sin informacion",
-    "sin información",
+    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n",
     "desconocida",
     "desconocido",
     "s/d",
@@ -165,8 +171,8 @@ const simplifySubtype = (value?: string | null) => {
 const getSubtypeFromSubtitle = (subtitle?: string | null) => {
   const raw = String(subtitle || "").trim();
   if (!raw) return "";
-  if (raw.includes("·")) {
-    return raw.split("·")[0]?.trim() || "";
+  if (raw.includes("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
+    return raw.split("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
   }
   if (raw.includes(".")) {
     return raw.split(".")[0]?.trim() || "";
@@ -290,7 +296,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
   const parseNormIdentity = (value?: string | null) => {
     if (!value || typeof value !== "string") return "";
     const compact = value
-      .replace(/[°º]/g, " ")
+      .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
       .replace(/[./-]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -302,7 +308,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     if (dnu) return `dnu:${Number(dnu[1])}`;
     const decreto = compact.match(/\bdecreto\b[^\d]*(\d{1,7})\b/i);
     if (decreto) return `decreto:${Number(decreto[1])}`;
-    const resol = compact.match(/\bresoluci[oó]n\b[^\d]*(\d{1,7})\b/i);
+    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
     if (resol) return `resolucion:${Number(resol[1])}`;
     const rawCode = compact.match(/^(ley|dnu|dec|decreto|res|resolucion)\s+c?\s*0*(\d{1,7})\b/i);
     if (rawCode) return `${rawCode[1]}:${Number(rawCode[2])}`;
@@ -313,7 +319,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     const title = String(item.title || "").trim();
     const subtitle = String(item.subtitle || "").trim();
     const guid = String(item.guid || "").trim();
-    const generic = /^(ley|decreto|dnu|resoluci[oó]n)\b/i.test(title);
+    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
     let value = 0;
     if (guid) value += 100;
     if (!generic) value += 40;
@@ -358,8 +364,8 @@ const prettifyNormLabel = (value?: string | null) => {
   const decreto = clean.match(/^DEC(?:RETO)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
   if (decreto) return `Decreto ${Number(decreto[1])}${decreto[2] ? `/${decreto[2]}` : ""}`;
 
-  const resol = clean.match(/^RES(?:OLUCION|OLUCIÓN)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
-  if (resol) return `Resolución ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
+  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œN)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
+  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
 
   return clean;
 };
@@ -375,27 +381,70 @@ const extractGuidFromUrl = (value?: string | null) => {
   }
 };
 
-const SECTION_HEADING_PATTERN = /^(ANEXO|T[ÍI]TULO|CAP[ÍI]TULO|SECCI[ÓO]N|LIBRO|PARTE)\b/i;
+const normalizeHeadingToken = (value?: string | null) =>
+  cleanText(String(value || ""))
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo|seccion|libro|parte)\b/i.test(normalizeHeadingToken(value));
+const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
+const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
 
 const parseArticleTitleContext = (title?: string | null) => {
   if (!title || typeof title !== "string") {
     return { headings: [] as string[], articleLabel: null as string | null };
   }
-  const parts = title
-    .split("·")
-    .map((part) => part.trim())
+
+  const canonicalTitle = cleanText(title)
+    .replace(/\u00C2?\u00B7/g, "Â·")
+    .replace(/\u2022/g, "Â·");
+
+  const parts = canonicalTitle
+    .split(/\s*(?:Â·|\|)\s*/g)
+    .map((part) => cleanText(part))
     .filter((part) => part.length > 0);
 
   if (!parts.length) {
     return { headings: [] as string[], articleLabel: null as string | null };
   }
 
-  const headings = parts.filter((part) => SECTION_HEADING_PATTERN.test(part));
-  const lastPart = parts[parts.length - 1];
-  const articleLabel = SECTION_HEADING_PATTERN.test(lastPart) ? null : lastPart;
+  const headings = parts.filter((part) => isSectionHeadingLine(part));
+  const articleParts = parts.filter((part) => !isSectionHeadingLine(part));
+  const articleLabel = articleParts.length > 0 ? articleParts[articleParts.length - 1] : null;
   return { headings, articleLabel };
 };
 
+const getSafeArticleInlineLabel = (label?: string | null) => {
+  const clean = cleanText(String(label || "")).replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+
+  const collapsed = clean.replace(
+    /\b(?:[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\s+){2,}[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\b/g,
+    (chunk) => chunk.replace(/\s+/g, "")
+  );
+
+  const normalizedCollapsed = normalizeHeadingToken(collapsed);
+  const normalizedNoSpace = normalizedCollapsed.replace(/\s+/g, "");
+
+  if (/(anexo|titulo|capitulo|seccion|libro|parte)/i.test(normalizedNoSpace)) return null;
+
+  if (/(codigo)/i.test(normalizedNoSpace) && /(nacion|argentina|civil|comercial|penal|justicia)/i.test(normalizedNoSpace)) {
+    return null;
+  }
+
+  const upperNoDiacritics = collapsed
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z]/g, "");
+  if (upperNoDiacritics.length >= 20 && upperNoDiacritics === upperNoDiacritics.toUpperCase()) {
+    return null;
+  }
+
+  return collapsed.trim() || null;
+};
 const getNewHeadingLines = (current: string[], previous: string[]) => {
   let commonPrefix = 0;
   while (
@@ -410,8 +459,8 @@ const getNewHeadingLines = (current: string[], previous: string[]) => {
 
 const buildStickySectionLabel = (headings: string[]) => {
   if (!Array.isArray(headings) || headings.length === 0) return null;
-  const title = headings.filter((line) => /^T[ÍI]TULO\b/i.test(line)).at(-1) || null;
-  const chapter = headings.filter((line) => /^CAP[ÍI]TULO\b/i.test(line)).at(-1) || null;
+  const title = headings.filter((line) => isTitleHeadingLine(line)).at(-1) || null;
+  const chapter = headings.filter((line) => isChapterHeadingLine(line)).at(-1) || null;
   if (title && chapter) return `${cleanText(title)}\n${cleanText(chapter)}`;
   if (title) return cleanText(title);
   if (chapter) return cleanText(chapter);
@@ -436,7 +485,7 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
   const raw = String(value || "").trim();
   if (!raw) return String(fallbackIndex || "");
   const compact = raw
-    .replace(/[.:;,\-–—]+$/g, "")
+    .replace(/[.:;,\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -451,7 +500,7 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
     return suffix ? `${base} ${suffix}` : String(base);
   }
 
-  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-záéíóú]+)$/i);
+  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-zÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âº]+)$/i);
   if (withLiteralSuffix) {
     return `${Number(withLiteralSuffix[1])} ${withLiteralSuffix[2].toLowerCase()}`;
   }
@@ -481,7 +530,7 @@ const normalizeArticleSelectorToken = (value?: string | null) => {
   const normalizedSafe = withAsciiDigits
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[°º]/g, " ")
+    .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
     .replace(/[\[\]{}()]/g, " ")
     .replace(/[^\w\s\.\,\;\:\-]/g, " ")
     .replace(/[_]/g, " ")
@@ -592,13 +641,13 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
   };
 
   const genericPattern =
-    /^[\*\"“”'\s]*?(?:ART[ÍI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:°|º|o)?\s*[\.:\-–—]*\s*/i;
+    /^[\*\"ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'\s]*?(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°|ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº|o)?\s*[\.:\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]*\s*/i;
   safeReplaceLead(genericPattern);
 
   if (!articleNumber || typeof articleNumber !== "string") return working.trim();
   const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber);
   const rawCandidate = articleNumber
-    .replace(/[.:;,\-–—]+$/g, "")
+    .replace(/[.:;,\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
   const candidates = Array.from(
@@ -614,7 +663,7 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
     }
     if (!numberPattern) continue;
     const pattern = new RegExp(
-      `^[\\*\"“”'\\s]*?(?:ART[ÍI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:°|º|o)?\\s*[\\.:\\-–—]*\\s*`,
+      `^[\\*\"ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'\\s]*?(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°|ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº|o)?\\s*[\\.:\\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]*\\s*`,
       "i"
     );
     safeReplaceLead(pattern);
@@ -626,7 +675,7 @@ const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) return null;
-  const match = normalized.match(/(?:^|\n)\s*(?:ART[ÍI]CULO|ART\.?)\s*\d+/i);
+  const match = normalized.match(/(?:^|\n)\s*(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\.?)\s*\d+/i);
   if (!match || typeof match.index !== "number") return normalized;
   const before = normalized.slice(0, match.index).trim();
   return before.length > 0 ? before : null;
@@ -658,6 +707,7 @@ const getHighlightedParts = (text: string, query: string) => {
 
 export const DetailScreen = () => {
   const { colors: appColors, isDarkMode } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ guid?: string }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
 
@@ -682,13 +732,21 @@ export const DetailScreen = () => {
   const [stickyIndexEntries, setStickyIndexEntries] = useState<Array<{ y: number; label: string }>>([]);
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
   const [scrubberHeight, setScrubberHeight] = useState(0);
+  const scrubberTrackRef = useRef<View | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
   const docSearchInputRef = useRef<TextInput | null>(null);
   const multiShareInputRef = useRef<TextInput | null>(null);
   const multiShareInputValueRef = useRef("");
   const scrollRafRef = useRef<number | null>(null);
+  const scrubMoveRafRef = useRef<number | null>(null);
+  const layoutRefreshRafRef = useRef<number | null>(null);
   const pendingScrollYRef = useRef(0);
+  const pendingScrubLocationYRef = useRef<number | null>(null);
   const articleOffsetsRef = useRef<Record<number, number>>({});
+  const articleOffsetSortedRef = useRef<Array<{ index: number; y: number }>>([]);
+  const articleOffsetDirtyRef = useRef(true);
+  const geometryTableRef = useRef<Array<{ index: number; offset: number }>>([]);
+  const geometryTableDirtyRef = useRef(true);
   const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null }>>({});
   const articleStickySortedRef = useRef<Array<{ y: number; label: string }>>([]);
   const articleStickyDirtyRef = useRef(true);
@@ -700,7 +758,37 @@ export const DetailScreen = () => {
   const lastDocGuidRef = useRef<string | null>(null);
   const isScrubbingArticlesRef = useRef(false);
   const scrubActiveIndexRef = useRef<number>(-1);
+  const scrubberThumbTopRef = useRef(0);
+  const scrubberThumbTopAnimRef = useRef(new Animated.Value(0));
+  const scrubberBubbleTopAnimRef = useRef(new Animated.Value(0));
+  const scrubberBubbleTailTopAnimRef = useRef(new Animated.Value((SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE) / 2));
+  const scrubberBubbleOpacityRef = useRef(new Animated.Value(0));
+  const scrubberDragOffsetRef = useRef(0);
+  const scrubberTrackPageYRef = useRef(0);
+  const scrubberTrackPageYValidRef = useRef(false);
   const stickySectionCacheRef = useRef<{ label: string | null }>({ label: null });
+  const previewUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPreviewIndexRef = useRef<number | null>(null);
+  const previewIndexStateRef = useRef<number>(-1);
+  const articleShareCacheRef = useRef<{
+    source: any[] | null;
+    items: Array<{
+      key: string;
+      index: number;
+      displayNumber: string;
+      articleNumberRaw: string;
+      articleLeadTitle: string;
+      articleBody: string;
+    }>;
+    keySet: Set<string>;
+  }>({ source: null, items: [], keySet: new Set<string>() });
+  const articleSearchCacheRef = useRef<{
+    source: any[] | null;
+    query: string;
+    matches: number[];
+    matchSet: Set<number>;
+  }>({ source: null, query: "", matches: [], matchSet: new Set<number>() });
+  const contentRenderCacheRef = useRef<{ key: string; node: ReactNode }>({ key: "", node: null });
 
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
@@ -713,6 +801,8 @@ export const DetailScreen = () => {
 
   const setActiveSectionSafe = (nextSection: string) => {
     setArticleScrubbing(false);
+    setPreviewBubbleVisible(false);
+    setActiveArticlePreviewIndex(-1);
     stickySectionCacheRef.current = { label: null };
     setStickySectionLabel(null);
     setIsHeaderMenuOpen(false);
@@ -730,6 +820,18 @@ export const DetailScreen = () => {
         cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
       }
+      if (scrubMoveRafRef.current !== null) {
+        cancelAnimationFrame(scrubMoveRafRef.current);
+        scrubMoveRafRef.current = null;
+      }
+      if (layoutRefreshRafRef.current !== null) {
+        cancelAnimationFrame(layoutRefreshRafRef.current);
+        layoutRefreshRafRef.current = null;
+      }
+      if (previewUpdateTimeoutRef.current) {
+        clearTimeout(previewUpdateTimeoutRef.current);
+        previewUpdateTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -739,6 +841,27 @@ export const DetailScreen = () => {
     setSelectedArticleShareKeys({});
     setIsStickyIndexOpen(false);
     setStickyIndexEntries([]);
+    geometryTableRef.current = [];
+    geometryTableDirtyRef.current = true;
+    scrollOffsetRef.current = 0;
+    restoredGuidRef.current = null;
+    scrubActiveIndexRef.current = -1;
+    previewIndexStateRef.current = -1;
+    pendingPreviewIndexRef.current = null;
+    if (previewUpdateTimeoutRef.current) {
+      clearTimeout(previewUpdateTimeoutRef.current);
+      previewUpdateTimeoutRef.current = null;
+    }
+    scrubberBubbleOpacityRef.current.setValue(0);
+    scrubberBubbleTopAnimRef.current.setValue(0);
+    scrubberBubbleTailTopAnimRef.current.setValue((SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE) / 2);
+    scrubberThumbTopAnimRef.current.setValue(0);
+    scrubberThumbTopRef.current = 0;
+    requestAnimationFrame(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTo({ y: 0, animated: false });
+      }
+    });
   }, [guidParam]);
 
   useEffect(() => {
@@ -798,9 +921,13 @@ export const DetailScreen = () => {
 
   const contentWidth = Math.max(0, width - spacing.md * 2);
   const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
-  const bodyFontSize = Math.round(typography.body * clampedTextZoom * 10) / 10;
-  const bodyLineHeight = Math.max(18, Math.round(bodyFontSize * 1.45));
-  const headingFontSize = Math.round(typography.subtitle * clampedTextZoom * 10) / 10;
+  const { fontSize: bodyFontSize, lineHeight: bodyLineHeight } = getReadingBodyMetrics(clampedTextZoom);
+  const headingFontSize =
+    Math.round(Math.max(bodyFontSize + 1.5, readingTypography.sectionLabelSize * clampedTextZoom + 2) * 10) / 10;
+  const headingLineHeight = Math.max(22, Math.round(headingFontSize * 1.34));
+  const readingBodyColor = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
+  const readingSecondaryColor = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
+  const readingLabelColor = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
   const stickyViewportOffset = 26;
   const jumpTopOffset = spacing.md;
   const subtitleText = getSubtitleText(document.subtitle);
@@ -851,7 +978,7 @@ export const DetailScreen = () => {
     return null;
   })();
   const falloTribunalFromHeader =
-    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C[ÁA]MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
+    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂA]MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
   const falloFechaDisplay =
     (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
     (metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null) ||
@@ -875,7 +1002,7 @@ export const DetailScreen = () => {
     baseTypeLabel === "fallo"
       ? {
           label: "Sentencia / Tribunal",
-          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" · ") || "No informado",
+          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") || "No informado",
           color: appColors.text,
         }
       : baseTypeLabel === "doctrina"
@@ -929,40 +1056,60 @@ export const DetailScreen = () => {
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
   const searchableArticles = Array.isArray(document.articles) ? document.articles : [];
-  const articleShareItems = searchableArticles.map((article, index) => {
-    const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
-    const parsedTitle = parseArticleTitleContext(article.title);
-    const articleLeadTitle = `ARTICULO ${displayNumber}${parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"}`;
-    const articleBody = stripRepeatedArticleLead(
-      cleanContentText(article.text) ||
-        (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
-      article.number
-    );
-    return {
-      key: buildArticleShareKey(index, displayNumber),
-      index,
-      displayNumber,
-      articleNumberRaw: cleanText(article.number),
-      articleLeadTitle,
-      articleBody,
+  if (articleShareCacheRef.current.source !== searchableArticles) {
+    const nextItems = searchableArticles.map((article, index) => {
+      const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
+      const parsedTitle = parseArticleTitleContext(article.title);
+      const safeInlineLabel = getSafeArticleInlineLabel(parsedTitle.articleLabel);
+      const articleLeadTitle = `ARTICULO ${displayNumber}${safeInlineLabel ? `.- ${safeInlineLabel}` : ".-"}`;
+      const articleBody = stripRepeatedArticleLead(
+        cleanContentText(article.text) ||
+          (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
+        article.number
+      );
+      return {
+        key: buildArticleShareKey(index, displayNumber),
+        index,
+        displayNumber,
+        articleNumberRaw: cleanText(article.number),
+        articleLeadTitle,
+        articleBody,
+      };
+    });
+    articleShareCacheRef.current = {
+      source: searchableArticles,
+      items: nextItems,
+      keySet: new Set(nextItems.map((item) => item.key)),
     };
-  });
-  const articleShareKeySet = new Set(articleShareItems.map((item) => item.key));
+  }
+  const articleShareItems = articleShareCacheRef.current.items;
+  const articleShareKeySet = articleShareCacheRef.current.keySet;
   const selectedShareCount = Object.keys(selectedArticleShareKeys).reduce(
     (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
     0
   );
   const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
-  const articleSearchMatches = (() => {
-    if (!normalizedSearchQuery || !searchableArticles.length) return [] as number[];
-    const hits: number[] = [];
-    searchableArticles.forEach((article, index) => {
-      const haystack = `${article.number || ""} ${article.title || ""} ${article.text || ""}`.toLowerCase();
-      if (haystack.includes(normalizedSearchQuery)) hits.push(index);
-    });
-    return hits;
-  })();
-  const articleSearchMatchSet = new Set(articleSearchMatches);
+  if (
+    articleSearchCacheRef.current.source !== searchableArticles ||
+    articleSearchCacheRef.current.query !== normalizedSearchQuery
+  ) {
+    let nextMatches: number[] = [];
+    if (normalizedSearchQuery && searchableArticles.length) {
+      nextMatches = [];
+      searchableArticles.forEach((article, index) => {
+        const haystack = `${article.number || ""} ${article.title || ""} ${article.text || ""}`.toLowerCase();
+        if (haystack.includes(normalizedSearchQuery)) nextMatches.push(index);
+      });
+    }
+    articleSearchCacheRef.current = {
+      source: searchableArticles,
+      query: normalizedSearchQuery,
+      matches: nextMatches,
+      matchSet: new Set(nextMatches),
+    };
+  }
+  const articleSearchMatches = articleSearchCacheRef.current.matches;
+  const articleSearchMatchSet = articleSearchCacheRef.current.matchSet;
   const plainTextSearchMatches =
     !normalizedSearchQuery || searchableArticles.length > 0
       ? 0
@@ -992,31 +1139,183 @@ export const DetailScreen = () => {
     if (typeof y === "number") jumpToY(y, options?.animated ?? true, options?.topOffset ?? jumpTopOffset);
   };
 
-  const getTargetArticleIndexFromLocationY = (locationY: number) => {
-    if (!searchableArticles.length || scrubberHeight <= 0) return -1;
-    const clamped = Math.max(0, Math.min(locationY, scrubberHeight));
-    const ratio = clamped / scrubberHeight;
-    const maxIndex = searchableArticles.length - 1;
-    return Math.max(0, Math.min(maxIndex, Math.round(ratio * maxIndex)));
+  const getMaxScrollableY = () =>
+    Math.max(0, scrollContentHeightRef.current - scrollViewportHeightRef.current);
+
+  const getSortedArticleOffsets = () => {
+    if (!articleOffsetDirtyRef.current) return articleOffsetSortedRef.current;
+    const next = Object.entries(articleOffsetsRef.current)
+      .map(([index, y]) => ({ index: Number(index), y }))
+      .filter((item) => Number.isFinite(item.index) && Number.isFinite(item.y))
+      .sort((a, b) => a.y - b.y);
+    articleOffsetSortedRef.current = next;
+    articleOffsetDirtyRef.current = false;
+    return articleOffsetSortedRef.current;
+  };
+
+  const getGeometryTable = () => {
+    if (searchableArticles.length < 1) return [] as Array<{ index: number; offset: number }>;
+    if (!geometryTableDirtyRef.current) return geometryTableRef.current;
+    geometryTableRef.current = getSortedArticleOffsets().map((entry) => ({ index: entry.index, offset: entry.y }));
+    geometryTableDirtyRef.current = false;
+    return geometryTableRef.current;
+  };
+
+  const exportGeometryTableJson = () =>
+    JSON.stringify(
+      getGeometryTable().map((item) => ({ index: item.index, offset: Math.round(item.offset) }))
+    );
+
+  const findNearestArticleIndexByY = (targetY: number) => {
+    const table = getGeometryTable();
+    if (!table.length) return -1;
+    let lo = 0;
+    let hi = table.length - 1;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (table[mid].offset < targetY) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    const lower = table[Math.max(0, lo - 1)];
+    const upper = table[Math.min(table.length - 1, lo)];
+    if (!lower) return upper?.index ?? -1;
+    if (!upper) return lower.index;
+    return Math.abs(lower.offset - targetY) <= Math.abs(upper.offset - targetY) ? lower.index : upper.index;
+  };
+
+  const getTrackTravel = () => Math.max(0, scrubberHeight - SCRUBBER_THUMB_HEIGHT);
+  const getThumbHalf = () => SCRUBBER_THUMB_HEIGHT / 2;
+
+  const measureScrubberTrackWindowPosition = () => {
+    const node = scrubberTrackRef.current as any;
+    if (!node || typeof node.measureInWindow !== "function") return;
+    node.measureInWindow((_x: number, y: number) => {
+      if (Number.isFinite(y)) {
+        scrubberTrackPageYRef.current = y;
+        scrubberTrackPageYValidRef.current = true;
+      }
+    });
+  };
+
+  const getTrackYFromGestureEvent = (event: any) => {
+    const pageY = event?.nativeEvent?.pageY;
+    if (typeof pageY === "number" && scrubberTrackPageYValidRef.current) {
+      return pageY - scrubberTrackPageYRef.current;
+    }
+    const locationY = event?.nativeEvent?.locationY;
+    return typeof locationY === "number" ? locationY : 0;
+  };
+
+  const resolveStableNavigatorIndex = (candidateIndex: number, targetContentY: number) => {
+    const current = scrubActiveIndexRef.current;
+    if (current < 0 || current === candidateIndex) return candidateIndex;
+    const currentOffset = articleOffsetsRef.current[current];
+    const candidateOffset = articleOffsetsRef.current[candidateIndex];
+    if (typeof currentOffset !== "number" || typeof candidateOffset !== "number") return candidateIndex;
+    if (Math.abs(targetContentY + jumpTopOffset - currentOffset) < SCRUBBER_INDEX_HYSTERESIS_PX) return current;
+    return candidateIndex;
+  };
+
+  const syncBubbleToThumb = () => {
+    const thumbCenter = scrubberThumbTopRef.current + SCRUBBER_THUMB_HEIGHT / 2;
+    const maxBubbleTop = Math.max(0, scrubberHeight - SCRUBBER_BUBBLE_HEIGHT);
+    const bubbleTop = Math.max(0, Math.min(maxBubbleTop, thumbCenter - SCRUBBER_BUBBLE_HEIGHT / 2));
+    scrubberBubbleTopAnimRef.current.setValue(bubbleTop);
+    const maxTailTop = SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE - 4;
+    const minTailTop = 4;
+    const tailTop = Math.max(minTailTop, Math.min(maxTailTop, thumbCenter - bubbleTop - SCRUBBER_TAIL_SIZE / 2));
+    scrubberBubbleTailTopAnimRef.current.setValue(tailTop);
+  };
+
+  const setThumbByRatio = (ratio: number) => {
+    const clampedRatio = Math.max(0, Math.min(1, ratio));
+    const top = getTrackTravel() * clampedRatio;
+    scrubberThumbTopRef.current = top;
+    scrubberThumbTopAnimRef.current.setValue(top);
+    syncBubbleToThumb();
+  };
+
+  const updateThumbByScrollY = (scrollY: number) => {
+    const maxY = getMaxScrollableY();
+    const ratio = maxY > 0 ? Math.max(0, Math.min(1, scrollY / maxY)) : 0;
+    setThumbByRatio(ratio);
+  };
+
+  const setPreviewBubbleVisible = (visible: boolean) => {
+    Animated.timing(scrubberBubbleOpacityRef.current, {
+      toValue: visible ? 1 : 0,
+      duration: visible ? 120 : 170,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const commitPreviewIndex = (index: number) => {
+    if (previewIndexStateRef.current === index) return;
+    previewIndexStateRef.current = index;
+    setActiveArticlePreviewIndex(index);
+  };
+
+  const schedulePreviewIndex = (index: number, immediate = false) => {
+    if (immediate) {
+      if (previewUpdateTimeoutRef.current) {
+        clearTimeout(previewUpdateTimeoutRef.current);
+        previewUpdateTimeoutRef.current = null;
+      }
+      pendingPreviewIndexRef.current = null;
+      commitPreviewIndex(index);
+      return;
+    }
+    pendingPreviewIndexRef.current = index;
+    if (previewUpdateTimeoutRef.current) return;
+    previewUpdateTimeoutRef.current = setTimeout(() => {
+      previewUpdateTimeoutRef.current = null;
+      const next = pendingPreviewIndexRef.current;
+      pendingPreviewIndexRef.current = null;
+      if (typeof next === "number") commitPreviewIndex(next);
+    }, 56);
+  };
+
+  const scheduleLayoutDerivedRefresh = () => {
+    if (layoutRefreshRafRef.current !== null) return;
+    layoutRefreshRafRef.current = requestAnimationFrame(() => {
+      layoutRefreshRafRef.current = null;
+      updateStickySectionByScroll(scrollOffsetRef.current);
+      if (!isScrubbingArticlesRef.current) updateThumbByScrollY(scrollOffsetRef.current);
+    });
   };
 
   const scrubToLocationY = (locationY: number) => {
-    const nextIndex = getTargetArticleIndexFromLocationY(locationY);
-    if (nextIndex < 0) return;
+    if (!searchableArticles.length || scrubberHeight <= 0) return;
+    const half = getThumbHalf();
+    const clampedCenter = Math.max(half, Math.min(locationY, Math.max(half, scrubberHeight - half)));
+    const thumbTop = clampedCenter - half;
+    const travel = getTrackTravel();
+    const ratio = travel > 0 ? thumbTop / travel : 0;
+    const maxScroll = getMaxScrollableY();
+    const targetScrollY = ratio * maxScroll;
+    const targetContentY = targetScrollY + jumpTopOffset;
+    setThumbByRatio(ratio);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ y: targetScrollY, animated: false });
+    }
+    const nearestIndex = findNearestArticleIndexByY(targetContentY);
+    const fallbackIndex = Math.max(0, Math.min(searchableArticles.length - 1, Math.round(ratio * Math.max(0, searchableArticles.length - 1))));
+    const nextIndex = resolveStableNavigatorIndex(nearestIndex >= 0 ? nearestIndex : fallbackIndex, targetContentY);
     if (nextIndex !== scrubActiveIndexRef.current) {
       scrubActiveIndexRef.current = nextIndex;
-      setActiveArticlePreviewIndex(nextIndex);
-      const measuredY = articleOffsetsRef.current[nextIndex];
-      if (typeof measuredY === "number" && scrollRef.current) {
-        scrollRef.current.scrollTo({ y: Math.max(0, measuredY - jumpTopOffset), animated: false });
-      } else {
-        const maxScroll = Math.max(0, scrollContentHeightRef.current - scrollViewportHeightRef.current);
-        const fallbackY = (nextIndex / Math.max(1, searchableArticles.length - 1)) * maxScroll;
-        if (scrollRef.current) {
-          scrollRef.current.scrollTo({ y: fallbackY, animated: false });
-        }
-      }
+      schedulePreviewIndex(nextIndex, true);
     }
+  };
+
+  const scheduleScrubToLocationY = (locationY: number) => {
+    pendingScrubLocationYRef.current = locationY;
+    if (scrubMoveRafRef.current !== null) return;
+    scrubMoveRafRef.current = requestAnimationFrame(() => {
+      scrubMoveRafRef.current = null;
+      const nextY = pendingScrubLocationYRef.current;
+      pendingScrubLocationYRef.current = null;
+      if (typeof nextY === "number") scrubToLocationY(nextY);
+    });
   };
 
   const goToNextSearchMatch = () => {
@@ -1037,13 +1336,22 @@ export const DetailScreen = () => {
   if (lastDocGuidRef.current !== document.guid) {
     lastDocGuidRef.current = document.guid;
     articleOffsetsRef.current = {};
+    articleOffsetSortedRef.current = [];
+    articleOffsetDirtyRef.current = true;
+    geometryTableRef.current = [];
+    geometryTableDirtyRef.current = true;
     articleStickyMetaRef.current = {};
     articleStickySortedRef.current = [];
     articleStickyDirtyRef.current = true;
     stickySectionCacheRef.current = { label: null };
     restoredGuidRef.current = null;
-    scrollOffsetRef.current = DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] ?? 0;
+    scrollOffsetRef.current = 0;
     scrubActiveIndexRef.current = -1;
+    previewIndexStateRef.current = -1;
+    setThumbByRatio(0);
+    scrubberBubbleTopAnimRef.current.setValue(0);
+    scrubberBubbleTailTopAnimRef.current.setValue((SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE) / 2);
+    scrubberBubbleOpacityRef.current.setValue(0);
   }
   const safeActiveArticlePreviewIndex =
     activeArticlePreviewIndex >= 0 && activeArticlePreviewIndex < searchableArticles.length
@@ -1056,16 +1364,10 @@ export const DetailScreen = () => {
           safeActiveArticlePreviewIndex + 1
         )}.`
       : null;
-  const scrubberPreviewTop =
-    safeActiveArticlePreviewIndex >= 0 && scrubberHeight > 0
-      ? Math.max(
-          0,
-          Math.min(
-            Math.max(0, scrubberHeight - 52),
-            ((safeActiveArticlePreviewIndex / Math.max(1, searchableArticles.length - 1)) * scrubberHeight) - 26
-          )
-        )
-      : 0;
+  const activeArticlePreviewHeading =
+    safeActiveArticlePreviewIndex >= 0
+      ? articleStickyMetaRef.current[safeActiveArticlePreviewIndex]?.label || null
+      : null;
 
   const getSortedStickyEntries = () => {
     if (!articleStickyDirtyRef.current) return articleStickySortedRef.current;
@@ -1114,10 +1416,17 @@ export const DetailScreen = () => {
     }
 
     const anchorY = scrollY + stickyViewportOffset;
+    let lo = 0;
+    let hi = entries.length - 1;
     let currentIndex = -1;
-    for (let i = 0; i < entries.length; i += 1) {
-      if (entries[i].y <= anchorY) currentIndex = i;
-      else break;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (entries[mid].y <= anchorY) {
+        currentIndex = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
     }
     if (currentIndex < 0) {
       if (stickySectionCacheRef.current.label !== null) {
@@ -1148,7 +1457,10 @@ export const DetailScreen = () => {
 
   const handleDetailScroll = (y: number) => {
     scrollOffsetRef.current = y;
-    if (document.guid) DETAIL_SCROLL_OFFSET_BY_GUID[document.guid] = y;
+    if (isScrubbingArticlesRef.current) return;
+    updateThumbByScrollY(y);
+    const nearestIndex = findNearestArticleIndexByY(y + jumpTopOffset);
+    scrubActiveIndexRef.current = nearestIndex;
     pendingScrollYRef.current = y;
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
@@ -1160,15 +1472,13 @@ export const DetailScreen = () => {
   const restoreSavedScrollIfNeeded = () => {
     if (!document.guid || !scrollRef.current) return;
     if (restoredGuidRef.current === document.guid) return;
-    const saved = DETAIL_SCROLL_OFFSET_BY_GUID[document.guid];
     restoredGuidRef.current = document.guid;
-    if (typeof saved !== "number" || saved <= 0) return;
     if (restorePendingRef.current) return;
     restorePendingRef.current = true;
     setTimeout(() => {
       if (scrollRef.current) {
-        scrollRef.current.scrollTo({ y: Math.max(0, saved), animated: false });
-        handleDetailScroll(saved);
+        scrollRef.current.scrollTo({ y: 0, animated: false });
+        handleDetailScroll(0);
       }
       restorePendingRef.current = false;
     }, 20);
@@ -1176,6 +1486,32 @@ export const DetailScreen = () => {
 
   const stopScrubbing = () => {
     if (isScrubbingArticlesRef.current) setArticleScrubbing(false);
+    setPreviewBubbleVisible(false);
+    schedulePreviewIndex(-1, true);
+    if (scrubMoveRafRef.current !== null) {
+      cancelAnimationFrame(scrubMoveRafRef.current);
+      scrubMoveRafRef.current = null;
+    }
+    if (layoutRefreshRafRef.current !== null) {
+      cancelAnimationFrame(layoutRefreshRafRef.current);
+      layoutRefreshRafRef.current = null;
+    }
+    pendingScrubLocationYRef.current = null;
+    if (scrubActiveIndexRef.current >= 0) {
+      const snapOffset = articleOffsetsRef.current[scrubActiveIndexRef.current];
+      if (typeof snapOffset === "number" && scrollRef.current) {
+        const maxScroll = getMaxScrollableY();
+        const snappedY = Math.max(0, Math.min(maxScroll, snapOffset - jumpTopOffset));
+        scrollRef.current.scrollTo({ y: snappedY, animated: false });
+        scrollOffsetRef.current = snappedY;
+        requestAnimationFrame(() => {
+          updateThumbByScrollY(snappedY);
+          updateStickySectionByScroll(snappedY);
+        });
+      } else {
+        jumpToArticleByIndex(scrubActiveIndexRef.current, { animated: false, topOffset: jumpTopOffset });
+      }
+    }
     scrubActiveIndexRef.current = -1;
   };
 
@@ -1198,25 +1534,33 @@ export const DetailScreen = () => {
       if (sectionItems.length <= 1) return false;
       const absDx = Math.abs(gestureState.dx);
       const absDy = Math.abs(gestureState.dy);
-      return absDx > 14 && absDx > absDy * 1.2;
+      return absDx > 28 && absDx > absDy * 2;
     },
     onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx <= -28) switchSectionBySwipe("next");
-      else if (gestureState.dx >= 28) switchSectionBySwipe("prev");
+      if (gestureState.dx <= -42) switchSectionBySwipe("next");
+      else if (gestureState.dx >= 42) switchSectionBySwipe("prev");
     },
   });
 
   const articleScrubberResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => selectedSection === "texto" && searchableArticles.length > 0,
+    onStartShouldSetPanResponder: () =>
+      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0,
     onMoveShouldSetPanResponder: (_, gestureState) =>
-      selectedSection === "texto" && searchableArticles.length > 0 && Math.abs(gestureState.dy) > 1,
+      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0 && Math.abs(gestureState.dy) > 1,
     onPanResponderGrant: (event) => {
       setArticleScrubbing(true);
-      scrubToLocationY(event.nativeEvent.locationY);
+      setPreviewBubbleVisible(true);
+      measureScrubberTrackWindowPosition();
+      const trackY = getTrackYFromGestureEvent(event);
+      const thumbCenter = scrubberThumbTopRef.current + SCRUBBER_THUMB_HEIGHT / 2;
+      const isNearThumb = Math.abs(trackY - thumbCenter) <= SCRUBBER_DRAG_TOUCH_RADIUS;
+      scrubberDragOffsetRef.current = isNearThumb ? trackY - thumbCenter : 0;
+      scheduleScrubToLocationY(trackY - scrubberDragOffsetRef.current);
     },
     onPanResponderMove: (event) => {
       if (!isScrubbingArticlesRef.current) return;
-      scrubToLocationY(event.nativeEvent.locationY);
+      const trackY = getTrackYFromGestureEvent(event);
+      scheduleScrubToLocationY(trackY - scrubberDragOffsetRef.current);
     },
     onPanResponderRelease: () => {
       stopScrubbing();
@@ -1237,7 +1581,7 @@ export const DetailScreen = () => {
     }
 
     const cleanedTitle = fallo.title
-      .replace(/[^A-Za-z0-9ÁÉÍÓÚáéíóúÑñ\s]/g, " ")
+      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â±\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const titleTokens = cleanedTitle.split(" ").filter((token) => token.length > 2);
@@ -1421,7 +1765,8 @@ export const DetailScreen = () => {
         const article = document.articles[index];
         const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
         const parsedTitle = parseArticleTitleContext(article.title);
-        const lead = `ARTICULO ${displayNumber}${parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"}`;
+        const safeInlineLabel = getSafeArticleInlineLabel(parsedTitle.articleLabel);
+        const lead = `ARTICULO ${displayNumber}${safeInlineLabel ? `.- ${safeInlineLabel}` : ".-"}`;
         const text = stripRepeatedArticleLead(
           cleanContentText(article.text) ||
             (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
@@ -1462,7 +1807,7 @@ export const DetailScreen = () => {
     const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
       params.displayNumber
     )}`.trim();
-    await shareTextPayload(`${heading} · Art. ${params.displayNumber}`, message);
+    await shareTextPayload(`${heading} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Art. ${params.displayNumber}`, message);
   };
 
   const toggleArticleSelectedForShare = (articleKey: string) => {
@@ -1564,7 +1909,7 @@ export const DetailScreen = () => {
       )
       .join("\n\n");
     const message = `${heading}\n\n${body}`.trim();
-    await shareTextPayload(`${heading} · ${selected.length} articulos`, message);
+    await shareTextPayload(`${heading} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${selected.length} articulos`, message);
   };
 
   const toggleFavoriteCurrentDocument = async () => {
@@ -1622,8 +1967,9 @@ export const DetailScreen = () => {
             const displayArticleNumber = normalizeArticleNumberDisplay(article.number, index + 1);
             const articleShareKey = buildArticleShareKey(index, displayArticleNumber);
             const isArticleSelectedForShare = !!selectedArticleShareKeys[articleShareKey];
+            const safeInlineLabel = getSafeArticleInlineLabel(parsedTitle.articleLabel);
             const articleLeadTitle = `ARTICULO ${displayArticleNumber}${
-              parsedTitle.articleLabel ? `.- ${cleanText(parsedTitle.articleLabel)}` : ".-"
+              safeInlineLabel ? `.- ${safeInlineLabel}` : ".-"
             }`;
             const articleNormasQueModifica = Array.isArray(article.normasQueModifica) ? article.normasQueModifica : [];
             const articleNormasComplementarias = Array.isArray(article.normasComplementarias) ? article.normasComplementarias : [];
@@ -1661,9 +2007,11 @@ export const DetailScreen = () => {
                 onLayout={(event) => {
                   const y = event.nativeEvent.layout.y;
                   articleOffsetsRef.current[index] = y;
+                  articleOffsetDirtyRef.current = true;
+                  geometryTableDirtyRef.current = true;
                   articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle };
                   articleStickyDirtyRef.current = true;
-                  updateStickySectionByScroll(scrollOffsetRef.current);
+                  scheduleLayoutDerivedRefresh();
                 }}
               >
                 {headingLines.map((heading, headingIndex) => (
@@ -1672,8 +2020,9 @@ export const DetailScreen = () => {
                     style={[
                       styles.sectionHeading,
                       {
-                        fontSize: Math.max(17, headingFontSize + 1),
-                        color: appColors.primary,
+                        fontSize: Math.max(12.5, headingFontSize),
+                        lineHeight: headingLineHeight,
+                        color: readingLabelColor,
                       },
                     ]}
                   >
@@ -1681,12 +2030,12 @@ export const DetailScreen = () => {
                   </Text>
                 ))}
                 <View
-                  style={[
-                    styles.articleCard,
-                    {
-                      backgroundColor: appColors.card,
-                      borderColor: appColors.border,
-                    },
+                    style={[
+                      styles.articleCard,
+                      {
+                        backgroundColor: isDarkMode ? appColors.card : readingTypography.articleCardBackground,
+                        borderColor: appColors.border,
+                      },
                     isSearchHit ? styles.articleCardSearchHit : null,
                     isSearchActive ? styles.articleCardSearchActive : null,
                   ]}
@@ -1695,7 +2044,7 @@ export const DetailScreen = () => {
                     <Text
                       style={[
                         styles.articleLeadInline,
-                        { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: appColors.text },
+                        { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor },
                       ]}
                     >
                       {articleLeadTitle}
@@ -1737,7 +2086,7 @@ export const DetailScreen = () => {
                   <Text
                     style={[
                       styles.articleText,
-                      { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: appColors.text },
+                      { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor },
                     ]}
                   >
                     {renderHighlightedInline(articleTextWithoutDuplicateLabel, `${articleKey}-body`)}
@@ -1820,7 +2169,7 @@ export const DetailScreen = () => {
                 <Text style={styles.falloSummaryTitle}>Sumario</Text>
                 {renderHighlightedBlock(
                   parsed.summaryText,
-                  [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
+                  [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-summary"
                 )}
               </View>
@@ -1831,7 +2180,7 @@ export const DetailScreen = () => {
 
       return renderHighlightedBlock(
         extractedRelated.mainText,
-        [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
+        [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
         "main-text"
       );
     }
@@ -1866,16 +2215,16 @@ export const DetailScreen = () => {
           hitSlop={TOUCH_HIT_SLOP}
 
         >
-          <Text style={styles.docSearchClearBtnText}>×</Text>
+          <Text style={styles.docSearchClearBtnText}>ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â</Text>
         </Pressable>
       ) : null}
       {articleSearchMatches.length > 0 ? (
         <View style={styles.docSearchNav}>
           <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
-            <Text style={styles.docSearchNavBtnText}>‹</Text>
+            <Text style={styles.docSearchNavBtnText}>ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¹</Text>
           </Pressable>
           <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
-            <Text style={styles.docSearchNavBtnText}>›</Text>
+            <Text style={styles.docSearchNavBtnText}>ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Âº</Text>
           </Pressable>
         </View>
       ) : null}
@@ -1892,6 +2241,39 @@ export const DetailScreen = () => {
       </Pressable>
     </View>
   );
+
+  const activePanelKeys = Object.keys(expandedArticlePanels)
+    .filter((key) => expandedArticlePanels[key])
+    .sort()
+    .join("|");
+  const selectedShareKeysSignature = Object.keys(selectedArticleShareKeys)
+    .filter((key) => selectedArticleShareKeys[key])
+    .sort()
+    .join("|");
+  const contentRenderKey = [
+    document.guid,
+    selectedSection,
+    bodyFontSize,
+    bodyLineHeight,
+    headingFontSize,
+    normalizedSearchQuery,
+    activeSearchArticleIndex,
+    isMultiShareMode ? 1 : 0,
+    selectedShareKeysSignature,
+    activePanelKeys,
+    appColors.card,
+    appColors.border,
+    appColors.text,
+    appColors.primary,
+    appColors.primaryStrong,
+    appColors.muted,
+  ].join("::");
+  if (selectedSection === "texto" && contentRenderCacheRef.current.key !== contentRenderKey) {
+    contentRenderCacheRef.current = {
+      key: contentRenderKey,
+      node: renderContent(),
+    };
+  }
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
@@ -2129,15 +2511,20 @@ export const DetailScreen = () => {
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="always"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        persistentScrollbar={false}
+        removeClippedSubviews={false}
+        overScrollMode="never"
         {...sectionSwipeResponder.panHandlers}
         onLayout={(event) => {
           scrollViewportHeightRef.current = event.nativeEvent.layout.height;
         }}
         onScroll={(event) => handleDetailScroll(event.nativeEvent.contentOffset.y)}
-        scrollEventThrottle={16}
+        scrollEventThrottle={32}
         onContentSizeChange={(_, contentHeight) => {
           scrollContentHeightRef.current = contentHeight;
+          geometryTableDirtyRef.current = true;
           restoreSavedScrollIfNeeded();
         }}
       >
@@ -2204,7 +2591,7 @@ export const DetailScreen = () => {
           </View>
         ) : null}
 
-        {selectedSection === "texto" ? renderContent() : null}
+        {selectedSection === "texto" ? contentRenderCacheRef.current.node : null}
 
         {selectedSection === "normasComplementarias" && normasComplementarias.length > 0 ? (
           <View style={styles.relatedSection}>
@@ -2328,25 +2715,67 @@ export const DetailScreen = () => {
       </ScrollView>
       {selectedSection === "texto" && searchableArticles.length > 0 ? (
         <View
+          ref={scrubberTrackRef}
           style={[
             styles.articleScrubberTrack,
-            { top: fixedHeaderHeight + 10 },
+            {
+              top: fixedHeaderHeight + 10,
+              bottom: Math.max(spacing.xl + 12, insets.bottom + 34),
+            },
             isScrubbingArticles ? styles.articleScrubberTrackActive : null,
           ]}
-          onLayout={(event) => setScrubberHeight(event.nativeEvent.layout.height)}
+          onLayout={(event) => {
+            const nextHeight = event.nativeEvent.layout.height;
+            setScrubberHeight(nextHeight);
+            requestAnimationFrame(() => {
+              measureScrubberTrackWindowPosition();
+              updateThumbByScrollY(scrollOffsetRef.current);
+            });
+          }}
           {...articleScrubberResponder.panHandlers}
         >
-          <View style={styles.articleScrubberGrip} />
-          {isScrubbingArticles && activeArticlePreviewLabel ? (
-            <View
+          <View style={[styles.articleScrubberRail, { backgroundColor: "rgba(27, 55, 94, 0.22)" }]} />
+          <Animated.View
+            style={[
+              styles.articleScrubberThumb,
+              {
+                backgroundColor: appColors.primaryStrong,
+                transform: [{ translateY: scrubberThumbTopAnimRef.current }],
+              },
+            ]}
+          />
+          {activeArticlePreviewLabel ? (
+            <Animated.View
               style={[
                 styles.scrubberPreviewBubble,
-                { top: scrubberPreviewTop },
+                {
+                  top: 0,
+                  opacity: scrubberBubbleOpacityRef.current,
+                  backgroundColor: isDarkMode ? "#233B66" : "#E2EEFF",
+                  borderColor: isDarkMode ? "#2D497B" : "#C7DBFF",
+                  transform: [{ translateY: scrubberBubbleTopAnimRef.current }],
+                },
               ]}
             >
-              <Text style={styles.scrubberPreviewText}>{activeArticlePreviewLabel}</Text>
-              <View style={styles.scrubberPreviewTail} />
-            </View>
+              <Animated.View
+                style={[
+                  styles.scrubberPreviewTail,
+                  {
+                    top: scrubberBubbleTailTopAnimRef.current,
+                    backgroundColor: isDarkMode ? "#233B66" : "#E2EEFF",
+                    borderColor: isDarkMode ? "#2D497B" : "#C7DBFF",
+                  },
+                ]}
+              />
+              <Text style={[styles.scrubberPreviewText, { color: isDarkMode ? "#F3F7FF" : "#1b375e" }]}>
+                {activeArticlePreviewLabel}
+              </Text>
+              {activeArticlePreviewHeading ? (
+                <Text style={[styles.scrubberPreviewSubtitle, { color: isDarkMode ? "#C9D9F7" : "#4E6285" }]} numberOfLines={1}>
+                  {activeArticlePreviewHeading}
+                </Text>
+              ) : null}
+            </Animated.View>
           ) : null}
         </View>
       ) : null}
@@ -2404,7 +2833,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   fixedHeaderWrap: {
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: readingTypography.horizontalPadding,
     paddingTop: spacing.xs,
     paddingBottom: spacing.xs,
     backgroundColor: colors.background,
@@ -2422,13 +2851,14 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: readingTypography.lawTitleSize,
     fontWeight: "700",
     color: colors.text,
-    lineHeight: 27,
+    lineHeight: readingTypography.lawTitleLineHeight,
   },
   headerSubtitle: {
-    fontSize: typography.small + 1,
+    fontSize: readingTypography.metadataSize,
+    lineHeight: readingTypography.metadataLineHeight,
     color: colors.muted,
     fontWeight: "400",
   },
@@ -2490,13 +2920,14 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   container: {
-    padding: spacing.md,
-    gap: spacing.md,
+    paddingHorizontal: readingTypography.horizontalPadding,
+    paddingVertical: spacing.md,
+    gap: readingTypography.blockGap,
   },
   metaCard: {
     backgroundColor: colors.card,
     borderRadius: radius.md,
-    padding: spacing.md,
+    padding: readingTypography.cardPadding,
     borderWidth: 1,
     borderColor: colors.border,
   },
@@ -2746,12 +3177,14 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   relatedSection: {
-    gap: spacing.sm,
+    gap: readingTypography.paragraphGap,
   },
   relatedTitle: {
-    fontSize: typography.subtitle,
-    fontWeight: "700",
-    color: colors.text,
+    fontSize: readingTypography.sectionLabelSize,
+    lineHeight: readingTypography.sectionLabelLineHeight,
+    fontWeight: "600",
+    color: readingTypography.labelTextColor,
+    letterSpacing: readingTypography.sectionLabelLetterSpacing,
     textTransform: "uppercase",
   },
   relatedLinkButton: {
@@ -2764,12 +3197,14 @@ const styles = StyleSheet.create({
   },
   relatedLinkTitle: {
     color: colors.primaryStrong,
-    fontSize: typography.body,
-    fontWeight: "700",
+    fontSize: readingTypography.articleLeadSize,
+    lineHeight: readingTypography.articleLeadLineHeight,
+    fontWeight: "600",
   },
   relatedLinkSubtitle: {
-    color: colors.muted,
-    fontSize: typography.small,
+    color: readingTypography.secondaryTextColor,
+    fontSize: readingTypography.metadataSize,
+    lineHeight: readingTypography.metadataLineHeight,
   },
   falloContentCard: {
     backgroundColor: colors.card,
@@ -2780,9 +3215,9 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   falloHeaderLine: {
-    fontSize: typography.body,
-    color: colors.text,
-    lineHeight: 21,
+    fontSize: readingTypography.articleBodySize,
+    color: readingTypography.bodyTextColor,
+    lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
   },
   falloHeaderPrimary: {
     fontWeight: "700",
@@ -2796,40 +3231,45 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   falloSummaryTitle: {
-    fontSize: typography.subtitle,
-    fontWeight: "700",
-    color: colors.text,
+    fontSize: readingTypography.sectionLabelSize,
+    lineHeight: readingTypography.sectionLabelLineHeight,
+    fontWeight: "600",
+    color: readingTypography.labelTextColor,
+    letterSpacing: readingTypography.sectionLabelLetterSpacing,
     textTransform: "uppercase",
   },
   contentText: {
-    fontSize: typography.body - 1,
-    color: colors.text,
-    lineHeight: 19,
+    fontSize: readingTypography.articleBodySize,
+    color: readingTypography.bodyTextColor,
+    lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
+    letterSpacing: 0.1,
   },
   searchHighlight: {
     backgroundColor: "#FFE08A",
     color: colors.text,
   },
   articles: {
-    gap: spacing.sm,
+    gap: readingTypography.articleGap,
   },
   articleBlock: {
-    gap: spacing.sm,
+    gap: spacing.md,
   },
   sectionHeading: {
-    color: colors.primary,
-    fontSize: typography.subtitle + 2,
+    color: readingTypography.labelTextColor,
+    fontSize: readingTypography.sectionLabelSize,
+    lineHeight: readingTypography.sectionLabelLineHeight,
     fontWeight: "700",
     textAlign: "center",
-    letterSpacing: 0.4,
+    letterSpacing: readingTypography.sectionLabelLetterSpacing,
+    textTransform: "uppercase",
   },
   articleCard: {
-    backgroundColor: colors.card,
+    backgroundColor: readingTypography.articleCardBackground,
     borderRadius: radius.md,
-    padding: spacing.md,
+    padding: readingTypography.cardPadding,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: spacing.xs,
+    gap: readingTypography.paragraphGap,
   },
   articleCardSearchHit: {
     borderColor: "#C7D2FE",
@@ -2871,8 +3311,9 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   articleLeadInline: {
-    fontWeight: "700",
-    color: colors.text,
+    fontWeight: "600",
+    color: readingTypography.bodyTextColor,
+    letterSpacing: 0.1,
   },
   articleLeadRow: {
     flexDirection: "row",
@@ -2933,65 +3374,81 @@ const styles = StyleSheet.create({
     color: colors.primaryStrong,
   },
   articleText: {
-    fontSize: typography.body - 1,
-    color: colors.text,
-    lineHeight: 19,
+    fontSize: readingTypography.articleBodySize,
+    color: readingTypography.bodyTextColor,
+    lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
+    letterSpacing: 0.1,
   },
   articleScrubberTrack: {
     position: "absolute",
     top: spacing.xl + 72,
     bottom: spacing.xl + 12,
-    right: 1,
-    width: 10,
-    borderRadius: 7,
-    backgroundColor: "rgba(22, 40, 84, 0.08)",
+    right: 2,
+    width: 14,
+    borderRadius: 10,
+    backgroundColor: "rgba(27, 55, 94, 0.08)",
     borderWidth: 1,
-    borderColor: "rgba(22, 40, 84, 0.14)",
+    borderColor: "rgba(27, 55, 94, 0.16)",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "visible",
+    zIndex: 40,
+    elevation: 10,
   },
   articleScrubberTrackActive: {
-    backgroundColor: "rgba(37, 82, 224, 0.2)",
-    borderColor: "rgba(37, 82, 224, 0.45)",
+    backgroundColor: "rgba(27, 55, 94, 0.13)",
+    borderColor: "rgba(27, 55, 94, 0.25)",
   },
-  articleScrubberGrip: {
+  articleScrubberRail: {
     width: 2,
-    height: 24,
+    height: "100%",
     borderRadius: 2,
-    backgroundColor: "rgba(22, 40, 84, 0.55)",
+  },
+  articleScrubberThumb: {
+    position: "absolute",
+    left: 1,
+    width: 10,
+    height: SCRUBBER_THUMB_HEIGHT,
+    borderRadius: 6,
   },
   scrubberPreviewBubble: {
     position: "absolute",
-    right: 18,
+    right: 6,
     minWidth: 132,
-    height: 52,
-    backgroundColor: "#39BDF3",
-    borderRadius: 20,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 8,
+    height: SCRUBBER_BUBBLE_HEIGHT,
+    borderRadius: 14,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "#FFFFFF",
     justifyContent: "center",
-    alignItems: "center",
+    alignItems: "flex-start",
     shadowColor: "#000000",
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.11,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
-  scrubberPreviewText: {
-    color: "#FFFFFF",
-    fontSize: typography.subtitle + 6,
-    fontWeight: "500",
+    elevation: 3,
+    zIndex: 41,
   },
   scrubberPreviewTail: {
     position: "absolute",
-    right: -6,
-    width: 6,
-    height: 24,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
-    backgroundColor: "#39BDF3",
+    right: -7,
+    width: 14,
+    height: 14,
+    borderTopWidth: 1,
+    borderRightWidth: 1,
+    transform: [{ rotate: "45deg" }],
+    borderTopColor: "#C7DBFF",
+    borderRightColor: "#C7DBFF",
+  },
+  scrubberPreviewText: {
+    fontSize: typography.small + 1,
+    fontWeight: "700",
+  },
+  scrubberPreviewSubtitle: {
+    marginTop: 2,
+    fontSize: typography.tiny,
+    fontWeight: "600",
+    maxWidth: 132,
   },
   stickyIndexBackdrop: {
     flex: 1,
@@ -3063,6 +3520,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 });
+
 
 
 
