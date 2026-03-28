@@ -5,6 +5,7 @@ import type { SaijSearchHit } from "../types/saij";
 import { radius, shadows, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate, maybeTruncate } from "../utils/format";
 import { useAppTheme } from "../theme/appTheme";
+import { resolveJurisdictionLabel } from "../utils/jurisdiction";
 
 type Props = {
   hit: SaijSearchHit;
@@ -14,58 +15,15 @@ type Props = {
   isFavorite?: boolean;
 };
 
-const normalize = (value: string) =>
-  value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const PROVINCES = [
-  "Buenos Aires",
-  "Catamarca",
-  "Chaco",
-  "Chubut",
-  "Ciudad Autonoma de Buenos Aires",
-  "Cordoba",
-  "Corrientes",
-  "Entre Rios",
-  "Formosa",
-  "Jujuy",
-  "La Pampa",
-  "La Rioja",
-  "Mendoza",
-  "Misiones",
-  "Neuquen",
-  "Rio Negro",
-  "Salta",
-  "San Juan",
-  "San Luis",
-  "Santa Cruz",
-  "Santa Fe",
-  "Santiago del Estero",
-  "Tierra del Fuego",
-  "Tucuman",
-];
-
-const resolveJurisdictionLabel = (hit: SaijSearchHit) => {
-  const source = cleanText([hit.jurisdiccion || "", hit.subtitle || "", hit.title || ""].join(" "));
-  const lower = normalize(source);
-  if (!lower) return null;
-  if (lower.includes("nacional")) return "Nacional";
-  if (lower.includes("internacional")) return "Internacional";
-  if (lower.includes("federal")) return "Federal";
-  const province = PROVINCES.find((item) => lower.includes(normalize(item)));
-  if (province) return province;
-  if (lower.includes("provincial") || lower.includes("local")) return "Provincial";
-  return null;
-};
-
 const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
   const { colors } = useAppTheme();
   const typeText = cleanText(hit.contentType || "Legislacion");
-  const jurisdictionLabel = resolveJurisdictionLabel(hit);
+  const jurisdictionLabel = resolveJurisdictionLabel({
+    jurisdiccion: hit.jurisdiccion,
+    subtitle: hit.subtitle,
+    title: hit.title,
+    summary: hit.summary,
+  });
   const summary = hit.summary ? maybeTruncate(cleanText(hit.summary), 180) : "";
   const footerParts = [formatDate(hit.fecha) || "", "SAIJ"].filter(Boolean).join(" · ");
 

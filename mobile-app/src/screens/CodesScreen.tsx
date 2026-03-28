@@ -1,5 +1,5 @@
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { RefreshCw } from "lucide-react-native";
@@ -50,9 +50,6 @@ const PROVINCES: ProvinceOption[] = [
   { name: "Tucuman", abbr: "TUC" },
 ].sort((a, b) => a.name.localeCompare(b.name, "es"));
 
-const PROVINCIAL_WARMUP_LEAD_COUNT = 8;
-const PROVINCIAL_WARMUP_CONCURRENCY = 2;
-
 const normalize = (value: string) =>
   value
     .toLowerCase()
@@ -90,6 +87,18 @@ const shouldExcludeNationalCode = (hit: { title?: string | null; subtitle?: stri
 const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
   [normalize(province), normalize(entry.area), normalize(entry.reference), normalize(entry.numeroNorma || "")].join("|");
 
+const getManualLawSearchHint = (entry: ProvincialCodeCatalogEntry) => {
+  const fromNumeroNorma = String(entry.numeroNorma || "")
+    .replace(/[^\d]/g, "")
+    .trim();
+  if (fromNumeroNorma) return `Ley ${fromNumeroNorma}`;
+
+  const fromReference = String(entry.reference || "").match(/\d{2,7}/)?.[0] || "";
+  if (fromReference) return `Ley ${fromReference}`;
+
+  return null;
+};
+
 export const CodesScreen = () => {
   const { colors } = useAppTheme();
   const queryClient = useQueryClient();
@@ -115,6 +124,7 @@ export const CodesScreen = () => {
   });
 
   const canLoadProvincialList = scope === "provincial" && selectedProvince.trim().length > 0;
+  const canShowProvincialCodes = canLoadProvincialList && !isProvinceListOpen;
   const provincialCatalog = useMemo(
     () => (selectedProvince ? PROVINCIAL_CODES_CATALOG[selectedProvince] || [] : []),
     [selectedProvince]
@@ -197,13 +207,20 @@ export const CodesScreen = () => {
         }
         const guid = String(resolved?.guid || "").trim();
         if (!guid) {
-          Alert.alert("Codigo no encontrado", "No pudimos abrir ese codigo ahora.");
+          const manualHint = getManualLawSearchHint(entry);
+          const message = manualHint
+            ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
+            : "No pudimos abrir ese codigo ahora.";
+          Alert.alert("Codigo no encontrado", message);
           return;
         }
-        prefetchCode(guid);
         openCode(guid);
       } catch {
-        Alert.alert("Codigo no encontrado", "No pudimos abrir ese codigo ahora.");
+        const manualHint = getManualLawSearchHint(entry);
+        const message = manualHint
+          ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
+          : "No pudimos abrir ese codigo ahora.";
+        Alert.alert("Codigo no encontrado", message);
       } finally {
         setTimeout(() => {
           if (openingEntryRef.current === entryKey) {
@@ -214,57 +231,6 @@ export const CodesScreen = () => {
     },
     [openCode, prefetchCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
   );
-
-  useEffect(() => {
-    if (!nationalCodes.length) return;
-    const timer = setTimeout(() => {
-      const candidates = nationalCodes.slice(0, 4);
-      candidates.forEach((item) => prefetchCode(item.guid));
-    }, 180);
-    return () => clearTimeout(timer);
-  }, [nationalCodes, prefetchCode]);
-
-  useEffect(() => {
-    if (scope !== "provincial" || !selectedProvince || provincialCatalog.length === 0) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      const entriesToWarm = provincialCatalog.slice(0, PROVINCIAL_WARMUP_LEAD_COUNT);
-      if (entriesToWarm.length === 0) return;
-      let cursor = 0;
-
-      const runWorker = async () => {
-        while (!cancelled) {
-          const entry = entriesToWarm[cursor];
-          cursor += 1;
-          if (!entry) return;
-
-          const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
-          try {
-            let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
-            if (!resolved?.guid) {
-              resolved = await queryClient.fetchQuery({
-                queryKey: resolveKey,
-                queryFn: () => resolveProvincialCode(selectedProvince, entry),
-                staleTime: 1000 * 60 * 30,
-              });
-            }
-            const guid = String(resolved?.guid || "").trim();
-            if (!cancelled && guid) prefetchCode(guid);
-          } catch {
-            // keep background warmup best effort
-          }
-        }
-      };
-
-      const workerCount = Math.min(PROVINCIAL_WARMUP_CONCURRENCY, entriesToWarm.length);
-      const workers = Array.from({ length: workerCount }, () => runWorker());
-      await Promise.allSettled(workers);
-    }, 120);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [scope, selectedProvince, provincialCatalog, queryClient, resolveQueryKeyForEntry, prefetchCode]);
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}> 
@@ -349,7 +315,7 @@ export const CodesScreen = () => {
               </View>
             ) : null}
 
-            {canLoadProvincialList ? (
+            {canShowProvincialCodes ? (
               <View style={styles.codesWrap}>
                 <Text style={[styles.blockTitle, { color: colors.text }]}>Codigos ({selectedProvince})</Text>
 

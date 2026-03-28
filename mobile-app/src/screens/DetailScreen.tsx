@@ -16,6 +16,8 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import { Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
 import { useSaijDocument } from "../hooks/useSaijDocument";
@@ -32,24 +34,108 @@ import { useAppTheme } from "../theme/appTheme";
 import { getReadingBodyMetrics, readingTypography } from "../theme/readingTypography";
 
 const TOUCH_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 } as const;
-const MAX_SHARE_MESSAGE_CHARS = 90000;
 const SCRUBBER_THUMB_HEIGHT = 36;
 const SCRUBBER_BUBBLE_HEIGHT = 48;
 const SCRUBBER_TAIL_SIZE = 14;
 const SCRUBBER_DRAG_TOUCH_RADIUS = 30;
 const SCRUBBER_INDEX_HYSTERESIS_PX = 26;
 
-const getMetadataNormNumber = (metadata: any) => {
-  if (!metadata || typeof metadata !== "object") return null;
-  const keys = ["numeroNorma", "numero_norma", "numero", "nroNorma", "nro_norma", "numeroLey", "numero_ley"];
-  for (const key of keys) {
-    const value = metadata[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  }
-  return null;
+const parseNormNumberToken = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  const source = cleanText(String(value || "")).replace(/\u00A0/g, " ").trim();
+  if (!source) return null;
+
+  const fromLeyContext = source.match(
+    /\bley(?:\s+n[\u00B0\u00BAo]\s*|\s+nro\.?\s*|\s+numero\s*)?([0-9][0-9.\s]{1,14}(?:\s*\/\s*\d{2,4})?)/i
+  );
+  const candidate = (fromLeyContext?.[1] || source).trim();
+  const match = candidate.match(/(\d{1,3}(?:[.\s]\d{3})+|\d{2,7})(?:\s*\/\s*(\d{2,4}))?/);
+  if (!match || !match[1]) return null;
+
+  const main = match[1].replace(/[.\s]/g, "");
+  if (!main) return null;
+  const normalizedMain = String(Number(main));
+  if (!normalizedMain || normalizedMain === "NaN") return null;
+  const suffix = match[2] ? `/${match[2]}` : "";
+  return `${normalizedMain}${suffix}`;
 };
 
+const extractLawNumberFromText = (text?: string | null) => {
+  const source = cleanText(String(text || "")).replace(/\u00A0/g, " ").trim();
+  if (!source) return null;
+  const match = source.match(
+    /\bley(?:\s+n[\u00B0\u00BAo]\s*|\s+nro\.?\s*|\s+numero\s*)?([0-9][0-9.\s]{1,14}(?:\s*\/\s*\d{2,4})?)/i
+  );
+  if (!match || !match[1]) return null;
+  return parseNormNumberToken(match[1]);
+};
+
+const getMetadataNormNumber = (metadata: any, textHints: Array<string | null | undefined> = []) => {
+  const directKeys = [
+    "numeroNorma",
+    "numero_norma",
+    "numero-norma",
+    "nroNorma",
+    "nro_norma",
+    "nro-norma",
+    "numeroLey",
+    "numero_ley",
+    "numero-ley",
+    "leyNumero",
+    "ley_numero",
+    "ley-numero",
+    "numeroSumario",
+    "numero_sumario",
+    "numero-sumario",
+  ];
+
+  if (metadata && typeof metadata === "object") {
+    for (const key of directKeys) {
+      const parsed = parseNormNumberToken((metadata as any)[key]);
+      if (parsed) return parsed;
+    }
+
+    const queue: Array<{ value: any; path: string }> = [{ value: metadata, path: "" }];
+    const visited = new Set<any>();
+    let scanned = 0;
+    while (queue.length > 0 && scanned < 260) {
+      const current = queue.shift();
+      if (!current) break;
+      const value = current.value;
+      const path = current.path;
+      if (!value || typeof value !== "object") continue;
+      if (visited.has(value)) continue;
+      visited.add(value);
+
+      for (const [key, entry] of Object.entries(value)) {
+        const nextPath = path ? `${path}.${key}` : key;
+        if (entry && typeof entry === "object") {
+          queue.push({ value: entry, path: nextPath });
+          continue;
+        }
+
+        if (typeof entry === "string" || typeof entry === "number") {
+          const lowerPath = nextPath.toLowerCase();
+          const isNormPath =
+            /(norma|ley|sumario|numero[-_ ]?(norma|ley|sumario)|nro[-_ ]?(norma|ley|sumario))/.test(lowerPath) &&
+            !/(fecha|anio|ano|articulo|texto|contenido|resumen|sumilla|guid|uuid|id$)/.test(lowerPath);
+          if (isNormPath) {
+            const parsed = parseNormNumberToken(entry);
+            if (parsed) return parsed;
+          }
+        }
+      }
+      scanned += 1;
+    }
+  }
+
+  for (const hint of textHints) {
+    const parsedHint = extractLawNumberFromText(hint);
+    if (parsedHint) return parsedHint;
+  }
+
+  return null;
+};
 const getMetadataDate = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") return null;
   const keys = [
@@ -756,46 +842,53 @@ const countMatchesInText = (text: string, query: string) => {
 };
 
 const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) => {
-  let working = text.trimStart();
+  let working = String(text || "").trimStart();
   if (!working) return working;
 
-  const safeReplaceLead = (pattern: RegExp) => {
+  const tryDropLeading = (pattern: RegExp) => {
     const next = working.replace(pattern, "").trimStart();
-    if (!next || next === working) return;
-    // Avoid destructive trims: only replace when substantial text remains.
-    if (next.length >= Math.max(14, Math.round(working.length * 0.22))) {
-      working = next;
-    }
+    if (!next || next === working) return false;
+    // Keep protection against over-trimming when regex is too broad.
+    if (next.length < Math.max(12, Math.round(working.length * 0.16))) return false;
+    working = next;
+    return true;
   };
 
   const genericPattern =
-    /^[\*\"ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'\s]*?(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°|ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº|o)?\s*[\.:\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]*\s*/i;
-  safeReplaceLead(genericPattern);
+    /^[\*"'\s\u00BA\u00B0\u2022\u00B7\u25E6]*(?:art(?:i|\u00ED)culo|art\.?)\s*(?:[a-z]\s*)?\d+(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:[\u00BA\u00B0o])?\s*[.:;\-\u2013\u2014]*\s*/i;
+  tryDropLeading(genericPattern);
 
-  if (!articleNumber || typeof articleNumber !== "string") return working.trim();
-  const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber);
-  const rawCandidate = articleNumber
-    .replace(/[.:;,\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]+$/g, "")
+  const rawCandidate = String(articleNumber || "")
+    .replace(/[\u00BA\u00B0]/g, "")
+    .replace(/[.:;,\-\u2013\u2014]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  const candidates = Array.from(
-    new Set([rawCandidate, normalizedDisplay].filter((token) => token && token.length > 0))
-  );
-  for (const candidate of candidates) {
+  const normalizedDisplay = normalizeArticleNumberDisplay(articleNumber || "");
+  const numberCandidates = Array.from(new Set([rawCandidate, normalizedDisplay].filter(Boolean)));
+
+  for (const candidate of numberCandidates) {
     let numberPattern = "";
     const annexCandidate = candidate.match(/^a\s*0*(\d+)$/i);
     if (annexCandidate) {
       numberPattern = `a\\s*0*${Number(annexCandidate[1])}`;
     } else {
-      numberPattern = escapeRegExp(candidate).replace(/\\\s+/g, "\\s+");
+      numberPattern = escapeRegExp(candidate).replace(/\s+/g, "\\s+");
     }
     if (!numberPattern) continue;
-    const pattern = new RegExp(
-      `^[\\*\"ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'\\s]*?(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\\.?)\\s*${numberPattern}\\s*(?:ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°|ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº|o)?\\s*[\\.:\\-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]*\\s*`,
+
+    const exactPattern = new RegExp(
+      `^[\\*"'\\s\\u00BA\\u00B0\\u2022\\u00B7\\u25E6]*(?:art(?:i|\\u00ED)culo|art\\.?)\\s*${numberPattern}\\s*(?:[\\u00BA\\u00B0o])?\\s*[.:;\\-\\u2013\\u2014]*\\s*`,
       "i"
     );
-    safeReplaceLead(pattern);
+    tryDropLeading(exactPattern);
+
+    const numericOnlyPattern = new RegExp(
+      `^[\\*"'\\s\\u00BA\\u00B0\\u2022\\u00B7\\u25E6]*${numberPattern}\\s*(?:[\\u00BA\\u00B0o])?\\s*[\\.\\-\\u2013\\u2014:;]+\\s*`,
+      "i"
+    );
+    tryDropLeading(numericOnlyPattern);
   }
+
   return working.trim();
 };
 
@@ -803,12 +896,11 @@ const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) return null;
-  const match = normalized.match(/(?:^|\n)\s*(?:ART[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂI]CULO|ART\.?)\s*\d+/i);
+  const match = normalized.match(/(?:^|\n)\s*(?:art(?:i|\u00ED)culo|art\.?)\s*\d+/i);
   if (!match || typeof match.index !== "number") return normalized;
   const before = normalized.slice(0, match.index).trim();
   return before.length > 0 ? before : null;
 };
-
 const getHighlightedParts = (text: string, query: string) => {
   const source = String(text || "");
   const needle = String(query || "").trim().toLowerCase();
@@ -1848,7 +1940,10 @@ export const DetailScreen = () => {
   };
 
   const citationLawName = cleanText(document.title || "Norma");
-  const citationLawNumber = getMetadataNormNumber(document.metadata);
+  const isLegislationCitation = getContentTypeLabel(document.contentType) === "legislacion";
+  const citationLawNumber = isLegislationCitation
+    ? getMetadataNormNumber(document.metadata, [document.subtitle, document.title, document.documentSubtype])
+    : getMetadataNormNumber(document.metadata);
   const citationPublicationRaw = getPublicationDateFromMetadata(document.metadata);
   const citationLastModRaw = getLastModificationDateFromMetadata(document.metadata);
   const citationPublication = normalizeCitationOptionalValue(citationPublicationRaw);
@@ -1875,21 +1970,52 @@ export const DetailScreen = () => {
     }
   };
 
-  const trimShareText = (text: string, maxLength = MAX_SHARE_MESSAGE_CHARS) => {
-    if (text.length <= maxLength) return text;
-    const safeLength = Math.max(0, maxLength - 64);
-    return `${text.slice(0, safeLength).trimEnd()}\n\n[Contenido recortado por tamano para compartir]`;
+  const shareLargeTextAsFile = async (title: string, content: string) => {
+    try {
+      const isSharingAvailable = await Sharing.isAvailableAsync();
+      if (!isSharingAvailable) {
+        await shareTextPayload(title, content);
+        return;
+      }
+
+      const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!baseDir) {
+        await shareTextPayload(title, content);
+        return;
+      }
+
+      const safeFileName =
+        cleanText(title || "norma")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^A-Za-z0-9\-\s_]/g, " ")
+          .replace(/\s+/g, "_")
+          .trim()
+          .slice(0, 64) || "norma";
+      const fileUri = `${baseDir}${safeFileName}-${Date.now()}.txt`;
+
+      await FileSystem.writeAsStringAsync(fileUri, content, { encoding: FileSystem.EncodingType.UTF8 });
+      await Sharing.shareAsync(fileUri, {
+        dialogTitle: title,
+        mimeType: "text/plain",
+        UTI: "public.plain-text",
+      });
+
+      try {
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      } catch {
+        // ignore cleanup failures
+      }
+    } catch {
+      await shareTextPayload(title, content);
+    }
   };
 
   const shareWholeDocument = async () => {
     const heading = cleanText(document.title || "Norma");
     const citation = buildCitation();
-    const basePrefix = `${heading}\n\n`;
-    const baseSuffix = `\n\n${citation}`;
-    const maxBodyLength = Math.max(1200, MAX_SHARE_MESSAGE_CHARS - basePrefix.length - baseSuffix.length);
 
     let body = "";
-    let wasTrimmed = false;
     if (document.articles && document.articles.length > 0) {
       const articleBlocks: string[] = [];
       for (let index = 0; index < document.articles.length; index += 1) {
@@ -1907,31 +2033,16 @@ export const DetailScreen = () => {
         );
         const lead = `ARTICULO ${displayNumber}${safeInlineLabel ? `. ${safeInlineLabel}` : "."}`;
         const block = `${lead}\n${text}\n${buildCitation(displayNumber)}`;
-        const projected = articleBlocks.length > 0 ? `${articleBlocks.join("\n\n")}\n\n${block}` : block;
-        if (projected.length > maxBodyLength) {
-          wasTrimmed = true;
-          if (articleBlocks.length === 0) {
-            articleBlocks.push(trimShareText(block, maxBodyLength));
-          }
-          break;
-        }
         articleBlocks.push(block);
       }
       body = articleBlocks.join("\n\n");
-      if (wasTrimmed) {
-        body = `${body}\n\n[Se omitieron articulos por tamano al compartir]`;
-      }
     } else {
-      body = [leadText, extractedRelated.mainText].filter(Boolean).join("\n\n");
-      if (body.length > maxBodyLength) {
-        body = trimShareText(body, maxBodyLength);
-      }
+      body = [leadText, extractedRelated.mainText].filter(Boolean).join("\n\n").trim();
     }
 
-    const message = trimShareText(`${heading}\n\n${body}\n\n${citation}`.trim());
-    await shareTextPayload(heading, message);
+    const message = `${heading}\n\n${body}\n\n${citation}`.trim();
+    await shareLargeTextAsFile(heading, message);
   };
-
   const shareSingleArticle = async (params: {
     displayNumber: string;
     articleLeadTitle: string;
@@ -1941,7 +2052,7 @@ export const DetailScreen = () => {
     const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
       params.displayNumber
     )}`.trim();
-    await shareTextPayload(`${heading} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Art. ${params.displayNumber}`, message);
+    await shareTextPayload(`${heading} \u00B7 Art. ${params.displayNumber}`, message);
   };
 
   const toggleArticleSelectedForShare = (articleKey: string) => {
@@ -2043,7 +2154,7 @@ export const DetailScreen = () => {
       )
       .join("\n\n");
     const message = `${heading}\n\n${body}`.trim();
-    await shareTextPayload(`${heading} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${selected.length} articulos`, message);
+    await shareTextPayload(`${heading} \u00B7 ${selected.length} articulos`, message);
   };
 
   const toggleFavoriteCurrentDocument = async () => {
@@ -2352,16 +2463,16 @@ export const DetailScreen = () => {
           hitSlop={TOUCH_HIT_SLOP}
 
         >
-          <Text style={styles.docSearchClearBtnText}>ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â</Text>
+          <Text style={styles.docSearchClearBtnText}>{"\u2715"}</Text>
         </Pressable>
       ) : null}
       {articleSearchMatches.length > 0 ? (
         <View style={styles.docSearchNav}>
           <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
-            <Text style={styles.docSearchNavBtnText}>ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¹</Text>
+            <Text style={styles.docSearchNavBtnText}>{"\u2191"}</Text>
           </Pressable>
           <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
-            <Text style={styles.docSearchNavBtnText}>ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Âº</Text>
+            <Text style={styles.docSearchNavBtnText}>{"\u2193"}</Text>
           </Pressable>
         </View>
       ) : null}

@@ -24,9 +24,9 @@ export class SaijCache {
     return this.memory.get<SaijSearchResponse>(key);
   }
 
-  setSearch(query: SaijQuery, response: SaijSearchResponse) {
+  setSearch(query: SaijQuery, response: SaijSearchResponse, ttlSeconds = 600) {
     const key = this.makeSearchKey(query);
-    this.memory.set(key, response, 600);
+    this.memory.set(key, response, ttlSeconds);
   }
 
   setDocument(entry: DocumentCacheEntry, ttlSeconds = 600) {

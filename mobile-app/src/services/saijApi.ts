@@ -252,6 +252,34 @@ const rankProvincialCandidates = (
     .map((hit) => ({ hit, score: scoreProvincialCandidate(hit, provinceTokens, entry) }))
     .sort((a, b) => b.score - a.score);
 
+const buildProvincialCandidateHaystack = (hit: SaijSearchHit) =>
+  normalizeCompact(
+    `${String(hit.title || "")} ${String(hit.subtitle || "")} ${String(hit.summary || "")} ${String(hit.jurisdiccion || "")}`
+  );
+
+const candidateHasCodeShape = (hit: SaijSearchHit) =>
+  isLikelyCodeDocument(String(hit.title || ""), String(hit.subtitle || ""));
+
+const candidateMatchesProvince = (hit: SaijSearchHit, provinceTokens: string[]) => {
+  const haystack = buildProvincialCandidateHaystack(hit);
+  return provinceTokens.some((token) => haystack.includes(token));
+};
+
+const candidateMatchesEntryNumber = (hit: SaijSearchHit, entry: ProvincialCodeCatalogEntry) => {
+  const haystack = buildProvincialCandidateHaystack(hit);
+  const numberTokens = buildEntryNumberTokens(entry);
+  if (numberTokens.length < 1) return false;
+  return numberTokens.some((token) => haystack.includes(token));
+};
+
+const candidateMatchesEntryArea = (hit: SaijSearchHit, entry: ProvincialCodeCatalogEntry) => {
+  const haystack = buildProvincialCandidateHaystack(hit);
+  const areaTokens = getAreaTokens(entry.area, entry.searchTerms);
+  if (areaTokens.length < 1) return false;
+  const matchedAreaTokens = areaTokens.filter((token) => haystack.includes(token)).length;
+  return matchedAreaTokens >= Math.max(1, Math.ceil(areaTokens.length * 0.34));
+};
+
 const searchProvincialCandidates = async (
   province: string,
   entry: ProvincialCodeCatalogEntry,
@@ -318,6 +346,23 @@ const searchProvincialCandidates = async (
       addDirect(`numero-norma:${numberToken}`, 90);
       if (provinceTermDirect) addDirect(`numero-norma:${numberToken} ${provinceTermDirect}`, 90);
     }
+
+    const contextualText = `codigo ${entry.area} ${entry.reference}`.trim();
+    addSearch(
+      {
+        textoEnNorma: contextualText,
+        jurisdiccion: { kind: "provincial", provincia: provinceQueryLabel },
+      },
+      24
+    );
+    addSearch(
+      {
+        textoEnNorma: contextualText,
+      },
+      24
+    );
+    if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ${normalizeCompact(entry.area)}`, 110);
+    if (numberToken && provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ley ${numberToken}`, 110);
   } else {
     addSearch(
       {
@@ -334,6 +379,8 @@ const searchProvincialCandidates = async (
     );
     if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ${normalizeCompact(entry.area)}`, 110);
     if (provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect}`, 120);
+    if (numberToken && provinceTermDirect) addDirect(`titulo:codigo ${provinceTermDirect} ${numberToken}`, 120);
+    if (numberToken) addDirect(`titulo:codigo ley ${numberToken}`, 110);
   }
 
   const resolved = await Promise.allSettled(tasks);
@@ -361,8 +408,29 @@ export const resolveProvincialCode = async (
   const candidates = dedupeHitsByGuid([...narrowCandidates, ...broadCandidates]);
   if (!candidates.length) return null;
 
-  const best = rankProvincialCandidates(candidates, provinceTokens, entry)[0];
-  if (!best || best.score < MIN_ACCEPTABLE_PROVINCIAL_SCORE) return null;
+  const ranked = rankProvincialCandidates(candidates, provinceTokens, entry);
+  const best = ranked[0];
+  if (!best) return null;
+  if (best.score >= MIN_ACCEPTABLE_PROVINCIAL_SCORE) return best.hit;
+
+  const strictNumberProvince = ranked.find(
+    ({ hit }) => candidateHasCodeShape(hit) && candidateMatchesProvince(hit, provinceTokens) && candidateMatchesEntryNumber(hit, entry)
+  );
+  if (strictNumberProvince) return strictNumberProvince.hit;
+
+  const strictNumberArea = ranked.find(
+    ({ hit }) => candidateHasCodeShape(hit) && candidateMatchesEntryNumber(hit, entry) && candidateMatchesEntryArea(hit, entry)
+  );
+  if (strictNumberArea) return strictNumberArea.hit;
+
+  const strictProvinceArea = ranked.find(
+    ({ hit }) => candidateHasCodeShape(hit) && candidateMatchesProvince(hit, provinceTokens) && candidateMatchesEntryArea(hit, entry)
+  );
+  if (strictProvinceArea) return strictProvinceArea.hit;
+
+  const likelyTop = ranked.find(({ hit }) => candidateHasCodeShape(hit) && candidateMatchesProvince(hit, provinceTokens));
+  if (likelyTop) return likelyTop.hit;
+
   return best.hit;
 };
 

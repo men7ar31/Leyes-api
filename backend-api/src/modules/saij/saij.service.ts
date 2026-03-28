@@ -6,7 +6,12 @@ import { SaijClient } from './saij.client';
 import { buildSaijQuery } from './saij.query-builder';
 import { mapSaijSearchHit, mapSaijDocument, isDocumentContentEmpty, mergeDocumentContent, isLikelyLegalBodyText } from './saij.mapper';
 import { SaijSearchRequest, SaijSearchResponse, SaijDocumentResponse } from './saij.types';
-import { SEARCH_CACHE_TTL_MS, DOCUMENT_CACHE_TTL_MS } from './saij.constants';
+import {
+  SEARCH_CACHE_TTL_MS,
+  SEARCH_CODES_NATIONAL_CACHE_TTL_MS,
+  SEARCH_CODES_PROVINCIAL_CACHE_TTL_MS,
+  DOCUMENT_CACHE_TTL_MS,
+} from './saij.constants';
 import { HttpError } from '../../utils/httpError';
 import { NormService } from '../norms/norm.service';
 
@@ -719,6 +724,17 @@ const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
   }
 };
 
+const resolveSearchCacheTtlMs = (input: SaijSearchRequest) => {
+  const tipoNorma = String(input?.filters?.tipoNorma || '').toLowerCase();
+  if (!tipoNorma.includes('codigo')) return SEARCH_CACHE_TTL_MS;
+  if (input.contentType !== 'legislacion' && input.contentType !== 'todo') return SEARCH_CACHE_TTL_MS;
+
+  const jurisdictionKind = String((input?.filters as any)?.jurisdiccion?.kind || '').toLowerCase();
+  if (jurisdictionKind === 'nacional') return SEARCH_CODES_NATIONAL_CACHE_TTL_MS;
+  if (jurisdictionKind === 'provincial') return SEARCH_CODES_PROVINCIAL_CACHE_TTL_MS;
+  return SEARCH_CACHE_TTL_MS;
+};
+
 export const SaijService = {
   async search(input: SaijSearchRequest): Promise<SaijSearchResponse> {
     warnUnimplementedFilters(input.filters);
@@ -796,8 +812,9 @@ export const SaijService = {
           null,
       };
     } else {
-      cache.setSearch(query, response);
-      void CacheService.saveSearch(cacheKey, input, response, Math.floor(SEARCH_CACHE_TTL_MS / 1000)).catch((err) => {
+      const cacheTtlMs = resolveSearchCacheTtlMs(input);
+      cache.setSearch(query, response, Math.floor(cacheTtlMs / 1000));
+      void CacheService.saveSearch(cacheKey, input, response, Math.floor(cacheTtlMs / 1000)).catch((err) => {
         logger.warn({ err }, 'Failed to persist search cache');
       });
     }

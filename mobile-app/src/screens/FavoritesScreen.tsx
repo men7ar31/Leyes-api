@@ -11,6 +11,7 @@ import { AppHeader } from "../components/AppHeader";
 import { EmptyState } from "../components/EmptyState";
 import { FullScreenLoader } from "../components/FullScreenLoader";
 import { OfflineBanner } from "../components/OfflineBanner";
+import { resolveJurisdictionLabel } from "../utils/jurisdiction";
 
 export const FavoritesScreen = () => {
   const { colors } = useAppTheme();
@@ -56,15 +57,26 @@ export const FavoritesScreen = () => {
       <AppHeader title="Favoritos" />
 
       <View style={styles.contentWrap}>
-        <OfflineBanner text="Disponible sin conexión cuando exista snapshot" />
+        <OfflineBanner text="Disponible sin conexion" />
 
         <FlatList
           data={items}
           keyExtractor={(item) => item.guid}
           contentContainerStyle={[styles.listContent, items.length === 0 ? styles.listContentEmpty : null]}
           ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
-          renderItem={({ item }) => (
-            <Pressable
+          renderItem={({ item }) => {
+            const resolvedJurisdictionLabel = resolveJurisdictionLabel({
+              jurisdiccion: item.jurisdiction,
+              subtitle: item.subtitle,
+              title: item.title,
+              metadata: item.snapshot?.metadata,
+            });
+            const jurisdictionLabel =
+              resolvedJurisdictionLabel ||
+              (/local|provincial/i.test(String(item.jurisdiction || item.subtitle || "")) ? "Provincial" : null);
+
+            return (
+              <Pressable
               style={({ pressed }) => [
                 styles.card,
                 {
@@ -77,10 +89,19 @@ export const FavoritesScreen = () => {
               onPress={() => openDetail(item.guid)}
             >
               <View style={styles.rowBetween}>
-                <View style={[styles.typeBadge, { backgroundColor: colors.primarySoft }]}>
-                  <Text style={[styles.typeBadgeText, { color: colors.primaryStrong }]}>
-                    {item.contentType || "legislacion"}
-                  </Text>
+                <View style={styles.badgesWrap}>
+                  <View style={[styles.typeBadge, { backgroundColor: colors.primarySoft }]}>
+                    <Text style={[styles.typeBadgeText, { color: colors.primaryStrong }]}>
+                      {item.contentType || "legislacion"}
+                    </Text>
+                  </View>
+                  {jurisdictionLabel ? (
+                    <View style={[styles.jurisdictionBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                      <Text style={[styles.jurisdictionBadgeText, { color: colors.iconDefault }]} numberOfLines={1}>
+                        {jurisdictionLabel}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
                 <Text style={[styles.offlineText, { color: item.offlineReady ? colors.success : colors.muted }]}>
                   {item.offlineReady ? "Offline" : "Sin snapshot"}
@@ -115,7 +136,8 @@ export const FavoritesScreen = () => {
                 </Pressable>
               </View>
             </Pressable>
-          )}
+            );
+          }}
           ListEmptyComponent={
             <EmptyState
               icon={Heart}
@@ -161,6 +183,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
   },
+  badgesWrap: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 6,
+  },
   typeBadge: {
     borderRadius: radius.pill,
     paddingHorizontal: spacing.sm,
@@ -170,6 +199,17 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
     fontWeight: "700",
     textTransform: "capitalize",
+  },
+  jurisdictionBadge: {
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    maxWidth: "70%",
+  },
+  jurisdictionBadgeText: {
+    fontSize: typography.small,
+    fontWeight: "700",
   },
   itemTitle: {
     fontSize: typography.subtitle,

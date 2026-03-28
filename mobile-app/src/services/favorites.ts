@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSaijDocument } from "./saijApi";
 import type { SaijDocument, SaijSearchHit } from "../types/saij";
+import { resolveJurisdictionLabel } from "../utils/jurisdiction";
 
 const FAVORITES_KEY = "saij_favorites_v1";
 
@@ -9,6 +10,7 @@ export type FavoriteItem = {
   title: string;
   subtitle: string | null;
   contentType: string;
+  jurisdiction: string | null;
   savedAt: string;
   offlineReady: boolean;
   snapshot: SaijDocument | null;
@@ -29,7 +31,30 @@ export const loadFavorites = async (): Promise<FavoriteItem[]> => {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as FavoriteItem[];
     if (!Array.isArray(parsed)) return [];
-    const valid = parsed.filter((item) => normalizeGuid(item?.guid).length > 0);
+    const valid = parsed
+      .filter((item) => normalizeGuid(item?.guid).length > 0)
+      .map((item) => {
+        const normalized: FavoriteItem = {
+          guid: normalizeGuid(item.guid),
+          title: String(item.title || "").trim(),
+          subtitle: (typeof item.subtitle === "string" && item.subtitle.trim()) || null,
+          contentType: String(item.contentType || "").trim(),
+          jurisdiction: (typeof (item as any).jurisdiction === "string" && (item as any).jurisdiction.trim()) || null,
+          savedAt: String(item.savedAt || ""),
+          offlineReady: Boolean(item.offlineReady),
+          snapshot: item.snapshot || null,
+        };
+
+        if (!normalized.jurisdiction) {
+          normalized.jurisdiction = resolveJurisdictionLabel({
+            subtitle: normalized.subtitle,
+            title: normalized.title,
+            metadata: normalized.snapshot?.metadata,
+          });
+        }
+
+        return normalized;
+      });
     return sortFavorites(valid);
   } catch {
     return [];
@@ -71,6 +96,11 @@ export const upsertFavoriteFromDocument = async (document: SaijDocument) => {
     title: String(document.title || "").trim(),
     subtitle: (typeof document.subtitle === "string" && document.subtitle.trim()) || null,
     contentType: String(document.contentType || "").trim(),
+    jurisdiction: resolveJurisdictionLabel({
+      subtitle: document.subtitle,
+      title: document.title,
+      metadata: document.metadata,
+    }),
     savedAt: new Date().toISOString(),
     offlineReady: true,
     snapshot: document,
@@ -102,6 +132,13 @@ export const addFavoriteFromSearchHit = async (hit: SaijSearchHit) => {
     title: String(hit.title || "").trim(),
     subtitle: (typeof hit.subtitle === "string" && hit.subtitle.trim()) || null,
     contentType: String(hit.contentType || "").trim(),
+    jurisdiction: resolveJurisdictionLabel({
+      jurisdiccion: hit.jurisdiccion,
+      subtitle: hit.subtitle,
+      title: hit.title,
+      summary: hit.summary,
+      metadata: snapshot?.metadata,
+    }),
     savedAt: new Date().toISOString(),
     offlineReady: Boolean(snapshot),
     snapshot,
@@ -122,4 +159,3 @@ export const toggleFavoriteFromDocument = async (document: SaijDocument) => {
   const { favorites } = await upsertFavoriteFromDocument(document);
   return { favorites, isFavorite: true };
 };
-
