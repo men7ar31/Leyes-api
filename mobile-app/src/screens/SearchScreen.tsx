@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
-import { Moon, Sun } from "lucide-react-native";
+import { ChevronDown, ChevronUp, CircleHelp, Globe, Mail, Moon, Sun } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQueryClient } from "@tanstack/react-query";
 import { SearchBar } from "../components/SearchBar";
@@ -34,7 +34,14 @@ const PAGE_SIZE = 20;
 const SEARCH_PREFETCH_COUNT = 3;
 const RECENT_SEARCHES_MAX = 4;
 const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
+const SAIJ_HOME_URL = "https://www.saij.gob.ar/home";
+const INFOLEG_HOME_URL = "https://www.infoleg.gob.ar/";
 const CC_BY_25_AR_URL = "https://creativecommons.org/licenses/by/2.5/ar/";
+const CC_BY_25_AR_DEED_URL = "https://creativecommons.org/licenses/by/2.5/ar/deed.es";
+const CC_BY_40_DEED_URL = "https://creativecommons.org/licenses/by/4.0/deed.es";
+const SUPPORT_EMAIL = "medinanico93@gmail.com";
+const SUPPORT_FORM_URL = "https://forms.gle/d98u9dPHeNaZviZb6";
+const SUPPORT_PORTFOLIO_URL = "https://portafolio-esteban-medina.netlify.app/";
 
 type FormState = {
   textoEnNorma: string;
@@ -243,6 +250,7 @@ const getDictamenAutoFacets = (subtype: DictamenSubtype): AutoFacetValues => {
 
 export const SearchScreen = () => {
   const queryClient = useQueryClient();
+  const openingGuidRef = useRef<string | null>(null);
   const [formState, setFormState] = useState<FormState>(initialState);
   const [appliedState, setAppliedState] = useState<FormState>(initialState);
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>(recentSearchesStore);
@@ -252,6 +260,8 @@ export const SearchScreen = () => {
   const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
   const [collapseToken, setCollapseToken] = useState(0);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [expandedSupportItem, setExpandedSupportItem] = useState<"que-es" | "contacto" | "faq" | null>(null);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
   const [activeRefineSection, setActiveRefineSection] = useState<RefineSection | null>(null);
   const { isDarkMode, toggleThemeMode, colors: appColors } = useAppTheme();
@@ -571,17 +581,30 @@ export const SearchScreen = () => {
         isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
         onPressIn={() => prefetchDocument(item.guid)}
         onPress={() => {
-          prefetchDocument(item.guid);
-          registerRecentOpenedDocument({
-            guid: String(item.guid || ""),
-            title: String(item.title || ""),
-            subtitle: item.subtitle || null,
-            contentType: String(item.contentType || ""),
-          });
+          const normalizedGuid = String(item.guid || "").trim();
+          if (!normalizedGuid) return;
+          if (openingGuidRef.current === normalizedGuid) return;
+          openingGuidRef.current = normalizedGuid;
+
           router.push({
             pathname: "/detail/[guid]",
-            params: { guid: item.guid },
+            params: { guid: normalizedGuid },
           });
+
+          setTimeout(() => {
+            registerRecentOpenedDocument({
+              guid: normalizedGuid,
+              title: String(item.title || ""),
+              subtitle: item.subtitle || null,
+              contentType: String(item.contentType || ""),
+            });
+            prefetchDocument(normalizedGuid);
+          }, 0);
+
+          setTimeout(() => {
+            if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
+          }, 120);
+
         }}
         onFavoritePress={() => toggleHitFavorite(item)}
       />
@@ -608,9 +631,9 @@ export const SearchScreen = () => {
   };
 
   const renderFooter = () => {
-    const openLicense = () => {
-      Linking.openURL(CC_BY_25_AR_URL).catch(() => {
-        Alert.alert("No se pudo abrir el enlace", CC_BY_25_AR_URL);
+    const openExternalLink = (url: string) => {
+      Linking.openURL(url).catch(() => {
+        Alert.alert("No se pudo abrir el enlace", url);
       });
     };
 
@@ -634,16 +657,58 @@ export const SearchScreen = () => {
       <View style={styles.footerWrap}>
         {loadMoreNode}
         <Text style={[styles.legalText, { color: appColors.muted }]}>
-          La información se obtiene de SAIJ, dependiente del Ministerio de Justicia de la Nación, y se distribuye bajo
-          licencia{" "}
-          <Text style={[styles.legalLink, { color: appColors.primaryStrong }]} onPress={openLicense}>
-            CCBY 2.5 AR
+          App NO oficial: La informacion se obtiene de{" "}
+          <Text
+            style={[styles.legalLink, { color: appColors.primaryStrong }]}
+            onPress={() => openExternalLink(SAIJ_HOME_URL)}
+          >
+            SAIJ
+          </Text>
+          {" / "}
+          <Text
+            style={[styles.legalLink, { color: appColors.primaryStrong }]}
+            onPress={() => openExternalLink(INFOLEG_HOME_URL)}
+          >
+            INFOLEG
+          </Text>
+          , dependientes del Ministerio de Justicia de la Nacion, y se distribuye bajo la Politica de Datos Abiertos
+          Argentina - licencias{" "}
+          <Text
+            style={[styles.legalLink, { color: appColors.primaryStrong }]}
+            onPress={() => openExternalLink(CC_BY_25_AR_DEED_URL)}
+          >
+            CC BY 2.5 AR
+          </Text>
+          {" - "}
+          <Text
+            style={[styles.legalLink, { color: appColors.primaryStrong }]}
+            onPress={() => openExternalLink(CC_BY_40_DEED_URL)}
+          >
+            CC BY 4.0
           </Text>
           .
         </Text>
       </View>
     );
   };
+
+  const openSupportUrl = useCallback((url: string) => {
+    Linking.openURL(url).catch(() => {
+      Alert.alert("No se pudo abrir el enlace", url);
+    });
+  }, []);
+
+  const openSupportMail = useCallback(() => {
+    Linking.openURL(`mailto:${SUPPORT_EMAIL}`).catch(() => {
+      Alert.alert("No se pudo abrir el enlace", SUPPORT_EMAIL);
+    });
+  }, []);
+
+  const supportItems = [
+    { key: "que-es" as const, title: "Que es LexPlora" },
+    { key: "contacto" as const, title: "Contactanos" },
+    { key: "faq" as const, title: "FAQ" },
+  ];
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
@@ -655,8 +720,151 @@ export const SearchScreen = () => {
             onPress: toggleThemeMode,
             label: isDarkMode ? "Modo claro" : "Modo oscuro",
           },
+          {
+            icon: CircleHelp,
+            onPress: () => {
+              setIsSupportOpen((current) => !current);
+              setExpandedSupportItem((current) => current || "que-es");
+            },
+            label: "Soporte",
+          },
         ]}
       />
+
+      {isSupportOpen ? (
+        <View style={styles.supportOverlay}>
+          <Pressable style={styles.supportBackdrop} onPress={() => setIsSupportOpen(false)} />
+          <View style={[styles.supportCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+            <View style={[styles.supportHeader, { borderBottomColor: appColors.border }]}>
+              <Text style={[styles.supportTitle, { color: appColors.text }]}>Soporte</Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.supportCloseBtn,
+                  { borderColor: appColors.border, backgroundColor: appColors.background },
+                  pressed ? styles.pressed : null,
+                ]}
+                onPress={() => setIsSupportOpen(false)}
+                unstable_pressDelay={0}
+                android_ripple={{ color: "rgba(0,0,0,0.08)" }}
+              >
+                <Text style={[styles.supportCloseText, { color: appColors.primaryStrong }]}>Cerrar</Text>
+              </Pressable>
+            </View>
+
+            {supportItems.map((item) => {
+              const isExpanded = expandedSupportItem === item.key;
+
+              return (
+                <View key={item.key} style={[styles.supportItem, { borderColor: appColors.border }]}>
+                  <Pressable
+                    style={({ pressed }) => [styles.supportItemHeader, pressed ? styles.pressed : null]}
+                    onPress={() => setExpandedSupportItem((current) => (current === item.key ? null : item.key))}
+                    unstable_pressDelay={0}
+                    android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                  >
+                    <Text style={[styles.supportItemTitle, { color: appColors.text }]}>{item.title}</Text>
+                    {isExpanded ? (
+                      <ChevronUp size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+                    ) : (
+                      <ChevronDown size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+                    )}
+                  </Pressable>
+
+                  {isExpanded ? (
+                    <View style={styles.supportItemBody}>
+                      {item.key === "que-es" ? (
+                        <>
+                          <Text style={[styles.supportBodyText, { color: appColors.text }]}>
+                            LexPlora es una app gratuita para conocer las leyes de Argentina, creada al servicio de la
+                            comunidad juridica Argentina y el publico en general.
+                          </Text>
+                          <Text style={[styles.supportBodyText, { color: appColors.text }]}>
+                            Desarrollada por Nicolas E. Medina, en colaboracion con Gonzalo Medina.
+                          </Text>
+                          <Text style={[styles.supportBodyText, { color: appColors.muted }]}>
+                            La informacion es de caracter informativo y no constituye asesoramiento legal.
+                          </Text>
+                        </>
+                      ) : null}
+
+                      {item.key === "contacto" ? (
+                        <>
+                          <Text style={[styles.supportBodyText, { color: appColors.text }]}>
+                            Si queres contactarte con LexPlora, podes escribir por correo electronico o visitar mi
+                            portafolio.
+                          </Text>
+                          <Pressable
+                            style={({ pressed }) => [
+                              styles.supportLinkRow,
+                              { borderColor: appColors.border, backgroundColor: appColors.background },
+                              pressed ? styles.pressed : null,
+                            ]}
+                            onPress={openSupportMail}
+                            unstable_pressDelay={0}
+                            android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                          >
+                            <Mail size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                            <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>{SUPPORT_EMAIL}</Text>
+                          </Pressable>
+                          <Pressable
+                            style={({ pressed }) => [
+                              styles.supportLinkRow,
+                              { borderColor: appColors.border, backgroundColor: appColors.background },
+                              pressed ? styles.pressed : null,
+                            ]}
+                            onPress={() => openSupportUrl(SUPPORT_PORTFOLIO_URL)}
+                            unstable_pressDelay={0}
+                            android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                          >
+                            <Globe size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                            <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>Mi portafolio</Text>
+                          </Pressable>
+                        </>
+                      ) : null}
+
+                      {item.key === "faq" ? (
+                        <>
+                          <Text style={[styles.supportBodyText, { color: appColors.text }]}>
+                            Para reportar error o sugerencia, podes usar cualquiera de estas dos vias.
+                          </Text>
+                          <Pressable
+                            style={({ pressed }) => [
+                              styles.supportLinkRow,
+                              { borderColor: appColors.border, backgroundColor: appColors.background },
+                              pressed ? styles.pressed : null,
+                            ]}
+                            onPress={openSupportMail}
+                            unstable_pressDelay={0}
+                            android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                          >
+                            <Mail size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                            <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>Correo electronico</Text>
+                          </Pressable>
+                          <Pressable
+                            style={({ pressed }) => [
+                              styles.supportLinkRow,
+                              { borderColor: appColors.border, backgroundColor: appColors.background },
+                              pressed ? styles.pressed : null,
+                            ]}
+                            onPress={() => openSupportUrl(SUPPORT_FORM_URL)}
+                            unstable_pressDelay={0}
+                            android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                          >
+                            <Globe size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                            <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>
+                              Reporta un problema o sugerencia
+                            </Text>
+                          </Pressable>
+                        </>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
 
       <FlatList
         data={hasSearched ? sortedItems : []}
@@ -1172,6 +1380,103 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.sm,
+  },
+  supportOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    justifyContent: "flex-start",
+    paddingTop: spacing.xl + spacing.sm,
+  },
+  supportBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(7, 16, 34, 0.24)",
+  },
+  supportCard: {
+    alignSelf: "center",
+    width: "92%",
+    marginHorizontal: spacing.md,
+    marginTop: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  },
+  supportHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: spacing.sm,
+    borderBottomWidth: 1,
+  },
+  supportTitle: {
+    fontSize: typography.title,
+    fontWeight: "700",
+  },
+  supportCloseBtn: {
+    minHeight: 34,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  supportCloseText: {
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  supportItem: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+  },
+  supportItemHeader: {
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  supportItemTitle: {
+    flex: 1,
+    fontSize: typography.body,
+    fontWeight: "700",
+  },
+  supportItemBody: {
+    gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingBottom: spacing.sm,
+    paddingTop: spacing.xs,
+  },
+  supportBodyText: {
+    fontSize: typography.small,
+    lineHeight: 20,
+  },
+  supportInlineLink: {
+    fontSize: typography.small,
+    fontWeight: "700",
+    textDecorationLine: "underline",
+  },
+  supportLinkRow: {
+    minHeight: 42,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  supportLinkText: {
+    flex: 1,
+    fontSize: typography.small,
+    fontWeight: "700",
   },
   totalText: {
     fontSize: typography.small,

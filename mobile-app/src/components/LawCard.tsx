@@ -31,6 +31,8 @@ const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite
     <Pressable
       onPress={onPress}
       onPressIn={onPressIn}
+      unstable_pressDelay={0}
+      android_ripple={{ color: colors.primarySoft }}
       style={({ pressed }) => [
         styles.card,
         {
@@ -68,6 +70,7 @@ const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite
             <Pressable
               onPress={onFavoritePress}
               hitSlop={10}
+              unstable_pressDelay={0}
               style={({ pressed }) => [styles.iconBtn, pressed ? styles.iconBtnPressed : null]}
             >
               <Heart

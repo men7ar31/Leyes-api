@@ -22,6 +22,8 @@ export const ErrorState = ({ message = "Ocurrio un error.", onRetry }: Props) =>
             pressed ? styles.buttonPressed : null,
           ]}
           onPress={onRetry}
+          unstable_pressDelay={0}
+          android_ripple={{ color: "rgba(255,255,255,0.18)" }}
         >
           <Text style={[styles.buttonText, { color: colors.white }]}>Reintentar</Text>
         </Pressable>

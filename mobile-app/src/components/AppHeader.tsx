@@ -39,6 +39,8 @@ export const AppHeader = ({ title, subtitle, actions = [] }: Props) => {
               <Pressable
                 key={action.label}
                 onPress={action.onPress}
+                unstable_pressDelay={0}
+                android_ripple={{ color: "rgba(255,255,255,0.18)", borderless: true }}
                 accessibilityRole="button"
                 accessibilityLabel={action.label}
                 hitSlop={12}
@@ -85,7 +87,7 @@ const styles = StyleSheet.create({
   },
   actionsRow: {
     flexDirection: "row",
-    gap: spacing.xs,
+    gap: spacing.sm,
   },
   actionBtn: {
     width: 34,

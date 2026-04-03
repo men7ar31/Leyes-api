@@ -24,6 +24,8 @@ export const SegmentedTabs = <T extends string>({ options, value, onChange }: Pr
           <Pressable
             key={opt.value}
             onPress={() => onChange(opt.value)}
+            unstable_pressDelay={0}
+            android_ripple={{ color: colors.primarySoft }}
             style={({ pressed }) => [
               styles.item,
               {

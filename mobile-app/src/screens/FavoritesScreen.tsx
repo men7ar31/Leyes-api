@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
@@ -17,6 +17,7 @@ export const FavoritesScreen = () => {
   const { colors } = useAppTheme();
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const openingGuidRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -32,10 +33,17 @@ export const FavoritesScreen = () => {
   );
 
   const openDetail = (guid: string) => {
+    const normalizedGuid = String(guid || "").trim();
+    if (!normalizedGuid) return;
+    if (openingGuidRef.current === normalizedGuid) return;
+    openingGuidRef.current = normalizedGuid;
     router.push({
       pathname: "/detail/[guid]",
-      params: { guid },
+      params: { guid: normalizedGuid },
     });
+    setTimeout(() => {
+      if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
+    }, 120);
   };
 
   const removeItem = async (guid: string) => {
@@ -86,6 +94,8 @@ export const FavoritesScreen = () => {
                 shadows.card,
                 pressed ? styles.cardPressed : null,
               ]}
+              unstable_pressDelay={0}
+              android_ripple={{ color: colors.primarySoft }}
               onPress={() => openDetail(item.guid)}
             >
               <View style={styles.rowBetween}>
@@ -125,6 +135,7 @@ export const FavoritesScreen = () => {
 
                 <Pressable
                   onPress={() => removeItem(item.guid)}
+                  unstable_pressDelay={0}
                   style={({ pressed }) => [
                     styles.removeBtn,
                     { borderColor: colors.border, backgroundColor: colors.card },
