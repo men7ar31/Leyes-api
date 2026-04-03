@@ -4,6 +4,7 @@ import {
   LayoutChangeEvent,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -222,25 +223,27 @@ const ReaderRow = memo(
         ) : (
           <>
             <Text style={[styles.sectionLabel, { color: colors.primaryStrong }]}>{section.headingText}</Text>
-            <Text
-              style={[
-                styles.sectionBody,
-                {
-                  color: colors.text,
-                  fontSize: bodyFontSize,
-                  lineHeight: bodyLineHeight,
-                },
-              ]}
-            >
-              {bodyParts.map((part, index) => (
-                <Text
-                  key={`${section.key}-body-${index}`}
-                  style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
-                >
-                  {part.text}
-                </Text>
-              ))}
-            </Text>
+            {bodyText ? (
+              <Text
+                style={[
+                  styles.sectionBody,
+                  {
+                    color: colors.text,
+                    fontSize: bodyFontSize,
+                    lineHeight: bodyLineHeight,
+                  },
+                ]}
+              >
+                {bodyParts.map((part, index) => (
+                  <Text
+                    key={`${section.key}-body-${index}`}
+                    style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
+                  >
+                    {part.text}
+                  </Text>
+                ))}
+              </Text>
+            ) : null}
           </>
         )}
       </View>
@@ -257,13 +260,13 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
   const [activeMatchPointer, setActiveMatchPointer] = useState(0);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isStructureIndexOpen, setIsStructureIndexOpen] = useState(false);
+  const [expandedStructureKey, setExpandedStructureKey] = useState<string | null>(null);
   const [activeArticlePointer, setActiveArticlePointer] = useState(0);
   const [previewArticlePointer, setPreviewArticlePointer] = useState<number | null>(null);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const listRef = useRef<FlatList<CivilCodeSimpleSection> | null>(null);
-  const structureListRef = useRef<FlatList<CivilCodeStructureItem> | null>(null);
   const scrubberTrackRef = useRef<View | null>(null);
   const sectionLayoutsRef = useRef<Record<number, { height: number }>>({});
   const isScrubbingRef = useRef(false);
@@ -369,14 +372,67 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
 
   const currentStructure = currentStructurePointer >= 0 ? structureItems[currentStructurePointer] : null;
 
-  useEffect(() => {
-    if (currentStructurePointer < 0) return;
-    structureListRef.current?.scrollToIndex({
-      index: currentStructurePointer,
-      animated: true,
-      viewPosition: 0.5,
+  const currentStructureLines = useMemo(
+    () =>
+      String(currentStructure?.label || "")
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    [currentStructure]
+  );
+
+  const currentStructureTitle = currentStructureLines[0] || "";
+  const currentStructureChapter = currentStructureLines[1] || "";
+
+  const structureAccordionItems = useMemo(() => {
+    const groups: Array<{
+      key: string;
+      title: string;
+      titleItem: CivilCodeStructureItem;
+      chapters: Array<{ key: string; label: string; item: CivilCodeStructureItem }>;
+    }> = [];
+    const groupMap = new Map<string, (typeof groups)[number]>();
+
+    structureItems.forEach((item) => {
+      const [titleLineRaw, chapterLineRaw] = String(item.label || "")
+        .split("\n")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+      const title = titleLineRaw || String(item.label || "").trim();
+      if (!title) return;
+
+      let group = groupMap.get(title);
+      if (!group) {
+        group = {
+          key: `structure-${title}`,
+          title,
+          titleItem: item,
+          chapters: [],
+        };
+        groupMap.set(title, group);
+        groups.push(group);
+      }
+
+      if (!chapterLineRaw) {
+        group.titleItem = item;
+        return;
+      }
+
+      group.chapters.push({
+        key: `${group.key}-${chapterLineRaw}`,
+        label: chapterLineRaw,
+        item,
+      });
     });
-  }, [currentStructurePointer]);
+
+    return groups;
+  }, [structureItems]);
+
+  useEffect(() => {
+    if (!isStructureIndexOpen || !currentStructureTitle) return;
+    setExpandedStructureKey((current) => current || `structure-${currentStructureTitle}`);
+  }, [currentStructureTitle, isStructureIndexOpen]);
 
   const matchSectionIndices = useMemo(() => {
     if (deferredNormalizedQuery.length < HIGHLIGHT_MIN_QUERY_LENGTH) return [] as number[];
@@ -601,36 +657,6 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
     </View>
   );
 
-  const renderStructureItem = ({ item, index }: { item: CivilCodeStructureItem; index: number }) => {
-    const isActive = index === currentStructurePointer;
-
-    return (
-      <Pressable
-        style={({ pressed }) => [
-          styles.structureChip,
-          {
-            borderColor: isActive ? colors.primaryStrong : colors.border,
-            backgroundColor: isActive ? (isDarkMode ? "#233B66" : "#E2EEFF") : colors.card,
-          },
-          pressed ? styles.iconButtonPressed : null,
-        ]}
-        onPress={() => scrollToStructure(item)}
-      >
-        <Text
-          style={[
-            styles.structureChipText,
-            {
-              color: isActive ? colors.primaryStrong : colors.text,
-            },
-          ]}
-          numberOfLines={2}
-        >
-          {item.label}
-        </Text>
-      </Pressable>
-    );
-  };
-
   const searchStatus =
     matchSectionIndices.length > 0
       ? `${safeMatchPointer + 1}/${matchSectionIndices.length} bloques - ${totalOccurrenceCount} coincidencias`
@@ -669,8 +695,12 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
           style={[styles.structureStrip, { borderColor: colors.border, backgroundColor: colors.card }]}
           onPress={() => setIsStructureIndexOpen((current) => !current)}
         >
-          <View style={styles.structureStripHeader}>
-            <Text style={[styles.structureCaption, { color: colors.muted }]}>Titulo / Capitulo</Text>
+          <View style={styles.structureStripRow}>
+            <View style={styles.structureStripCenter}>
+              <Text style={[styles.structureText, { color: colors.text }]} numberOfLines={2}>
+                {currentStructure?.label || "Sin estructura detectada"}
+              </Text>
+            </View>
             <View style={styles.structureStripActions}>
               <Pressable
                 style={({ pressed }) => [
@@ -705,25 +735,6 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
               </View>
             </View>
           </View>
-          <Text style={[styles.structureText, { color: colors.text }]} numberOfLines={2}>
-            {currentStructure?.label || "Sin estructura detectada"}
-          </Text>
-          {isStructureIndexOpen && structureItems.length > 0 ? (
-            <FlatList
-              ref={structureListRef}
-              data={structureItems}
-              keyExtractor={(item) => item.key}
-              renderItem={renderStructureItem}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              initialNumToRender={8}
-              maxToRenderPerBatch={8}
-              windowSize={5}
-              keyboardShouldPersistTaps="handled"
-              onScrollToIndexFailed={() => {}}
-              contentContainerStyle={styles.structureList}
-            />
-          ) : null}
         </Pressable>
 
         {isSearchOpen ? (
@@ -798,6 +809,147 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
           </View>
         ) : null}
       </View>
+
+      {isStructureIndexOpen && structureAccordionItems.length > 0 ? (
+        <View style={styles.structureOverlay}>
+          <Pressable style={styles.structureOverlayBackdrop} onPress={() => setIsStructureIndexOpen(false)} />
+          <View
+            style={[
+              styles.structureOverlayCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <View style={[styles.structureOverlayHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.structureOverlayTitle, { color: colors.text }]}>Indice rapido</Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.structureOverlayClose,
+                  { borderColor: colors.border, backgroundColor: colors.background },
+                  pressed ? styles.iconButtonPressed : null,
+                ]}
+                onPress={() => setIsStructureIndexOpen(false)}
+              >
+                <Text style={[styles.structureOverlayCloseText, { color: colors.primaryStrong }]}>Cerrar</Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.structureOverlayScroll}
+              contentContainerStyle={styles.structureAccordion}
+              showsVerticalScrollIndicator={false}
+            >
+              {structureAccordionItems.map((group) => {
+                const isExpanded = expandedStructureKey === group.key;
+                const isActiveTitle = currentStructureTitle === group.title;
+
+                return (
+                  <View
+                    key={group.key}
+                    style={[
+                      styles.structureAccordionItem,
+                      {
+                        borderColor: colors.border,
+                        backgroundColor: colors.background,
+                      },
+                    ]}
+                  >
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.structureAccordionHeader,
+                        pressed ? styles.iconButtonPressed : null,
+                      ]}
+                      onPress={() =>
+                        setExpandedStructureKey((current) => (current === group.key ? null : group.key))
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.structureAccordionTitle,
+                          {
+                            color: isActiveTitle ? colors.primaryStrong : colors.text,
+                          },
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {group.title}
+                      </Text>
+                      <View style={styles.structureAccordionChevron}>
+                        {isExpanded ? (
+                          <ChevronUp size={16} color={colors.primaryStrong} strokeWidth={2.2} />
+                        ) : (
+                          <ChevronDown size={16} color={colors.primaryStrong} strokeWidth={2.2} />
+                        )}
+                      </View>
+                    </Pressable>
+                    {isExpanded ? (
+                      <View style={styles.structureAccordionChildren}>
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.structureAccordionChild,
+                            {
+                              backgroundColor: isActiveTitle && !currentStructureChapter
+                                ? (isDarkMode ? "#233B66" : "#E2EEFF")
+                                : "transparent",
+                            },
+                            pressed ? styles.iconButtonPressed : null,
+                          ]}
+                          onPress={() => {
+                            scrollToStructure(group.titleItem);
+                            setIsStructureIndexOpen(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.structureAccordionChildText,
+                              { color: isActiveTitle && !currentStructureChapter ? colors.primaryStrong : colors.text },
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {group.title}
+                          </Text>
+                        </Pressable>
+                        {group.chapters.map((chapter) => {
+                          const isActiveChapter = isActiveTitle && currentStructureChapter === chapter.label;
+                          return (
+                            <Pressable
+                              key={chapter.key}
+                              style={({ pressed }) => [
+                                styles.structureAccordionChild,
+                                {
+                                  backgroundColor: isActiveChapter
+                                    ? (isDarkMode ? "#233B66" : "#E2EEFF")
+                                    : "transparent",
+                                },
+                                pressed ? styles.iconButtonPressed : null,
+                              ]}
+                              onPress={() => {
+                                scrollToStructure(chapter.item);
+                                setIsStructureIndexOpen(false);
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.structureAccordionChildText,
+                                  { color: isActiveChapter ? colors.primaryStrong : colors.text },
+                                ]}
+                                numberOfLines={2}
+                              >
+                                {chapter.label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.readerWrap}>
         <FlatList
@@ -929,23 +1081,30 @@ const styles = StyleSheet.create({
     opacity: 0.72,
   },
   structureStrip: {
-    minHeight: 58,
+    minHeight: 52,
     borderWidth: 1,
     borderRadius: radius.md,
     paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    gap: spacing.xs,
+    paddingVertical: spacing.sm,
   },
-  structureStripHeader: {
+  structureStripRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.xs,
   },
+  structureStripCenter: {
+    flex: 1,
+    alignItems: "flex-start",
+    justifyContent: "center",
+    paddingRight: spacing.xs,
+  },
   structureStripActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.xs,
+    justifyContent: "flex-end",
+    gap: 2,
+    width: 80,
   },
   structureToggleIcon: {
     width: 24,
@@ -954,41 +1113,116 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   structureNavButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-  },
-  structureCaption: {
-    fontSize: typography.tiny,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
   },
   structureText: {
     fontSize: typography.body,
     fontWeight: "700",
     lineHeight: 18,
+    textAlign: "left",
   },
-  structureList: {
-    paddingTop: spacing.xxs,
-    gap: spacing.xs,
+  structureOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    zIndex: 20,
   },
-  structureChip: {
-    maxWidth: 220,
-    minHeight: 40,
+  structureOverlayBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(17, 24, 39, 0.38)",
+  },
+  structureOverlayCard: {
+    width: "100%",
+    maxWidth: 440,
+    maxHeight: "72%",
     borderWidth: 1,
-    borderRadius: radius.sm,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+  },
+  structureOverlayHeader: {
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  structureOverlayTitle: {
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: "800",
+  },
+  structureOverlayClose: {
+    minWidth: 70,
+    minHeight: 34,
+    borderWidth: 1,
+    borderRadius: 12,
     paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    marginRight: spacing.xs,
+    alignItems: "center",
     justifyContent: "center",
   },
-  structureChipText: {
+  structureOverlayCloseText: {
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  structureOverlayScroll: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  structureAccordion: {
+    paddingTop: spacing.xxs,
+    paddingBottom: spacing.sm,
+    gap: spacing.xxs,
+  },
+  structureAccordionItem: {
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    overflow: "hidden",
+  },
+  structureAccordionHeader: {
+    minHeight: 42,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  structureAccordionTitle: {
     fontSize: typography.small,
     fontWeight: "700",
     lineHeight: 16,
+    flex: 1,
+  },
+  structureAccordionChevron: {
+    width: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  structureAccordionChildren: {
+    paddingBottom: spacing.xxs,
+    paddingTop: 2,
+  },
+  structureAccordionChild: {
+    minHeight: 36,
+    marginHorizontal: spacing.xs,
+    marginBottom: spacing.xxs,
+    borderRadius: radius.xs,
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  structureAccordionChildText: {
+    fontSize: typography.small,
+    lineHeight: 16,
+    fontWeight: "600",
   },
   searchShell: {
     borderWidth: 1,
@@ -1067,6 +1301,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textTransform: "uppercase",
     letterSpacing: readingTypography.sectionLabelLetterSpacing,
+    textAlign: "center",
   },
   articleHeading: {
     fontSize: readingTypography.articleLeadSize,

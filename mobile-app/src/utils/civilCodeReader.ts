@@ -473,10 +473,25 @@ const buildArticleSection = (params: {
   };
 };
 
+const buildStructureSection = (key: string, structureLabel: string, structureKey: string): CivilCodeSimpleSection => ({
+  key,
+  kind: "paragraph",
+  label: structureLabel,
+  text: structureLabel,
+  headingText: structureLabel,
+  bodyText: "",
+  articleNumber: null,
+  articleTitleText: null,
+  structureLabel,
+  structureKey,
+  searchText: normalizeLoose(structureLabel),
+});
+
 const buildArticleSections = (articles: SaijArticle[], leadText?: string | null): CivilCodeSimpleSection[] => {
   const sections: CivilCodeSimpleSection[] = [];
 
   let currentHeadings: string[] = [];
+  let previousStructureKey = "";
 
   articles.forEach((article, index) => {
     const articleNumber = normalizeArticleNumber(article.number, index + 1);
@@ -493,6 +508,10 @@ const buildArticleSections = (articles: SaijArticle[], leadText?: string | null)
     });
 
     if (!section.text) return;
+    if (section.structureLabel && section.structureKey && section.structureKey !== previousStructureKey) {
+      sections.push(buildStructureSection(`structure-${section.structureKey}-${index}`, section.structureLabel, section.structureKey));
+      previousStructureKey = section.structureKey;
+    }
     sections.push(section);
   });
 
@@ -541,6 +560,7 @@ const splitContentTextIntoSections = (text: string) => {
 
   const sections: CivilCodeSimpleSection[] = [];
   let currentHeadings: string[] = [];
+  let previousStructureKey = "";
 
   matches.forEach((match, index) => {
     const start = match.index ?? 0;
@@ -576,6 +596,12 @@ const splitContentTextIntoSections = (text: string) => {
     });
 
     if (!section.text) return;
+    if (section.structureLabel && section.structureKey && section.structureKey !== previousStructureKey) {
+      sections.push(
+        buildStructureSection(`content-structure-${section.structureKey}-${index}`, section.structureLabel, section.structureKey)
+      );
+      previousStructureKey = section.structureKey;
+    }
     sections.push(section);
   });
 
