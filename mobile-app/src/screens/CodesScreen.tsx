@@ -164,7 +164,8 @@ export const CodesScreen = () => {
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
           queryFn: () => getSaijDocument(normalizedGuid),
-          staleTime: 1000 * 60 * 5,
+          staleTime: 1000 * 60 * 20,
+          gcTime: 1000 * 60 * 60,
         })
         .catch(() => {
           // warm cache best effort
@@ -173,11 +174,41 @@ export const CodesScreen = () => {
     [queryClient]
   );
 
+  const prefetchProvincialCodeResolution = useCallback(
+    (province: string, entry: ProvincialCodeCatalogEntry) => {
+      if (!province) return;
+      const resolveKey = resolveQueryKeyForEntry(province, entry);
+      const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
+      if (cached?.guid) {
+        prefetchCode(cached.guid);
+        return;
+      }
+
+      queryClient
+        .prefetchQuery({
+          queryKey: resolveKey,
+          queryFn: () => resolveProvincialCode(province, entry),
+          staleTime: 1000 * 60 * 30,
+        })
+        .then(() => {
+          const resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
+          if (resolved?.guid) {
+            prefetchCode(resolved.guid);
+          }
+        })
+        .catch(() => {
+          // best effort warm-up
+        });
+    },
+    [prefetchCode, queryClient, resolveQueryKeyForEntry]
+  );
+
   const openCode = useCallback((guid: string) => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
     openingGuidRef.current = normalizedGuid;
+    prefetchCode(normalizedGuid);
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: normalizedGuid, fromCodes: "1" },
@@ -186,8 +217,8 @@ export const CodesScreen = () => {
       if (openingGuidRef.current === normalizedGuid) {
         openingGuidRef.current = null;
       }
-    }, 90);
-  }, []);
+    }, 60);
+  }, [prefetchCode]);
 
   const resolveAndOpenProvincialCode = useCallback(
     async (entry: ProvincialCodeCatalogEntry) => {
@@ -226,10 +257,10 @@ export const CodesScreen = () => {
           if (openingEntryRef.current === entryKey) {
             openingEntryRef.current = null;
           }
-        }, 90);
+        }, 60);
       }
     },
-    [openCode, prefetchCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
+    [openCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
   );
 
   return (
@@ -259,6 +290,8 @@ export const CodesScreen = () => {
               <View style={styles.errorWrap}>
                 <Text style={[styles.errorText, { color: colors.danger }]}>No se pudo cargar la lista nacional.</Text>
                 <Pressable
+                  unstable_pressDelay={0}
+                  android_ripple={{ color: colors.primarySoft, borderless: true }}
                   style={({ pressed }) => [
                     styles.retryBtn,
                     { borderColor: colors.border, backgroundColor: colors.primarySoft },
@@ -292,7 +325,12 @@ export const CodesScreen = () => {
           <View style={[styles.block, { backgroundColor: colors.card, borderColor: colors.border }]}> 
             <View style={styles.headerRow}>
               <Text style={[styles.blockTitle, { color: colors.text }]}>Provincia: {selectedProvince || "Seleccionar"}</Text>
-              <Pressable onPress={() => setIsProvinceListOpen((prev) => !prev)}>
+              <Pressable
+                onPress={() => setIsProvinceListOpen((prev) => !prev)}
+                unstable_pressDelay={0}
+                android_ripple={{ color: colors.primarySoft, borderless: true }}
+                hitSlop={8}
+              >
                 <Text style={[styles.changeText, { color: colors.primaryStrong }]}>{isProvinceListOpen ? "Ocultar" : "Cambiar"}</Text>
               </Pressable>
             </View>
@@ -317,8 +355,6 @@ export const CodesScreen = () => {
 
             {canShowProvincialCodes ? (
               <View style={styles.codesWrap}>
-                <Text style={[styles.blockTitle, { color: colors.text }]}>Codigos ({selectedProvince})</Text>
-
                 {provincialCatalog.length === 0 ? (
                   <EmptyState message="Sin codigos para esta provincia" />
                 ) : (
@@ -329,13 +365,7 @@ export const CodesScreen = () => {
                         key={rowKey}
                         title={entry.area}
                         subtitle={entry.reference}
-                        onPressIn={() => {
-                          const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
-                          const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
-                          if (cached?.guid) {
-                            prefetchCode(cached.guid);
-                          }
-                        }}
+                        onPressIn={() => prefetchProvincialCodeResolution(selectedProvince, entry)}
                         onPress={() => resolveAndOpenProvincialCode(entry)}
                       />
                     );

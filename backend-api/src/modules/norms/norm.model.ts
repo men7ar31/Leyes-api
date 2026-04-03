@@ -5,6 +5,13 @@ export interface NormCacheDocument extends Document {
   source: 'saij';
   extractorVersion?: number;
   contentType: string;
+  numeroNorma?: string | null;
+  tipoNorma?: string | null;
+  smartCitation?: {
+    numero?: string | null;
+    tipo?: string | null;
+    nombre?: string | null;
+  } | null;
   documentSubtype?: string | null;
   estadoVigencia?: string | null;
   tribunal?: string | null;
@@ -38,6 +45,9 @@ const NormCacheSchema = new Schema<NormCacheDocument>({
   source: { type: String, required: true, default: 'saij' },
   extractorVersion: Number,
   contentType: { type: String, required: true },
+  numeroNorma: String,
+  tipoNorma: String,
+  smartCitation: Schema.Types.Mixed,
   documentSubtype: String,
   estadoVigencia: String,
   tribunal: String,

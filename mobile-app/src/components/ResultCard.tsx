@@ -9,9 +9,17 @@ type Props = {
   onPressIn?: () => void;
   onFavoritePress?: () => void;
   isFavorite?: boolean;
+  highlighted?: boolean;
 };
 
-const ResultCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
+const ResultCardComponent = ({
+  hit,
+  onPress,
+  onPressIn,
+  onFavoritePress,
+  isFavorite = false,
+  highlighted = false,
+}: Props) => {
   const didSwipeRef = useRef(false);
 
   const swipeResponder = PanResponder.create({
@@ -20,7 +28,7 @@ const ResultCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavor
       if (!onFavoritePress) return false;
       const absDx = Math.abs(gestureState.dx);
       const absDy = Math.abs(gestureState.dy);
-      return absDx > 24 && absDx > absDy * 1.6;
+      return absDx > 32 && absDy < 12 && absDx > absDy * 2;
     },
     onPanResponderRelease: (_, gestureState) => {
       if (!onFavoritePress) return;
@@ -45,6 +53,7 @@ const ResultCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavor
         onPressIn={onPressIn}
         onFavoritePress={onFavoritePress}
         isFavorite={isFavorite}
+        highlighted={highlighted}
       />
     </View>
   );

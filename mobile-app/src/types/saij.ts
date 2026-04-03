@@ -119,6 +119,13 @@ export type SaijDocument = {
   title: string;
   subtitle: string | null;
   contentType: string;
+  numeroNorma?: string | null;
+  tipoNorma?: string | null;
+  smartCitation?: {
+    numero?: string | null;
+    tipo?: string | null;
+    nombre?: string | null;
+  } | null;
   documentSubtype?: string | null;
   estadoVigencia?: string | null;
   tribunal?: string | null;

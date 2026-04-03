@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
-import { ChevronDown, ChevronUp, CircleHelp, Globe, Mail, Moon, Sun } from "lucide-react-native";
+import { ChevronDown, ChevronUp, CircleHelp, Eraser, Globe, Mail, Moon, Sun, X } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQueryClient } from "@tanstack/react-query";
 import { SearchBar } from "../components/SearchBar";
@@ -31,7 +31,7 @@ import type {
 } from "../types/saij";
 
 const PAGE_SIZE = 20;
-const SEARCH_PREFETCH_COUNT = 3;
+const SEARCH_PREFETCH_COUNT = 1;
 const RECENT_SEARCHES_MAX = 4;
 const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
 const SAIJ_HOME_URL = "https://www.saij.gob.ar/home";
@@ -257,6 +257,7 @@ export const SearchScreen = () => {
   const [favoriteMap, setFavoriteMap] = useState<Record<string, true>>({});
   const [favoriteBusyMap, setFavoriteBusyMap] = useState<Record<string, boolean>>({});
   const [hasSearched, setHasSearched] = useState(false);
+  const [activeResultGuid, setActiveResultGuid] = useState<string | null>(null);
   const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
   const [collapseToken, setCollapseToken] = useState(0);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
@@ -473,9 +474,27 @@ export const SearchScreen = () => {
   }, [recentSearches]);
 
   const openRecentDocument = useCallback((item: RecentSearchItem) => {
+    prefetchDocument(item.guid);
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: item.guid },
+    });
+  }, [prefetchDocument]);
+
+  const clearRecentDocuments = useCallback(() => {
+    recentSearchesStore = [];
+    setRecentSearches([]);
+    AsyncStorage.removeItem(RECENT_SEARCHES_KEY).catch(() => {
+      // best effort cleanup
+    });
+  }, []);
+
+  const removeRecentDocument = useCallback((keyToRemove: string) => {
+    const next = recentSearchesStore.filter((entry) => entry.key !== keyToRemove);
+    recentSearchesStore = next;
+    setRecentSearches(next);
+    AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next)).catch(() => {
+      // best effort persistence
     });
   }, []);
 
@@ -523,11 +542,13 @@ export const SearchScreen = () => {
 
   const onSearch = () => {
     const nextState = { ...formState };
+    const sameSearch =
+      hasSearched && JSON.stringify(nextState) === JSON.stringify(appliedState);
     setAppliedState(nextState);
     setHasSearched(true);
     setDateOrder("desc");
     setCollapseToken((prev) => prev + 1);
-    if (hasSearched) {
+    if (sameSearch) {
       refetch();
     }
   };
@@ -564,7 +585,7 @@ export const SearchScreen = () => {
     if (!hasSearched || sortedItems.length === 0) return;
     const timer = setTimeout(() => {
       sortedItems.slice(0, SEARCH_PREFETCH_COUNT).forEach((item) => prefetchDocument(item.guid));
-    }, 140);
+    }, 260);
     return () => clearTimeout(timer);
   }, [hasSearched, prefetchDocument, sortedItems]);
 
@@ -579,12 +600,21 @@ export const SearchScreen = () => {
       <ResultCard
         hit={item}
         isFavorite={Boolean(favoriteMap[normalizeGuid(item.guid)])}
-        onPressIn={() => prefetchDocument(item.guid)}
+        highlighted={activeResultGuid === normalizeGuid(item.guid)}
+        onPressIn={() => {
+          const normalizedGuid = String(item.guid || "").trim();
+          if (normalizedGuid) {
+            setActiveResultGuid(normalizedGuid);
+          }
+          prefetchDocument(item.guid);
+        }}
         onPress={() => {
           const normalizedGuid = String(item.guid || "").trim();
           if (!normalizedGuid) return;
           if (openingGuidRef.current === normalizedGuid) return;
           openingGuidRef.current = normalizedGuid;
+          prefetchDocument(normalizedGuid);
+          setActiveResultGuid(normalizedGuid);
 
           router.push({
             pathname: "/detail/[guid]",
@@ -592,24 +622,29 @@ export const SearchScreen = () => {
           });
 
           setTimeout(() => {
-            registerRecentOpenedDocument({
-              guid: normalizedGuid,
-              title: String(item.title || ""),
-              subtitle: item.subtitle || null,
-              contentType: String(item.contentType || ""),
+            startTransition(() => {
+              registerRecentOpenedDocument({
+                guid: normalizedGuid,
+                title: String(item.title || ""),
+                subtitle: item.subtitle || null,
+                contentType: String(item.contentType || ""),
+              });
             });
-            prefetchDocument(normalizedGuid);
-          }, 0);
+          }, 180);
 
           setTimeout(() => {
             if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
-          }, 120);
+          }, 60);
+
+          setTimeout(() => {
+            setActiveResultGuid((current) => (current === normalizedGuid ? null : current));
+          }, 320);
 
         }}
         onFavoritePress={() => toggleHitFavorite(item)}
       />
     ),
-    [favoriteMap, prefetchDocument, registerRecentOpenedDocument, toggleHitFavorite]
+    [activeResultGuid, favoriteMap, prefetchDocument, registerRecentOpenedDocument, toggleHitFavorite]
   );
 
   const renderEmpty = () => {
@@ -890,11 +925,24 @@ export const SearchScreen = () => {
               filterActive={isFiltersOpen}
             />
 
+            <View style={[styles.inlineFieldCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <Text style={[styles.inlineFieldLabel, { color: appColors.muted }]}>Numero de ley, decreto o resolucion</Text>
+              <TextInput
+                style={[styles.inlineFieldInput, { color: appColors.text }]}
+                value={formState.numeroNorma}
+                onChangeText={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
+                placeholder="Ej: 26994, 20744, 70/2023"
+                placeholderTextColor={appColors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="default"
+                returnKeyType="search"
+              />
+            </View>
+
             {isFiltersOpen ? (
               <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
                 <SearchFilters
-                  numeroNorma={formState.numeroNorma}
-                  onChangeNumeroNorma={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
                   contentType={formState.contentType}
                   onChangeContentType={(contentType) =>
                     setFormState((prev) => ({
@@ -1129,30 +1177,64 @@ export const SearchScreen = () => {
 
             {!hasSearched && recentSearches.length > 0 ? (
               <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-                <Text style={[styles.blockTitle, { color: appColors.text }]}>Ultimos documentos abiertos</Text>
+                <View style={styles.recentsHeader}>
+                  <Text style={[styles.blockTitle, { color: appColors.text }]}>Ultimos documentos abiertos</Text>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.recentsClearBtn,
+                      { borderColor: appColors.border, backgroundColor: appColors.background },
+                      pressed ? styles.pressed : null,
+                    ]}
+                    onPress={clearRecentDocuments}
+                    unstable_pressDelay={0}
+                    android_ripple={{ color: "rgba(0,0,0,0.08)", borderless: true }}
+                    hitSlop={8}
+                  >
+                    <Eraser size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                    <Text style={[styles.recentsClearText, { color: appColors.primaryStrong }]}>Borrar</Text>
+                  </Pressable>
+                </View>
                 <View style={styles.recentsList}>
                   {recentSearches.map((entry) => (
-                    <Pressable
+                    <View
                       key={entry.key}
-                      style={({ pressed }) => [
+                      style={[
                         styles.recentItem,
                         { borderColor: appColors.border, backgroundColor: appColors.surface },
-                        pressed ? styles.pressed : null,
                       ]}
-                      onPress={() => openRecentDocument(entry)}
                     >
-                      <Text style={[styles.recentType, { color: appColors.primaryStrong }]} numberOfLines={1}>
-                        {entry.contentType}
-                      </Text>
-                      <Text style={[styles.recentTitle, { color: appColors.text }]} numberOfLines={2}>
-                        {entry.title}
-                      </Text>
-                      {entry.subtitle ? (
-                        <Text style={[styles.recentSubtitle, { color: appColors.muted }]} numberOfLines={1}>
-                          {entry.subtitle}
+                      <Pressable
+                        style={({ pressed }) => [styles.recentItemBody, pressed ? styles.pressed : null]}
+                        onPress={() => openRecentDocument(entry)}
+                        unstable_pressDelay={0}
+                        android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                      >
+                        <Text style={[styles.recentType, { color: appColors.primaryStrong }]} numberOfLines={1}>
+                          {entry.contentType}
                         </Text>
-                      ) : null}
-                    </Pressable>
+                        <Text style={[styles.recentTitle, { color: appColors.text }]} numberOfLines={2}>
+                          {entry.title}
+                        </Text>
+                        {entry.subtitle ? (
+                          <Text style={[styles.recentSubtitle, { color: appColors.muted }]} numberOfLines={1}>
+                            {entry.subtitle}
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.recentDeleteBtn,
+                          { borderColor: appColors.border, backgroundColor: appColors.card },
+                          pressed ? styles.pressed : null,
+                        ]}
+                        onPress={() => removeRecentDocument(entry.key)}
+                        unstable_pressDelay={0}
+                        android_ripple={{ color: "rgba(0,0,0,0.08)", borderless: true }}
+                        hitSlop={8}
+                      >
+                        <X size={14} color={appColors.primaryStrong} strokeWidth={2.4} />
+                      </Pressable>
+                    </View>
                   ))}
                 </View>
               </View>
@@ -1250,6 +1332,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: spacing.sm,
     gap: spacing.sm,
+  },
+  inlineFieldCard: {
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    gap: 4,
+  },
+  inlineFieldLabel: {
+    fontSize: typography.small,
+    fontWeight: "600",
+  },
+  inlineFieldInput: {
+    minHeight: 40,
+    fontSize: typography.body,
+    fontWeight: "500",
+    paddingVertical: 0,
   },
   refineToggle: {
     flexDirection: "row",
@@ -1352,12 +1451,48 @@ const styles = StyleSheet.create({
   recentsList: {
     gap: spacing.xs,
   },
+  recentsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  recentsClearBtn: {
+    minHeight: 30,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  recentsClearText: {
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
   recentItem: {
     borderRadius: radius.md,
     borderWidth: 1,
-    paddingHorizontal: spacing.sm,
+    paddingLeft: spacing.sm,
+    paddingRight: spacing.xs,
     paddingVertical: spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  recentItemBody: {
+    flex: 1,
     gap: 2,
+    paddingVertical: 2,
+  },
+  recentDeleteBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   recentType: {
     fontSize: typography.small,

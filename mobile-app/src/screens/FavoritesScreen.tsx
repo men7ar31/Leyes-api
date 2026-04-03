@@ -3,9 +3,11 @@ import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { Heart, Trash2 } from "lucide-react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { radius, shadows, spacing, typography } from "../constants/theme";
 import { formatDate } from "../utils/format";
 import { type FavoriteItem, loadFavorites, removeFavoriteByGuid } from "../services/favorites";
+import { getSaijDocument } from "../services/saijApi";
 import { useAppTheme } from "../theme/appTheme";
 import { AppHeader } from "../components/AppHeader";
 import { EmptyState } from "../components/EmptyState";
@@ -15,6 +17,7 @@ import { resolveJurisdictionLabel } from "../utils/jurisdiction";
 
 export const FavoritesScreen = () => {
   const { colors } = useAppTheme();
+  const queryClient = useQueryClient();
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const openingGuidRef = useRef<string | null>(null);
@@ -32,18 +35,37 @@ export const FavoritesScreen = () => {
     }, [refresh])
   );
 
+  const prefetchDocument = useCallback(
+    (guid?: string | null) => {
+      const normalizedGuid = String(guid || "").trim();
+      if (!normalizedGuid) return;
+      queryClient
+        .prefetchQuery({
+          queryKey: ["saij-document", normalizedGuid],
+          queryFn: () => getSaijDocument(normalizedGuid),
+          staleTime: 1000 * 60 * 20,
+          gcTime: 1000 * 60 * 60,
+        })
+        .catch(() => {
+          // best effort warmup
+        });
+    },
+    [queryClient]
+  );
+
   const openDetail = (guid: string) => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
     openingGuidRef.current = normalizedGuid;
+    prefetchDocument(normalizedGuid);
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: normalizedGuid },
     });
     setTimeout(() => {
       if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
-    }, 120);
+    }, 60);
   };
 
   const removeItem = async (guid: string) => {
@@ -96,6 +118,7 @@ export const FavoritesScreen = () => {
               ]}
               unstable_pressDelay={0}
               android_ripple={{ color: colors.primarySoft }}
+              onPressIn={() => prefetchDocument(item.guid)}
               onPress={() => openDetail(item.guid)}
             >
               <View style={styles.rowBetween}>

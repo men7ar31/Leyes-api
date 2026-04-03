@@ -236,6 +236,40 @@ const buildNumeroNormaTerms = (rawValue?: string): string[] => {
   return [];
 };
 
+const normalizeSearchHeuristicTerm = (value?: string) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const shouldPreferNormTitleSearch = (rawValue?: string) => {
+  const normalized = normalizeSearchHeuristicTerm(rawValue);
+  if (!normalized) return false;
+
+  const words = normalized.split(' ').filter(Boolean);
+  if (words.length > 8) return false;
+  if (/[.:;]/.test(rawValue || '')) return false;
+
+  const hasNormKeyword = [
+    'ley',
+    'codigo',
+    'decreto',
+    'dnu',
+    'resolucion',
+    'constitucion',
+    'estatuto',
+    'regimen',
+    'convenio',
+    'contrato de trabajo',
+    'procedimiento',
+  ].some((token) => normalized.includes(token));
+
+  const hasNormNumber = /\b\d{2,7}(?:\s*\/\s*\d{2,4})?\b/.test(normalized);
+  return hasNormKeyword || hasNormNumber;
+};
+
 export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
   const rParts: string[] = [];
 
@@ -244,7 +278,8 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
   }
 
   if (input.filters.textoEnNorma) {
-    const searchTerm = input.filters.textoEnNorma.trim().replace(/\s+/g, '?');
+    const rawSearchTerm = input.filters.textoEnNorma.trim();
+    const searchTerm = rawSearchTerm.replace(/\s+/g, '?');
     // Alineado con SAIJ web:
     // - fallo: titulo:
     // - sumario: tema:
@@ -257,6 +292,9 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
             input.contentType === 'doctrina' ||
             input.contentType === 'dictamen'
           ? 'tema'
+          : (input.contentType === 'legislacion' || input.contentType === 'todo') &&
+              shouldPreferNormTitleSearch(rawSearchTerm)
+            ? 'titulo'
           : 'texto';
     rParts.push(`${field}:${searchTerm}`);
   }

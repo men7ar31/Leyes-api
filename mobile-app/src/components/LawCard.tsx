@@ -13,9 +13,17 @@ type Props = {
   onPressIn?: () => void;
   onFavoritePress?: () => void;
   isFavorite?: boolean;
+  highlighted?: boolean;
 };
 
-const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
+const LawCardComponent = ({
+  hit,
+  onPress,
+  onPressIn,
+  onFavoritePress,
+  isFavorite = false,
+  highlighted = false,
+}: Props) => {
   const { colors } = useAppTheme();
   const typeText = cleanText(hit.contentType || "Legislacion");
   const jurisdictionLabel = resolveJurisdictionLabel({
@@ -36,8 +44,8 @@ const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite
       style={({ pressed }) => [
         styles.card,
         {
-          backgroundColor: colors.card,
-          borderColor: colors.border,
+          backgroundColor: highlighted ? colors.primarySoft : colors.card,
+          borderColor: highlighted ? colors.primaryStrong : colors.border,
         },
         shadows.card,
         pressed ? styles.cardPressed : null,

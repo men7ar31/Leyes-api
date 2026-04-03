@@ -187,7 +187,17 @@ const ReaderRow = memo(
         ]}
       >
         {section.kind === "article" ? (
-          <>
+          <Text
+            selectable
+            style={[
+              styles.sectionBody,
+              {
+                color: colors.text,
+                fontSize: bodyFontSize,
+                lineHeight: bodyLineHeight,
+              },
+            ]}
+          >
             <Text style={[styles.articleHeading, { color: colors.text }]}>
               {articleHeadingParts.map((part, index) => (
                 <Text
@@ -199,16 +209,8 @@ const ReaderRow = memo(
               ))}
             </Text>
             {bodyText ? (
-              <Text
-                style={[
-                  styles.sectionBody,
-                  {
-                    color: colors.text,
-                    fontSize: bodyFontSize,
-                    lineHeight: bodyLineHeight,
-                  },
-                ]}
-              >
+              <>
+                {"\n"}
                 {bodyParts.map((part, index) => (
                   <Text
                     key={`${section.key}-body-${index}`}
@@ -217,23 +219,25 @@ const ReaderRow = memo(
                     {part.text}
                   </Text>
                 ))}
-              </Text>
+              </>
             ) : null}
-          </>
+          </Text>
         ) : (
-          <>
+          <Text
+            selectable
+            style={[
+              styles.sectionBody,
+              {
+                color: colors.text,
+                fontSize: bodyFontSize,
+                lineHeight: bodyLineHeight,
+              },
+            ]}
+          >
             <Text style={[styles.sectionLabel, { color: colors.primaryStrong }]}>{section.headingText}</Text>
             {bodyText ? (
-              <Text
-                style={[
-                  styles.sectionBody,
-                  {
-                    color: colors.text,
-                    fontSize: bodyFontSize,
-                    lineHeight: bodyLineHeight,
-                  },
-                ]}
-              >
+              <>
+                {"\n"}
                 {bodyParts.map((part, index) => (
                   <Text
                     key={`${section.key}-body-${index}`}
@@ -242,9 +246,9 @@ const ReaderRow = memo(
                     {part.text}
                   </Text>
                 ))}
-              </Text>
+              </>
             ) : null}
-          </>
+          </Text>
         )}
       </View>
     );
