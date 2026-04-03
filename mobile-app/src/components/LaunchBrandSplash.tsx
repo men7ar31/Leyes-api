@@ -15,7 +15,7 @@ export const LaunchBrandSplash = () => {
         <View style={styles.bottomBlock}>
           <Text style={styles.motto}>"Populus Iura Sua Novit"</Text>
           <View style={styles.creditBar}>
-            <Text style={styles.creditText}>Designed by Nicolás Medina</Text>
+            <Text style={styles.creditText}>Designed by Esteban N. Medina</Text>
           </View>
         </View>
       </View>

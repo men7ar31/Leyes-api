@@ -42,6 +42,7 @@ const CC_BY_40_DEED_URL = "https://creativecommons.org/licenses/by/4.0/deed.es";
 const SUPPORT_EMAIL = "medinanico93@gmail.com";
 const SUPPORT_FORM_URL = "https://forms.gle/d98u9dPHeNaZviZb6";
 const SUPPORT_PORTFOLIO_URL = "https://portafolio-esteban-medina.netlify.app/";
+const SUPPORT_LINKEDIN_URL = "https://www.linkedin.com/in/esteban-nicolas-medina-men/";
 
 type FormState = {
   textoEnNorma: string;
@@ -814,7 +815,7 @@ export const SearchScreen = () => {
                             comunidad juridica Argentina y el publico en general.
                           </Text>
                           <Text style={[styles.supportBodyText, { color: appColors.text }]}>
-                            Desarrollada por Nicolas E. Medina, en colaboracion con Gonzalo Medina.
+                            Desarrollada por Esteban N. Medina, en colaboracion con Gonzalo Medina.
                           </Text>
                           <Text style={[styles.supportBodyText, { color: appColors.muted }]}>
                             La informacion es de caracter informativo y no constituye asesoramiento legal.
@@ -853,6 +854,19 @@ export const SearchScreen = () => {
                           >
                             <Globe size={15} color={appColors.primaryStrong} strokeWidth={2} />
                             <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>Mi portafolio</Text>
+                          </Pressable>
+                          <Pressable
+                            style={({ pressed }) => [
+                              styles.supportLinkRow,
+                              { borderColor: appColors.border, backgroundColor: appColors.background },
+                              pressed ? styles.pressed : null,
+                            ]}
+                            onPress={() => openSupportUrl(SUPPORT_LINKEDIN_URL)}
+                            unstable_pressDelay={0}
+                            android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+                          >
+                            <Globe size={15} color={appColors.primaryStrong} strokeWidth={2} />
+                            <Text style={[styles.supportLinkText, { color: appColors.primaryStrong }]}>LinkedIn</Text>
                           </Pressable>
                         </>
                       ) : null}
