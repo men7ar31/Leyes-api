@@ -25,9 +25,11 @@ import { LoadingState } from "../components/LoadingState";
 import { ErrorState } from "../components/ErrorState";
 import { MetadataRow } from "../components/MetadataRow";
 import { ContentUnavailableCard } from "../components/ContentUnavailableCard";
+import { CivilCodeSimpleReader } from "../components/CivilCodeSimpleReader";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
+import { isCivilAndCommercialCodeDocument } from "../utils/civilCodeReader";
 import { searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
@@ -1122,6 +1124,10 @@ export const DetailScreen = () => {
         <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
       </SafeAreaView>
     );
+  }
+
+  if (isCivilAndCommercialCodeDocument(document)) {
+    return <CivilCodeSimpleReader document={document} />;
   }
 
   const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
