@@ -76,6 +76,8 @@ type RecentSearchItem = {
   contentType: string;
 };
 
+type SearchSortMode = "relevance" | "alphaAsc" | "alphaDesc" | "dateDesc" | "dateAsc";
+
 let recentSearchesStore: RecentSearchItem[] = [];
 
 const getDateTimestamp = (value?: string | null) => {
@@ -259,7 +261,7 @@ export const SearchScreen = () => {
   const [favoriteBusyMap, setFavoriteBusyMap] = useState<Record<string, boolean>>({});
   const [hasSearched, setHasSearched] = useState(false);
   const [activeResultGuid, setActiveResultGuid] = useState<string | null>(null);
-  const [dateOrder, setDateOrder] = useState<"desc" | "asc">("desc");
+  const [sortMode, setSortMode] = useState<SearchSortMode>("relevance");
   const [collapseToken, setCollapseToken] = useState(0);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
@@ -547,7 +549,10 @@ export const SearchScreen = () => {
       hasSearched && JSON.stringify(nextState) === JSON.stringify(appliedState);
     setAppliedState(nextState);
     setHasSearched(true);
-    setDateOrder("desc");
+    setSortMode("relevance");
+    setIsFiltersOpen(false);
+    setIsRefineOpen(false);
+    setActiveRefineSection(null);
     setCollapseToken((prev) => prev + 1);
     if (sameSearch) {
       refetch();
@@ -560,7 +565,22 @@ export const SearchScreen = () => {
   );
 
   const sortedItems = useMemo(() => {
-    if (!hasSearched || items.length <= 1 || !canSortByDate) return items;
+    if (!hasSearched || items.length <= 1 || sortMode === "relevance") return items;
+
+    if (sortMode === "alphaAsc" || sortMode === "alphaDesc") {
+      const direction = sortMode === "alphaAsc" ? 1 : -1;
+      return [...items].sort((a, b) => {
+        const titleCompare = String(a.title || "").localeCompare(String(b.title || ""), "es", {
+          sensitivity: "base",
+        });
+        if (titleCompare !== 0) return titleCompare * direction;
+        return String(a.subtitle || "").localeCompare(String(b.subtitle || ""), "es", {
+          sensitivity: "base",
+        }) * direction;
+      });
+    }
+
+    if (!canSortByDate) return items;
 
     return items
       .map((item, index) => ({
@@ -572,7 +592,7 @@ export const SearchScreen = () => {
         const aHasDate = Number.isFinite(a.ts);
         const bHasDate = Number.isFinite(b.ts);
         if (aHasDate && bHasDate) {
-          const diff = dateOrder === "desc" ? b.ts - a.ts : a.ts - b.ts;
+          const diff = sortMode === "dateDesc" ? b.ts - a.ts : a.ts - b.ts;
           if (Math.abs(diff) > 0) return diff;
         } else if (aHasDate !== bHasDate) {
           return aHasDate ? -1 : 1;
@@ -580,7 +600,23 @@ export const SearchScreen = () => {
         return a.index - b.index;
       })
       .map((entry) => entry.item);
-  }, [canSortByDate, dateOrder, hasSearched, items]);
+  }, [canSortByDate, hasSearched, items, sortMode]);
+
+  const cycleAlphaSort = useCallback(() => {
+    setSortMode((prev) => {
+      if (prev === "alphaAsc") return "alphaDesc";
+      if (prev === "alphaDesc") return "relevance";
+      return "alphaAsc";
+    });
+  }, []);
+
+  const cycleDateSort = useCallback(() => {
+    setSortMode((prev) => {
+      if (prev === "dateDesc") return "dateAsc";
+      if (prev === "dateAsc") return "relevance";
+      return "dateDesc";
+    });
+  }, []);
 
   useEffect(() => {
     if (!hasSearched || sortedItems.length === 0) return;
@@ -1257,20 +1293,44 @@ export const SearchScreen = () => {
             {hasSearched ? (
               <View style={styles.resultsMetaRow}>
                 <Text style={[styles.totalText, { color: appColors.muted }]}>{total} resultados</Text>
-                {canSortByDate ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.sortBtn,
-                      { borderColor: appColors.border, backgroundColor: appColors.card },
-                      pressed ? styles.pressed : null,
-                    ]}
-                    onPress={() => setDateOrder((prev) => (prev === "desc" ? "asc" : "desc"))}
-                  >
-                    <Text style={[styles.sortBtnText, { color: appColors.primaryStrong }]}> 
-                      A/Z · {dateOrder === "desc" ? "Mas recientes" : "Mas antiguas"}
-                    </Text>
-                  </Pressable>
-                ) : null}
+                <View style={styles.sortActions}>
+                  {items.length > 1 ? (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.sortBtn,
+                        {
+                          borderColor: sortMode === "alphaAsc" || sortMode === "alphaDesc" ? appColors.primaryStrong : appColors.border,
+                          backgroundColor:
+                            sortMode === "alphaAsc" || sortMode === "alphaDesc" ? appColors.primarySoft : appColors.card,
+                        },
+                        pressed ? styles.pressed : null,
+                      ]}
+                      onPress={cycleAlphaSort}
+                    >
+                      <Text style={[styles.sortBtnText, { color: appColors.primaryStrong }]}>
+                        {sortMode === "alphaDesc" ? "Z/A" : "A/Z"}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  {canSortByDate ? (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.sortBtn,
+                        {
+                          borderColor: sortMode === "dateDesc" || sortMode === "dateAsc" ? appColors.primaryStrong : appColors.border,
+                          backgroundColor:
+                            sortMode === "dateDesc" || sortMode === "dateAsc" ? appColors.primarySoft : appColors.card,
+                        },
+                        pressed ? styles.pressed : null,
+                      ]}
+                      onPress={cycleDateSort}
+                    >
+                      <Text style={[styles.sortBtnText, { color: appColors.primaryStrong }]}>
+                        {sortMode === "dateAsc" ? "Fecha asc" : "Fecha desc"}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             ) : null}
 
@@ -1529,6 +1589,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.sm,
+  },
+  sortActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
   },
   supportOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -1269,6 +1269,11 @@ export const DetailScreen = () => {
   const readingBodyColor = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
   const readingSecondaryColor = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
   const readingLabelColor = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
+  const isComfortableDetail = document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
+  const comfortableBodyFontSize = isComfortableDetail ? bodyFontSize : bodyFontSize;
+  const comfortableBodyLineHeight = isComfortableDetail ? Math.max(bodyLineHeight + 3, Math.round(comfortableBodyFontSize * 1.66)) : bodyLineHeight;
+  const comfortableTitleFontSize = isComfortableDetail ? readingTypography.lawTitleSize : readingTypography.lawTitleSize;
+  const comfortableTitleLineHeight = isComfortableDetail ? readingTypography.lawTitleLineHeight + 2 : readingTypography.lawTitleLineHeight;
   const stickyViewportOffset = 26;
   const jumpTopOffset = spacing.md;
   const subtitleText = getSubtitleText(document.subtitle);
@@ -1319,7 +1324,7 @@ export const DetailScreen = () => {
     return null;
   })();
   const falloTribunalFromHeader =
-    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂA]MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
+    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
   const falloFechaDisplay =
     (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
     (metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null) ||
@@ -1343,7 +1348,7 @@ export const DetailScreen = () => {
     baseTypeLabel === "fallo"
       ? {
           label: "Sentencia / Tribunal",
-          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") || "No informado",
+          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" / ") || "No informado",
           color: appColors.text,
         }
       : baseTypeLabel === "doctrina"
@@ -1795,8 +1800,8 @@ export const DetailScreen = () => {
       </Text>
     ));
 
-  const renderHighlightedBlock = (value: string, style: any, keyPrefix: string) => (
-    <Text style={style}>{renderHighlightedInline(value, keyPrefix)}</Text>
+  const renderHighlightedBlock = (value: string, style: any, keyPrefix: string, selectable = false) => (
+    <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>
   );
 
   const handleDetailScroll = (y: number) => {
@@ -2266,6 +2271,33 @@ export const DetailScreen = () => {
     void shareWholeDocumentAsTxt();
   };
 
+  const buildNonLegislationCitation = () => {
+    const heading = cleanText(document.title || "Contenido");
+    const relatedFalloTitle = cleanText(relatedFallos[0]?.title || "");
+    const parts =
+      baseTypeLabel === "doctrina"
+        ? [heading, autorDoctrina || null, metadataDate || citationPublication || null]
+        : baseTypeLabel === "fallo"
+          ? [heading, falloTribunalDisplay || null, falloFechaDisplay || null]
+          : baseTypeLabel === "sumario"
+            ? [heading, relatedFalloTitle && relatedFalloTitle !== heading ? relatedFalloTitle : null, metadataDate || null]
+            : baseTypeLabel === "dictamen"
+              ? [heading, (typeof document.organismo === "string" && document.organismo.trim()) || null, metadataDate || null]
+              : [heading, metadataDate || citationPublication || null];
+    return "(" + parts.filter(Boolean).join(", ") + ")";
+  };
+
+  const shareCurrentTextDocument = async () => {
+    const heading = cleanText(document.title || "Contenido");
+    const body = cleanContentText(extractedRelated.mainText) || cleanContentText(document.contentText) || cleanContentText(leadText);
+    if (!body) {
+      Alert.alert("Sin contenido", "No encontramos texto suficiente para compartir este contenido.");
+      return;
+    }
+    const message = [heading, body, buildNonLegislationCitation()].filter(Boolean).join("\n\n").trim();
+    await shareTextPayload(heading, message);
+  };
+
   const shareSingleArticle = async (params: {
     displayNumber: string;
     articleLeadTitle: string;
@@ -2275,7 +2307,7 @@ export const DetailScreen = () => {
     const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
       params.displayNumber
     )}`.trim();
-    await shareTextPayload(`${heading} ? Art. ${params.displayNumber}`, message);
+    await shareTextPayload(`${heading} - Art. ${params.displayNumber}`, message);
   };
 
   const toggleArticleSelectedForShare = (articleKey: string) => {
@@ -2622,12 +2654,25 @@ export const DetailScreen = () => {
         const parsed = parseFalloContent(extractedRelated.mainText);
         return (
           <View style={styles.falloContentCard}>
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
             {parsed.headerLines.map((line, index) => {
               const isPrimary = index === 0 || /^SENTENCIA$/i.test(line);
               const isMetaLabel = /^Nro\.?\s*Interno:|^Id\s*SAIJ:|^Magistrados:/i.test(line);
               return (
                 <Text
                   key={`${index}-${line}`}
+                  selectable
                   style={[
                     styles.falloHeaderLine,
                     { fontSize: bodyFontSize, lineHeight: bodyLineHeight },
@@ -2645,7 +2690,8 @@ export const DetailScreen = () => {
                 {renderHighlightedBlock(
                   parsed.summaryText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
-                  "fallo-summary"
+                  "fallo-summary",
+                  true
                 )}
               </View>
             ) : null}
@@ -2653,11 +2699,74 @@ export const DetailScreen = () => {
         );
       }
 
-      return renderHighlightedBlock(
-        extractedRelated.mainText,
-        [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
-        "main-text"
+      const comfortableMainText = isComfortableDetail
+        ? extractedRelated.mainText
+            .replace(/\r\n?/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .replace(/([^\n])\n([^\n])/g, "$1\n\n$2")
+        : extractedRelated.mainText;
+      const mainTextBlock = renderHighlightedBlock(
+        comfortableMainText,
+        [
+          styles.contentText,
+          { fontSize: comfortableBodyFontSize, lineHeight: comfortableBodyLineHeight, color: readingBodyColor },
+        ],
+        "main-text",
+        isComfortableDetail || document.contentType === "fallo" || document.contentType === "dictamen"
       );
+
+      if (isComfortableDetail) {
+        return (
+          <View
+            style={[
+              styles.falloContentCard,
+              {
+                backgroundColor: appColors.card,
+                borderColor: appColors.border,
+                paddingHorizontal: spacing.md + 1,
+                paddingVertical: spacing.md + 2,
+                borderRadius: radius.lg,
+              },
+            ]}
+          >
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
+            {mainTextBlock}
+          </View>
+        );
+      }
+
+      if (document.contentType !== "legislacion") {
+        return (
+          <View style={styles.inlineTextShareWrap}>
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
+            {mainTextBlock}
+          </View>
+        );
+      }
+
+      return mainTextBlock;
     }
 
     return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
@@ -2774,7 +2883,19 @@ export const DetailScreen = () => {
       >
         <View style={styles.headerMainRow}>
           <View style={styles.headerTextWrap}>
-            <Text style={[styles.headerTitle, { color: appColors.text }]}>{headerTitleText}</Text>
+            <Text
+              style={[
+                styles.headerTitle,
+                {
+                  color: appColors.text,
+                  fontSize: comfortableTitleFontSize,
+                  lineHeight: comfortableTitleLineHeight,
+                  letterSpacing: isComfortableDetail ? -0.2 : 0,
+                },
+              ]}
+            >
+              {headerTitleText}
+            </Text>
           </View>
           <View style={styles.headerActions}>
             <Pressable
@@ -2826,6 +2947,21 @@ export const DetailScreen = () => {
                 <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>
                   {isDocSearchOpen ? "Ocultar buscador" : "Buscar en documento"}
                 </Text>
+              </Pressable>
+            ) : null}
+            {selectedSection === "texto" && document.contentType !== "legislacion" ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.headerMenuItem,
+                  { borderTopColor: appColors.border },
+                  pressed ? styles.headerMenuItemPressed : null,
+                ]}
+                onPress={() => {
+                  setIsHeaderMenuOpen(false);
+                  shareCurrentTextDocument();
+                }}
+              >
+                <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>Compartir contenido</Text>
               </Pressable>
             ) : null}
             {selectedSection === "texto" && articleShareItems.length > 0 ? (
@@ -3013,9 +3149,24 @@ export const DetailScreen = () => {
           restoreSavedScrollIfNeeded();
         }}
       >
-        <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-          <MetadataRow label="Tipo" value={typeLabel} />
-          <MetadataRow label={secondaryMeta.label} value={secondaryMeta.value} valueColor={secondaryMeta.color} />
+        <View
+          style={[
+            styles.metaCard,
+            {
+              backgroundColor: appColors.card,
+              borderColor: appColors.border,
+              paddingVertical: isComfortableDetail ? spacing.md + 2 : undefined,
+              paddingHorizontal: isComfortableDetail ? readingTypography.cardPadding + 2 : undefined,
+            },
+          ]}
+        >
+          <MetadataRow label="Tipo" value={typeLabel} variant={isComfortableDetail ? "comfortable" : "default"} />
+          <MetadataRow
+            label={secondaryMeta.label}
+            value={secondaryMeta.value}
+            valueColor={secondaryMeta.color}
+            variant={isComfortableDetail ? "comfortable" : "default"}
+          />
         </View>
 
         {attachmentUrl ? (
@@ -3361,17 +3512,17 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 8,
     paddingTop: 0,
   },
   headerActionBtn: {
-    minWidth: 32,
+    minWidth: 34,
     height: 32,
     borderRadius: 0,
     borderWidth: 0,
     borderColor: "transparent",
     backgroundColor: "transparent",
-    paddingHorizontal: 3,
+    paddingHorizontal: 4,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -3707,13 +3858,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.md,
-    gap: spacing.xs,
+    paddingHorizontal: spacing.md + 2,
+    paddingVertical: spacing.md + 3,
+    gap: spacing.sm,
+    alignSelf: "center",
+    width: "100%",
   },
   falloHeaderLine: {
     fontSize: readingTypography.articleBodySize,
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
+    textAlign: "center",
   },
   falloHeaderPrimary: {
     fontWeight: "700",
@@ -3733,12 +3888,14 @@ const styles = StyleSheet.create({
     color: readingTypography.labelTextColor,
     letterSpacing: readingTypography.sectionLabelLetterSpacing,
     textTransform: "uppercase",
+    textAlign: "center",
   },
   contentText: {
     fontSize: readingTypography.articleBodySize,
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
     letterSpacing: 0.1,
+    textAlign: "justify",
   },
   searchHighlight: {
     backgroundColor: "#FFE08A",
@@ -3807,6 +3964,8 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   articleLeadInline: {
+    flex: 1,
+    flexShrink: 1,
     fontWeight: "600",
     color: readingTypography.bodyTextColor,
     letterSpacing: 0.1,
@@ -3874,6 +4033,14 @@ const styles = StyleSheet.create({
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
     letterSpacing: 0.1,
+  },
+  inlineTextShareWrap: {
+    gap: spacing.xs,
+  },
+  inlineContentShareRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
   },
   articleScrubberTrack: {
     position: "absolute",
