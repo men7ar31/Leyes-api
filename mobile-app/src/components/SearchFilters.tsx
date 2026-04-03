@@ -47,8 +47,6 @@ export type DictamenSubtype =
   | "resoluciones_aaip";
 
 type Props = {
-  numeroNorma: string;
-  onChangeNumeroNorma: (text: string) => void;
   contentType: SaijSearchRequest["contentType"];
   onChangeContentType: (value: SaijSearchRequest["contentType"]) => void;
   legislationSubtype: SaijLegislationSubtype;
@@ -194,8 +192,6 @@ const dictamenSubtypeOptions: Array<{ label: string; value: DictamenSubtype }> =
 ];
 
 export const SearchFilters = ({
-  numeroNorma,
-  onChangeNumeroNorma,
   contentType,
   onChangeContentType,
   legislationSubtype,
@@ -254,20 +250,6 @@ export const SearchFilters = ({
 
   return (
     <View style={styles.container}>
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: appColors.muted }]}>Numero de norma (opcional)</Text>
-        <TextInput
-          style={[styles.input, insetSurfaceStyle, { color: appColors.text }]}
-          placeholder="Ej: 70/2023"
-          placeholderTextColor={appColors.muted}
-          value={numeroNorma}
-          onChangeText={onChangeNumeroNorma}
-          keyboardType="default"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </View>
-
       <View style={styles.field}>
         <Text style={[styles.label, { color: appColors.muted }]}>Tipo de contenido</Text>
         <View style={styles.chips}>

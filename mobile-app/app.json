@@ -1,13 +1,58 @@
 {
   "expo": {
-    "scheme": "acme",
+    "name": "LexPlora",
+    "slug": "lexplora",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "lexplora",
+    "description": "App no oficial para consultar leyes, codigos y normas de Argentina.",
+    "icon": "./src/assets/branding/lexplora-logo.png",
+    "splash": {
+      "image": "./src/assets/branding/lexplora-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F4F7FB"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "newArchEnabled": true,
+    "jsEngine": "hermes",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "plugins": [
       "expo-router"
     ],
-    "name": "mobile-app",
-    "slug": "mobile-app",
+    "ios": {
+      "bundleIdentifier": "com.men7ar31nico.lexplora",
+      "buildNumber": "1",
+      "supportsTablet": false,
+      "requireFullScreen": true,
+      "icon": "./src/assets/branding/lexplora-logo.png",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
     "android": {
-      "package": "com.men7ar31nico"
+      "package": "com.men7ar31nico",
+      "versionCode": 1,
+      "softwareKeyboardLayoutMode": "resize",
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./src/assets/branding/lexplora-logo.png",
+        "monochromeImage": "./src/assets/branding/lexplora-logo.png",
+        "backgroundColor": "#F4F7FB"
+      }
+    },
+    "extra": {
+      "apiUrlEnvVar": "https://leyes-api-backend.onrender.com/"
     }
   }
 }

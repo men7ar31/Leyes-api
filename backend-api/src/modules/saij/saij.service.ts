@@ -17,7 +17,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 26;
+const DOCUMENT_EXTRACTOR_VERSION = 27;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
@@ -112,6 +112,9 @@ const buildDocumentFromMongo = (mongo: any, overrides?: { contentUnavailableReas
     title: mongo.title,
     subtitle: typeof mongo.subtitle === 'string' ? mongo.subtitle : null,
     contentType: contentType as any,
+    numeroNorma: typeof mongo?.numeroNorma === 'string' ? mongo.numeroNorma : null,
+    tipoNorma: typeof mongo?.tipoNorma === 'string' ? mongo.tipoNorma : null,
+    smartCitation: mongo?.smartCitation && typeof mongo.smartCitation === 'object' ? mongo.smartCitation : null,
     documentSubtype: typeof mongo?.documentSubtype === 'string' ? mongo.documentSubtype : null,
     estadoVigencia: typeof mongo?.estadoVigencia === 'string' ? mongo.estadoVigencia : null,
     tribunal: typeof mongo?.tribunal === 'string' ? mongo.tribunal : null,
@@ -484,6 +487,135 @@ const pickBestLegislationMatch = (lookup: NormLookup, candidates: ReturnType<typ
   return byKind ?? byNumber[0];
 };
 
+const getNormTypeLabelFromLookup = (lookup?: NormLookup | null) => {
+  if (!lookup) return null;
+  if (lookup.kind === 'ley') return 'Ley';
+  if (lookup.kind === 'dnu') return 'DNU';
+  if (lookup.kind === 'resolucion') return 'Resolucion';
+  return 'Decreto';
+};
+
+const formatNormNumberFromLookup = (lookup?: NormLookup | null) => {
+  if (!lookup) return null;
+  const normalizedNumber = String(Number(lookup.number));
+  if (!normalizedNumber || normalizedNumber === 'NaN') return null;
+  return lookup.kind === 'ley' || !lookup.year ? normalizedNumber : `${normalizedNumber}/${lookup.year}`;
+};
+
+const pickBestDocumentLegislationHit = (
+  guid: string,
+  title: string,
+  candidates: ReturnType<typeof mapSaijSearchHit>[]
+) => {
+  const targetGuid = String(guid || '').trim();
+  const targetTitle = normalizeLooseText(title);
+  let best: ReturnType<typeof mapSaijSearchHit> | null = null;
+  let bestScore = -1;
+
+  for (const candidate of candidates) {
+    if (candidate.contentType !== 'legislacion') continue;
+    const candidateGuid = String(candidate.guid || '').trim();
+    const candidateTitle = normalizeLooseText(candidate.title || '');
+    const candidateSubtitle = String(candidate.subtitle || '').trim();
+    let score = 0;
+
+    if (targetGuid && candidateGuid && candidateGuid === targetGuid) score += 200;
+    if (candidateTitle && targetTitle) {
+      if (candidateTitle === targetTitle) score += 120;
+      else if (candidateTitle.includes(targetTitle)) score += 90;
+      else if (targetTitle.includes(candidateTitle)) score += 70;
+      else {
+        const targetTokens = targetTitle.split(' ').filter((token) => token.length > 2);
+        score += targetTokens.filter((token) => candidateTitle.includes(token)).length * 4;
+      }
+    }
+
+    if (parseNormLookupLoose(candidateSubtitle) || parseNormLookupLoose(candidate.title)) score += 25;
+    if (candidateSubtitle) score += 10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  return best;
+};
+
+const enrichDocumentNormCitation = async (mappedDoc: any) => {
+  if (mappedDoc?.contentType !== 'legislacion') return mappedDoc;
+  if ((mappedDoc as any)?.numeroNorma && (mappedDoc as any)?.tipoNorma) return mappedDoc;
+
+  const guid = typeof mappedDoc?.guid === 'string' ? mappedDoc.guid.trim() : '';
+  const title = typeof mappedDoc?.title === 'string' ? mappedDoc.title.trim() : '';
+  if (!title) return mappedDoc;
+
+  const localLookup =
+    parseNormLookupLoose((mappedDoc as any)?.smartCitation?.tipo && (mappedDoc as any)?.smartCitation?.numero
+      ? `${(mappedDoc as any)?.smartCitation?.tipo} ${(mappedDoc as any)?.smartCitation?.numero}`
+      : null) ||
+    parseNormLookupLoose(typeof mappedDoc?.subtitle === 'string' ? mappedDoc.subtitle : null) ||
+    parseNormLookupLoose(title);
+
+  const localNumeroNorma = (mappedDoc as any)?.numeroNorma || formatNormNumberFromLookup(localLookup);
+  const localTipoNorma = (mappedDoc as any)?.tipoNorma || getNormTypeLabelFromLookup(localLookup);
+
+  if (localNumeroNorma && localTipoNorma) {
+    return {
+      ...mappedDoc,
+      numeroNorma: localNumeroNorma,
+      tipoNorma: localTipoNorma,
+      smartCitation:
+        (mappedDoc as any)?.smartCitation && typeof (mappedDoc as any)?.smartCitation === 'object'
+          ? {
+              ...(mappedDoc as any).smartCitation,
+              numero: (mappedDoc as any).smartCitation?.numero ?? localNumeroNorma,
+              tipo: (mappedDoc as any).smartCitation?.tipo ?? localTipoNorma,
+              nombre: (mappedDoc as any).smartCitation?.nombre ?? mappedDoc.title ?? null,
+            }
+          : {
+              numero: localNumeroNorma,
+              tipo: localTipoNorma,
+              nombre: mappedDoc.title ?? null,
+            },
+    };
+  }
+
+  try {
+    const { raw } = await client.search({
+      r: `titulo:${normalizeSearchTerm(title)}`,
+      f: LEGISLACION_FACET,
+      offset: 0,
+      pageSize: 10,
+    });
+    const candidates = getRawHits(raw).map((hit: any) => mapSaijSearchHit(hit, 'legislacion'));
+    const best = pickBestDocumentLegislationHit(guid, title, candidates);
+    if (!best) return mappedDoc;
+
+    const lookup = parseNormLookupLoose(best.subtitle || best.title);
+    const numeroNorma = localNumeroNorma || formatNormNumberFromLookup(lookup);
+    const tipoNorma = localTipoNorma || getNormTypeLabelFromLookup(lookup);
+    const smartCitation =
+      numeroNorma || tipoNorma || title
+        ? {
+            numero: numeroNorma ?? null,
+            tipo: tipoNorma ?? null,
+            nombre: (mappedDoc as any)?.smartCitation?.nombre || mappedDoc.title || best.title || null,
+          }
+        : (mappedDoc as any)?.smartCitation ?? null;
+
+    return {
+      ...mappedDoc,
+      numeroNorma,
+      tipoNorma,
+      smartCitation,
+    };
+  } catch (err) {
+    logger.warn({ err, guid, title }, 'Document norm citation enrichment failed');
+    return mappedDoc;
+  }
+};
+
 const isRawNormCodeLabel = (value?: string | null): boolean => {
   if (!value || typeof value !== 'string') return false;
   const clean = value.replace(/\s+/g, ' ').trim().toUpperCase();
@@ -710,6 +842,38 @@ const enrichNormativeReferenceTitles = async (mappedDoc: any) => {
   }
   return out;
 };
+
+const hasGenericNormativeRefs = (mappedDoc: any) => {
+  const queues: any[][] = [
+    Array.isArray(mappedDoc?.normasQueModifica) ? mappedDoc.normasQueModifica : [],
+    Array.isArray(mappedDoc?.normasComplementarias) ? mappedDoc.normasComplementarias : [],
+    Array.isArray(mappedDoc?.observaciones) ? mappedDoc.observaciones : [],
+    Array.isArray(mappedDoc?.relatedContents) ? mappedDoc.relatedContents : [],
+  ];
+
+  for (const list of queues) {
+    for (const item of list) {
+      if (isGenericNormLabel(typeof item?.title === 'string' ? item.title : null)) return true;
+    }
+  }
+
+  const articles = Array.isArray(mappedDoc?.articles) ? mappedDoc.articles : [];
+  for (const article of articles) {
+    const articleLists = [
+      Array.isArray(article?.normasQueModifica) ? article.normasQueModifica : [],
+      Array.isArray(article?.normasComplementarias) ? article.normasComplementarias : [],
+      Array.isArray(article?.observaciones) ? article.observaciones : [],
+      Array.isArray(article?.relatedContents) ? article.relatedContents : [],
+    ];
+    for (const list of articleLists) {
+      for (const item of list) {
+        if (isGenericNormLabel(typeof item?.title === 'string' ? item.title : null)) return true;
+      }
+    }
+  }
+
+  return false;
+};
 const warnUnimplementedFilters = (filters: SaijSearchRequest['filters']) => {
   const unimplemented: Array<keyof typeof filters> = [
     // Estado/tema/organismo tienen versión facet implementada
@@ -757,7 +921,29 @@ export const SaijService = {
     }
 
     logger.info({ query }, 'Executing SAIJ search');
-    const { raw, debug } = await client.search(query);
+    let raw: any;
+    let debug: any;
+    try {
+      const result = await client.search(query);
+      raw = result.raw;
+      debug = result.debug;
+    } catch (error) {
+      if (error instanceof HttpError) {
+        if (
+          error.code === 'saij_error_status' ||
+          error.code === 'saij_timeout' ||
+          error.code === 'saij_error'
+        ) {
+          throw new HttpError(
+            503,
+            'saij_search_temporarily_unavailable',
+            'SAIJ no respondio bien en este momento. Reintenta en unos segundos.',
+            error.details
+          );
+        }
+      }
+      throw error;
+    }
 
     logger.info(
       {
@@ -866,7 +1052,10 @@ export const SaijService = {
       externalUrl = debugInfo.url;
       let mapped = mapSaijDocument(raw, { guid });
       mapped = await resolveRelatedFallos(mapped);
-      mapped = await enrichNormativeReferenceTitles(mapped);
+      if (hasGenericNormativeRefs(mapped)) {
+        mapped = await enrichNormativeReferenceTitles(mapped);
+      }
+      mapped = await enrichDocumentNormCitation(mapped);
       mapped = await enrichFalloWithRelatedSummary(mapped, raw);
       if (isDocumentContentEmpty(mapped)) {
         const relatedSumario = await resolveRelatedSumarioFallback(raw);
@@ -910,7 +1099,10 @@ export const SaijService = {
           const fallbackDoc = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl: fallbackUrl });
           mapped = mergeDocumentContent(mapped, fallbackDoc);
           mapped = await resolveRelatedFallos(mapped);
-          mapped = await enrichNormativeReferenceTitles(mapped);
+          if (hasGenericNormativeRefs(mapped)) {
+            mapped = await enrichNormativeReferenceTitles(mapped);
+          }
+          mapped = await enrichDocumentNormCitation(mapped);
           mapped = await enrichFalloWithRelatedSummary(mapped, raw);
           fallbackSucceeded = !isDocumentContentEmpty(mapped);
           strategyUsed = 'view-document+friendly-url-fallback';
@@ -1014,7 +1206,10 @@ export const SaijService = {
         externalUrl = dbg.finalUrl ?? dbg.url;
         let mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
         mapped = await resolveRelatedFallos(mapped);
-        mapped = await enrichNormativeReferenceTitles(mapped);
+        if (hasGenericNormativeRefs(mapped)) {
+          mapped = await enrichNormativeReferenceTitles(mapped);
+        }
+        mapped = await enrichDocumentNormCitation(mapped);
         mapped = await enrichFalloWithRelatedSummary(mapped, null);
         const mergedDoc = mapped;
         const fbSucceeded = !isDocumentContentEmpty(mergedDoc);
@@ -1191,6 +1386,11 @@ async function finalizeDocument(
       source: 'saij' as const,
       extractorVersion: DOCUMENT_EXTRACTOR_VERSION,
       contentType: mapped.contentType,
+      numeroNorma: typeof (mapped as any).numeroNorma === 'string' ? (mapped as any).numeroNorma : null,
+      tipoNorma: typeof (mapped as any).tipoNorma === 'string' ? (mapped as any).tipoNorma : null,
+      smartCitation: (mapped as any).smartCitation && typeof (mapped as any).smartCitation === 'object'
+        ? (mapped as any).smartCitation
+        : null,
       documentSubtype: typeof (mapped as any).documentSubtype === 'string' ? (mapped as any).documentSubtype : null,
       estadoVigencia: typeof (mapped as any).estadoVigencia === 'string' ? (mapped as any).estadoVigencia : null,
       tribunal: typeof (mapped as any).tribunal === 'string' ? (mapped as any).tribunal : null,

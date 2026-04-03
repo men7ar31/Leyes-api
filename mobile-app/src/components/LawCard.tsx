@@ -13,9 +13,17 @@ type Props = {
   onPressIn?: () => void;
   onFavoritePress?: () => void;
   isFavorite?: boolean;
+  highlighted?: boolean;
 };
 
-const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite = false }: Props) => {
+const LawCardComponent = ({
+  hit,
+  onPress,
+  onPressIn,
+  onFavoritePress,
+  isFavorite = false,
+  highlighted = false,
+}: Props) => {
   const { colors } = useAppTheme();
   const typeText = cleanText(hit.contentType || "Legislacion");
   const jurisdictionLabel = resolveJurisdictionLabel({
@@ -31,11 +39,13 @@ const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite
     <Pressable
       onPress={onPress}
       onPressIn={onPressIn}
+      unstable_pressDelay={0}
+      android_ripple={{ color: colors.primarySoft }}
       style={({ pressed }) => [
         styles.card,
         {
-          backgroundColor: colors.card,
-          borderColor: colors.border,
+          backgroundColor: highlighted ? colors.primarySoft : colors.card,
+          borderColor: highlighted ? colors.primaryStrong : colors.border,
         },
         shadows.card,
         pressed ? styles.cardPressed : null,
@@ -68,6 +78,7 @@ const LawCardComponent = ({ hit, onPress, onPressIn, onFavoritePress, isFavorite
             <Pressable
               onPress={onFavoritePress}
               hitSlop={10}
+              unstable_pressDelay={0}
               style={({ pressed }) => [styles.iconBtn, pressed ? styles.iconBtnPressed : null]}
             >
               <Heart

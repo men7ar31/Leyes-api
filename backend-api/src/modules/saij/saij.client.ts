@@ -5,6 +5,7 @@ import { HttpError } from '../../utils/httpError';
 import { SaijQuery, SaijSearchResponseRaw, SaijDocumentRaw } from './saij.types';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const withJitter = (ms: number) => ms + Math.floor(Math.random() * 180);
 
 export type SaijClientSearchResult = {
   raw: SaijSearchResponseRaw;
@@ -52,7 +53,7 @@ export class SaijClient {
     params.set('s', '');
     params.set('v', 'colapsada');
 
-    const attempts = 3;
+    const attempts = 4;
     for (let i = 1; i <= attempts; i++) {
       try {
         const urlPath = `/busqueda?${params.toString()}`;
@@ -119,7 +120,7 @@ export class SaijClient {
           if (error instanceof HttpError) throw error;
           throw new HttpError(502, 'saij_error', 'Fallo al consultar SAIJ', { message: String(error) });
         }
-        await sleep(300 * i);
+        await sleep(withJitter(350 * i));
       }
     }
 

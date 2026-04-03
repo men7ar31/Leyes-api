@@ -2,6 +2,7 @@ import {
   Animated,
   Alert,
   Linking,
+  InteractionManager,
   Modal,
   PanResponder,
   Pressable,
@@ -25,9 +26,11 @@ import { LoadingState } from "../components/LoadingState";
 import { ErrorState } from "../components/ErrorState";
 import { MetadataRow } from "../components/MetadataRow";
 import { ContentUnavailableCard } from "../components/ContentUnavailableCard";
+import { CivilCodeSimpleReader } from "../components/CivilCodeSimpleReader";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
+import { isCivilAndCommercialCodeDocument } from "../utils/civilCodeReader";
 import { searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
@@ -136,6 +139,83 @@ const getMetadataNormNumber = (metadata: any, textHints: Array<string | null | u
 
   return null;
 };
+
+const normalizeCitationNormType = (value?: string | null) => {
+  const raw = cleanText(value);
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("decreto de necesidad y urgencia")) return "DNU";
+  if (lower.includes("texto ordenado decreto")) return "Texto ordenado decreto";
+  if (lower.includes("decreto ley") || lower.includes("decreto-ley")) return "Decreto-ley";
+  if (lower.includes("decreto")) return "Decreto";
+  if (lower.includes("resoluci")) return "Resolucion";
+  if (lower.includes("disposici")) return "Disposicion";
+  if (lower.includes("acordada")) return "Acordada";
+  if (lower.includes("ordenanza")) return "Ordenanza";
+  if (lower.includes("constituci")) return "Constitucion";
+  if (lower.includes("codigo")) return "Codigo";
+  if (lower.includes("ley")) return "Ley";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+};
+
+const getMetadataNormType = (metadata: any, textHints: Array<string | null | undefined> = []) => {
+  const directKeys = [
+    "tipoNorma",
+    "tipo_norma",
+    "tipo-norma",
+    "tipoDocumento",
+    "tipo_documento",
+    "tipo-documento",
+    "claseNorma",
+    "clase_norma",
+    "clase-norma",
+  ];
+
+  if (metadata && typeof metadata === "object") {
+    for (const key of directKeys) {
+      const normalized = normalizeCitationNormType((metadata as any)[key]);
+      if (normalized) return normalized;
+    }
+
+    const queue: Array<{ value: any; path: string }> = [{ value: metadata, path: "" }];
+    const visited = new Set<any>();
+    let scanned = 0;
+    while (queue.length > 0 && scanned < 260) {
+      const current = queue.shift();
+      if (!current) break;
+      const value = current.value;
+      const path = current.path;
+      if (!value || typeof value !== "object") continue;
+      if (visited.has(value)) continue;
+      visited.add(value);
+
+      for (const [key, entry] of Object.entries(value)) {
+        const nextPath = path ? path + "." + key : key;
+        if (entry && typeof entry === "object") {
+          queue.push({ value: entry, path: nextPath });
+          continue;
+        }
+        if (typeof entry !== "string" && typeof entry !== "number") continue;
+        const lowerPath = nextPath.toLowerCase();
+        const isNormPath =
+          /(tipo|clase|subtipo).*(norma|documento)|documentsubtype|tipo[-_ ]norma/.test(lowerPath) &&
+          !/(fecha|articulo|texto|contenido|resumen|sumario|guid|uuid|id$)/.test(lowerPath);
+        if (!isNormPath) continue;
+        const normalized = normalizeCitationNormType(String(entry));
+        if (normalized) return normalized;
+      }
+      scanned += 1;
+    }
+  }
+
+  for (const hint of textHints) {
+    const normalized = normalizeCitationNormType(hint);
+    if (normalized) return normalized;
+  }
+
+  return null;
+};
+
 const getMetadataDate = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") return null;
   const keys = [
@@ -279,7 +359,7 @@ const normalizeVigencia = (value?: string | null) => {
 const getVigenciaColor = (value?: string | null) => {
   const normalized = normalizeVigencia(value).toLowerCase();
   if (normalized.includes("vigente")) return "#15803D";
-  if (normalized.includes("derogad")) return "#111827";
+  if (normalized.includes("derogad")) return "#D22F2F";
   if (normalized.includes("modificad")) return "#B45309";
   return colors.text;
 };
@@ -945,6 +1025,7 @@ export const DetailScreen = () => {
   const [selectedArticleShareKeys, setSelectedArticleShareKeys] = useState<Record<string, boolean>>({});
   const [isFavorite, setIsFavorite] = useState(false);
   const [isFavoriteBusy, setIsFavoriteBusy] = useState(false);
+  const [isTextSectionReady, setIsTextSectionReady] = useState(false);
   const [activeArticlePreviewIndex, setActiveArticlePreviewIndex] = useState<number>(-1);
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
@@ -1009,6 +1090,16 @@ export const DetailScreen = () => {
     matchSet: Set<number>;
   }>({ source: null, query: "", matches: [], matchSet: new Set<number>() });
   const contentRenderCacheRef = useRef<{ key: string; node: ReactNode }>({ key: "", node: null });
+  const wholeDocumentShareCacheRef = useRef<{
+    key: string;
+    payload: {
+      title: string;
+      text: string;
+      fileBaseName: string;
+      formats: { text: true; txt: true; pdf: false; docx: false };
+    } | null;
+  }>({ key: "", payload: null });
+  const wholeDocumentShareBusyRef = useRef(false);
 
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
@@ -1063,6 +1154,8 @@ export const DetailScreen = () => {
     setStickyIndexEntries([]);
     geometryTableRef.current = [];
     geometryTableDirtyRef.current = true;
+    contentRenderCacheRef.current = { key: "", node: null };
+    setIsTextSectionReady(false);
     scrollOffsetRef.current = 0;
     restoredGuidRef.current = null;
     scrubActiveIndexRef.current = -1;
@@ -1100,6 +1193,30 @@ export const DetailScreen = () => {
     };
   }, [guidParam]);
 
+  useEffect(() => {
+    if (!document?.guid) {
+      setIsTextSectionReady(false);
+      return;
+    }
+
+    if (activeSection !== "texto") {
+      setIsTextSectionReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    setIsTextSectionReady(false);
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (!cancelled) setIsTextSectionReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+      task.cancel?.();
+    };
+  }, [document?.guid, activeSection]);
+
+
   if (!guidParam) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
@@ -1122,6 +1239,10 @@ export const DetailScreen = () => {
         <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
       </SafeAreaView>
     );
+  }
+
+  if (isCivilAndCommercialCodeDocument(document)) {
+    return <CivilCodeSimpleReader document={document} />;
   }
 
   const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
@@ -1693,16 +1814,13 @@ export const DetailScreen = () => {
   };
 
   const restoreSavedScrollIfNeeded = () => {
-    if (!document.guid || !scrollRef.current) return;
+    if (!document.guid) return;
     if (restoredGuidRef.current === document.guid) return;
     restoredGuidRef.current = document.guid;
     if (restorePendingRef.current) return;
     restorePendingRef.current = true;
     setTimeout(() => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTo({ y: 0, animated: false });
-        handleDetailScroll(0);
-      }
+      handleDetailScroll(scrollOffsetRef.current);
       restorePendingRef.current = false;
     }, 20);
   };
@@ -1939,27 +2057,43 @@ export const DetailScreen = () => {
     Alert.alert("No se pudo abrir el relacionado", "No encontramos el contenido relacionado en SAIJ en este momento.");
   };
 
-  const citationLawName = cleanText(document.title || "Norma");
+  const citationSmart = document.smartCitation && typeof document.smartCitation === "object" ? document.smartCitation : null;
+  const citationLawName = cleanText(citationSmart?.nombre || document.title || "Norma");
   const isLegislationCitation = getContentTypeLabel(document.contentType) === "legislacion";
-  const citationLawNumber = isLegislationCitation
-    ? getMetadataNormNumber(document.metadata, [document.subtitle, document.title, document.documentSubtype])
-    : getMetadataNormNumber(document.metadata);
+  const citationLawNumber =
+    parseNormNumberToken(citationSmart?.numero) ||
+    parseNormNumberToken(document.numeroNorma) ||
+    parseNormNumberToken(document.metadata?.numeroNorma) ||
+    parseNormNumberToken(document.metadata?.numero_norma) ||
+    (isLegislationCitation
+      ? getMetadataNormNumber(document.metadata, [document.subtitle, document.title, document.documentSubtype])
+      : getMetadataNormNumber(document.metadata));
+  const citationLawType =
+    normalizeCitationNormType(citationSmart?.tipo) ||
+    normalizeCitationNormType(document.tipoNorma) ||
+    getMetadataNormType(document.metadata, [document.documentSubtype, document.subtitle, document.title]);
   const citationPublicationRaw = getPublicationDateFromMetadata(document.metadata);
   const citationLastModRaw = getLastModificationDateFromMetadata(document.metadata);
   const citationPublication = normalizeCitationOptionalValue(citationPublicationRaw);
   const citationLastModification = normalizeCitationOptionalValue(citationLastModRaw);
-  const citationLawNumberLabel = citationLawNumber ? `Ley ${citationLawNumber}` : "Ley s/n";
+  const citationLawNumberLabel = citationLawType && citationLawNumber
+    ? citationLawType + " " + citationLawNumber
+    : citationLawNumber || citationLawType || null;
+  const normalizedCitationLawName = citationLawName.toLowerCase().replace(/\s+/g, " ").trim();
+  const normalizedCitationLawNumberLabel = String(citationLawNumberLabel || "").toLowerCase().replace(/\s+/g, " ").trim();
 
   const buildCitation = (articleNumber?: string | null) => {
     const art = String(articleNumber || "").trim();
     const parts = [
-      art ? `art. ${art}` : null,
+      art ? "art. " + art : null,
       citationLawName,
-      citationLawNumberLabel,
-      citationPublication ? `publicacion: ${citationPublication}` : null,
-      citationLastModification ? `ultima modificacion: ${citationLastModification}` : null,
+      citationLawNumberLabel && normalizedCitationLawNumberLabel !== normalizedCitationLawName
+        ? citationLawNumberLabel
+        : null,
+      citationPublication ? "publicacion: " + citationPublication : null,
+      citationLastModification ? "ultima modificacion: " + citationLastModification : null,
     ].filter(Boolean);
-    return `(${parts.join(", ")})`;
+    return "(" + parts.join(", ") + ")";
   };
 
   const shareTextPayload = async (title: string, message: string) => {
@@ -1970,79 +2104,168 @@ export const DetailScreen = () => {
     }
   };
 
-  const shareLargeTextAsFile = async (title: string, content: string) => {
-    try {
-      const isSharingAvailable = await Sharing.isAvailableAsync();
-      if (!isSharingAvailable) {
-        await shareTextPayload(title, content);
-        return;
-      }
+  const sanitizeShareFileToken = (value?: string | null) =>
+    cleanText(String(value || ""))
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80);
 
-      const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
-      if (!baseDir) {
-        await shareTextPayload(title, content);
-        return;
-      }
+  const WHOLE_DOCUMENT_TEXT_SHARE_MAX_CHARS = 60000;
+  const WHOLE_DOCUMENT_EXPORT_DIR = "shared-exports/";
 
-      const safeFileName =
-        cleanText(title || "norma")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/[^A-Za-z0-9\-\s_]/g, " ")
-          .replace(/\s+/g, "_")
-          .trim()
-          .slice(0, 64) || "norma";
-      const fileUri = `${baseDir}${safeFileName}-${Date.now()}.txt`;
+  const shareLargeTextAsFile = async (title: string, fileBaseName: string, content: string) => {
+    const normalizedContent = String(content || "").trim();
+    if (!normalizedContent) throw new Error("empty_share_content");
 
-      await FileSystem.writeAsStringAsync(fileUri, content, { encoding: FileSystem.EncodingType.UTF8 });
-      await Sharing.shareAsync(fileUri, {
-        dialogTitle: title,
-        mimeType: "text/plain",
-        UTI: "public.plain-text",
-      });
+    const isSharingAvailable = await Sharing.isAvailableAsync();
+    if (!isSharingAvailable) throw new Error("sharing_unavailable");
 
-      try {
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
-      } catch {
-        // ignore cleanup failures
-      }
-    } catch {
-      await shareTextPayload(title, content);
+    const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+    if (!baseDir) throw new Error("share_directory_unavailable");
+
+    const exportDir = `${baseDir}${WHOLE_DOCUMENT_EXPORT_DIR}`;
+    await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true });
+
+    const safeFileName = sanitizeShareFileToken(fileBaseName) || sanitizeShareFileToken(title) || "norma";
+    const fileUri = `${exportDir}${safeFileName}-${Date.now()}.txt`;
+    const fileContent = `ÿ${normalizedContent}`;
+
+    await FileSystem.writeAsStringAsync(fileUri, fileContent, { encoding: FileSystem.EncodingType.UTF8 });
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (!fileInfo.exists || (typeof fileInfo.size === "number" && fileInfo.size < 24)) {
+      throw new Error("empty_share_file");
     }
+
+    await Sharing.shareAsync(fileUri, {
+      dialogTitle: title,
+      mimeType: "text/plain",
+      UTI: "public.text",
+    });
   };
 
-  const shareWholeDocument = async () => {
-    const heading = cleanText(document.title || "Norma");
-    const citation = buildCitation();
+  const buildWholeDocumentSharePayload = async () => {
+    const cacheKey = [
+      document.guid,
+      document.fetchedAt || "",
+      articleShareItems.length,
+      citationLawNumberLabel || "",
+      citationPublication || "",
+      citationLastModification || "",
+    ].join("::");
 
-    let body = "";
-    if (document.articles && document.articles.length > 0) {
-      const articleBlocks: string[] = [];
-      for (let index = 0; index < document.articles.length; index += 1) {
-        const article = document.articles[index];
-        const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
-        const parsedTitle = parseArticleTitleContext(article.title);
-        const textRaw = stripRepeatedArticleLead(
-          cleanContentText(article.text) ||
-            (typeof article.text === "string" ? article.text.trim() : String(article.text ?? "")),
-          article.number
-        );
-        const { inlineLabel: safeInlineLabel, body: text } = resolveArticleInlineLabelAndBody(
-          textRaw,
-          parsedTitle.articleLabel
-        );
-        const lead = `ARTICULO ${displayNumber}${safeInlineLabel ? `. ${safeInlineLabel}` : "."}`;
-        const block = `${lead}\n${text}\n${buildCitation(displayNumber)}`;
-        articleBlocks.push(block);
-      }
-      body = articleBlocks.join("\n\n");
+    if (wholeDocumentShareCacheRef.current.key === cacheKey && wholeDocumentShareCacheRef.current.payload) {
+      return wholeDocumentShareCacheRef.current.payload;
+    }
+
+    await new Promise<void>((resolve) => {
+      InteractionManager.runAfterInteractions(() => resolve());
+    });
+
+    const title = cleanText(document.title || citationLawName || "Norma");
+    const normalizedTitle = title.toLowerCase().replace(/\s+/g, " ").trim();
+    const divider = "----------------------------------------";
+
+    const metaCandidates = [
+      subtitleText,
+      citationLawNumberLabel && normalizedCitationLawNumberLabel !== normalizedTitle ? citationLawNumberLabel : null,
+      citationPublication ? `Publicacion: ${citationPublication}` : metadataDate ? `Fecha: ${metadataDate}` : null,
+      citationLastModification ? `Ultima modificacion: ${citationLastModification}` : null,
+      "Fuente: SAIJ",
+    ];
+
+    const metaLines: string[] = [];
+    const seenMeta = new Set<string>();
+    metaCandidates.forEach((value) => {
+      const cleanValue = cleanText(String(value || "")).trim();
+      if (!cleanValue) return;
+      const normalized = cleanValue.toLowerCase().replace(/\s+/g, " ").trim();
+      if (!normalized || normalized === normalizedTitle || seenMeta.has(normalized)) return;
+      seenMeta.add(normalized);
+      metaLines.push(cleanValue);
+    });
+
+    const leadBlock = cleanContentText(leadText);
+    const articleBlocks = articleShareItems
+      .map((item) => [cleanText(item.articleLeadTitle), cleanContentText(item.articleBody)].filter(Boolean).join("\n").trim())
+      .filter(Boolean);
+
+    const bodySections: string[] = [];
+    if (leadBlock && articleBlocks.length > 0) bodySections.push(leadBlock);
+
+    if (articleBlocks.length > 0) {
+      bodySections.push(articleBlocks.join(`\n\n${divider}\n\n`));
     } else {
-      body = [leadText, extractedRelated.mainText].filter(Boolean).join("\n\n").trim();
+      const fallbackParts = [leadBlock, extractedRelated.mainText, cleanContentText(document.contentText)]
+        .map((value) => cleanContentText(value))
+        .filter(Boolean) as string[];
+
+      const seenFallback = new Set<string>();
+      fallbackParts.forEach((part) => {
+        const normalized = part.toLowerCase().replace(/\s+/g, " ").trim();
+        if (!normalized || seenFallback.has(normalized)) return;
+        seenFallback.add(normalized);
+        bodySections.push(part);
+      });
     }
 
-    const message = `${heading}\n\n${body}\n\n${citation}`.trim();
-    await shareLargeTextAsFile(heading, message);
+    const body = bodySections.join(`\n\n${divider}\n\n`).trim();
+    if (!body || body.length < 24) throw new Error("empty_whole_document_share_content");
+
+    const fileBaseName = (() => {
+      const titleToken = sanitizeShareFileToken(citationLawName || document.title || "norma");
+      const typeToken = sanitizeShareFileToken(citationLawType || "");
+      const numberToken = sanitizeShareFileToken(citationLawNumber || "");
+      if (/\bcodigo\b/i.test(titleToken)) return titleToken || "codigo";
+      if (typeToken && numberToken) return `${typeToken}-${numberToken}`;
+      return titleToken || `${typeToken || "norma"}${numberToken ? `-${numberToken}` : ""}` || "norma";
+    })();
+
+    const text = [title, ...metaLines, divider, body].join("\n\n").trim();
+    const payload = {
+      title,
+      text,
+      fileBaseName,
+      formats: { text: true as const, txt: true as const, pdf: false as const, docx: false as const },
+    };
+
+    wholeDocumentShareCacheRef.current = { key: cacheKey, payload };
+    return payload;
   };
+
+  const shareWholeDocumentAsText = async () => {
+    if (wholeDocumentShareBusyRef.current) return;
+    wholeDocumentShareBusyRef.current = true;
+    try {
+      const payload = await buildWholeDocumentSharePayload();
+      await shareTextPayload(payload.title, payload.text);
+    } catch {
+      Alert.alert("No se pudo compartir", "No pudimos compartir la ley como texto. Proba la opcion TXT.");
+    } finally {
+      wholeDocumentShareBusyRef.current = false;
+    }
+  };
+
+  const shareWholeDocumentAsTxt = async () => {
+    if (wholeDocumentShareBusyRef.current) return;
+    wholeDocumentShareBusyRef.current = true;
+    try {
+      const payload = await buildWholeDocumentSharePayload();
+      await shareLargeTextAsFile(payload.title, payload.fileBaseName, payload.text);
+    } catch {
+      Alert.alert("No se pudo compartir", "No pudimos adjuntar el archivo TXT de la ley en este momento.");
+    } finally {
+      wholeDocumentShareBusyRef.current = false;
+    }
+  };
+
+  const shareWholeDocument = () => {
+    void shareWholeDocumentAsTxt();
+  };
+
   const shareSingleArticle = async (params: {
     displayNumber: string;
     articleLeadTitle: string;
@@ -2052,7 +2275,7 @@ export const DetailScreen = () => {
     const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
       params.displayNumber
     )}`.trim();
-    await shareTextPayload(`${heading} \u00B7 Art. ${params.displayNumber}`, message);
+    await shareTextPayload(`${heading} ? Art. ${params.displayNumber}`, message);
   };
 
   const toggleArticleSelectedForShare = (articleKey: string) => {
@@ -2318,7 +2541,9 @@ export const DetailScreen = () => {
                             articleBody: articleTextWithoutDuplicateLabel,
                           })
                         }
-                        hitSlop={TOUCH_HIT_SLOP}
+                        delayLongPress={180}
+                        unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
                       >
                         <Text
                           style={[
@@ -2346,7 +2571,8 @@ export const DetailScreen = () => {
                           <Pressable
                             style={styles.articlePanelButton}
                             onPress={() => toggleArticlePanel(panel.key)}
-                            hitSlop={TOUCH_HIT_SLOP}
+                            unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
                           >
                             <Text style={styles.articlePanelButtonText}>
@@ -2363,7 +2589,8 @@ export const DetailScreen = () => {
                                     { backgroundColor: appColors.card, borderColor: appColors.border },
                                   ]}
                                   onPress={() => openRelatedContent(item)}
-                                  hitSlop={TOUCH_HIT_SLOP}
+                                  unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
                                 >
                                   <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -2460,7 +2687,8 @@ export const DetailScreen = () => {
             setDocSearchQuery("");
             setSearchMatchPointer(0);
           }}
-          hitSlop={TOUCH_HIT_SLOP}
+          unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
         >
           <Text style={styles.docSearchClearBtnText}>{"\u2715"}</Text>
@@ -2468,10 +2696,12 @@ export const DetailScreen = () => {
       ) : null}
       {articleSearchMatches.length > 0 ? (
         <View style={styles.docSearchNav}>
-          <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToPrevSearchMatch} unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}>
             <Text style={styles.docSearchNavBtnText}>{"\u2191"}</Text>
           </Pressable>
-          <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch} hitSlop={TOUCH_HIT_SLOP}>
+          <Pressable style={styles.docSearchNavBtn} onPress={goToNextSearchMatch} unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}>
             <Text style={styles.docSearchNavBtnText}>{"\u2193"}</Text>
           </Pressable>
         </View>
@@ -2483,7 +2713,8 @@ export const DetailScreen = () => {
           setDocSearchQuery("");
           setSearchMatchPointer(0);
         }}
-        hitSlop={TOUCH_HIT_SLOP}
+        unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
       >
         <Text style={styles.docSearchCloseBtnText}>{"\u00D7"}</Text>
       </Pressable>
@@ -2516,7 +2747,7 @@ export const DetailScreen = () => {
     appColors.primaryStrong,
     appColors.muted,
   ].join("::");
-  if (selectedSection === "texto" && contentRenderCacheRef.current.key !== contentRenderKey) {
+  if (selectedSection === "texto" && isTextSectionReady && contentRenderCacheRef.current.key !== contentRenderKey) {
     contentRenderCacheRef.current = {
       key: contentRenderKey,
       node: renderContent(),
@@ -2554,6 +2785,7 @@ export const DetailScreen = () => {
               ]}
               onPress={toggleFavoriteCurrentDocument}
               disabled={isFavoriteBusy}
+              unstable_pressDelay={0}
               hitSlop={TOUCH_HIT_SLOP}
             >
               <Heart
@@ -2570,6 +2802,7 @@ export const DetailScreen = () => {
                 pressed ? styles.headerActionBtnPressed : null,
               ]}
               onPress={() => setIsHeaderMenuOpen((prev) => !prev)}
+              unstable_pressDelay={0}
               hitSlop={TOUCH_HIT_SLOP}
             >
               <Ellipsis size={20} color={appColors.primaryStrong} strokeWidth={2} />
@@ -2688,7 +2921,8 @@ export const DetailScreen = () => {
               pressed ? styles.stickySectionWrapPressed : null,
             ]}
             onPress={openStickySectionIndex}
-            hitSlop={TOUCH_HIT_SLOP}
+            unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
           >
             <Text
               style={[
@@ -2710,7 +2944,8 @@ export const DetailScreen = () => {
                   style={[styles.multiShareTopShareBtn, selectedShareCount < 1 ? styles.multiShareTopShareBtnDisabled : null]}
                   onPress={shareSelectedArticles}
                   disabled={selectedShareCount < 1}
-                  hitSlop={TOUCH_HIT_SLOP}
+                  unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
                 >
                   <Text style={styles.multiShareTopShareText}>Compartir todos</Text>
                 </Pressable>
@@ -2720,7 +2955,8 @@ export const DetailScreen = () => {
                     setIsMultiShareMode(false);
                     clearMultiShareSelection();
                   }}
-                  hitSlop={TOUCH_HIT_SLOP}
+                  unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
                 >
                   <Text style={styles.multiShareTopCloseText}>Cerrar</Text>
                 </Pressable>
@@ -2745,7 +2981,8 @@ export const DetailScreen = () => {
               <Pressable
                 style={styles.multiShareTopAddBtn}
                 onPress={() => addArticlesToSelectionFromInput(multiShareInputValueRef.current)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
               >
                 <Text style={styles.multiShareTopAddText}>Agregar</Text>
               </Pressable>
@@ -2791,7 +3028,8 @@ export const DetailScreen = () => {
               },
             ]}
             onPress={() => Linking.openURL(attachmentUrl)}
-            hitSlop={TOUCH_HIT_SLOP}
+            unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
           >
             <Text style={[styles.attachmentButtonText, { color: appColors.primaryStrong }]}>{attachmentLabel}</Text>
@@ -2812,6 +3050,7 @@ export const DetailScreen = () => {
                 pressed ? styles.sectionTabPressed : null,
               ]}
               onPress={() => setActiveSectionSafe(item.key)}
+              unstable_pressDelay={0}
               hitSlop={TOUCH_HIT_SLOP}
 
             >
@@ -2839,7 +3078,7 @@ export const DetailScreen = () => {
           </View>
         ) : null}
 
-        {selectedSection === "texto" ? contentRenderCacheRef.current.node : null}
+        {selectedSection === "texto" ? (isTextSectionReady ? contentRenderCacheRef.current.node : <LoadingState message="Preparando texto..." />) : null}
 
         {selectedSection === "normasComplementarias" && normasComplementarias.length > 0 ? (
           <View style={styles.relatedSection}>
@@ -2849,7 +3088,8 @@ export const DetailScreen = () => {
                 key={`normas-comp-${index}-${item.title}-${item.guid || "na"}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
               >
                 <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -2873,7 +3113,8 @@ export const DetailScreen = () => {
                 key={`normas-mod-${index}-${item.title}-${item.guid || "na"}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
               >
                 <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -2897,7 +3138,8 @@ export const DetailScreen = () => {
                 key={`obs-${index}-${item.title}-${item.guid || "na"}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
               >
                 <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -2921,7 +3163,8 @@ export const DetailScreen = () => {
                 key={`rel-${index}-${item.title}-${item.guid || "na"}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedContent(item)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
               >
                 <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -2945,7 +3188,8 @@ export const DetailScreen = () => {
                 key={`fallo-aplica-${index}-${fallo.title}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
                 onPress={() => openRelatedFallo(fallo)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
 
               >
                 <Text style={[styles.relatedLinkTitle, { color: appColors.primaryStrong }]}>
@@ -3049,7 +3293,8 @@ export const DetailScreen = () => {
                   pressed ? styles.stickyIndexCloseBtnPressed : null,
                 ]}
                 onPress={() => setIsStickyIndexOpen(false)}
-                hitSlop={TOUCH_HIT_SLOP}
+                unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
               >
                 <Text style={[styles.stickyIndexCloseText, { color: appColors.muted }]}>Cerrar</Text>
               </Pressable>
@@ -3064,7 +3309,8 @@ export const DetailScreen = () => {
                     pressed ? styles.stickyIndexItemPressed : null,
                   ]}
                   onPress={() => jumpToStickyEntry(entry)}
-                  hitSlop={TOUCH_HIT_SLOP}
+                  unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
                 >
                   <Text style={[styles.stickyIndexItemText, { color: appColors.primaryStrong }]}>{entry.label}</Text>
                 </Pressable>

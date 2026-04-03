@@ -14,6 +14,8 @@ export const ProvinceCard = ({ label, abbr, active = false, onPress }: Props) =>
   return (
     <Pressable
       onPress={onPress}
+      unstable_pressDelay={0}
+      android_ripple={{ color: colors.primarySoft }}
       style={({ pressed }) => [
         styles.container,
         {

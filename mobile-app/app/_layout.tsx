@@ -2,7 +2,6 @@ import "../src/utils/patchBooleanProps";
 import { Stack } from "expo-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { AppState } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { enableScreens } from "react-native-screens";
 import { useFonts } from "expo-font";
@@ -12,12 +11,11 @@ import { AppThemeProvider } from "../src/theme/appTheme";
 import { LaunchBrandSplash } from "../src/components/LaunchBrandSplash";
 
 enableScreens(true);
-const SPLASH_DURATION_MS = 3300;
+const SPLASH_DURATION_MS = 900;
 
 export default function RootLayout() {
   const [showLaunchBranding, setShowLaunchBranding] = useState(true);
   const splashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const appStateRef = useRef(AppState.currentState);
   const [fontsLoaded] = useFonts({
     Montserrat_600SemiBold,
     Montserrat_700Bold,
@@ -43,27 +41,12 @@ export default function RootLayout() {
   );
 
   useEffect(() => {
-    const showLaunchSplash = () => {
-      setShowLaunchBranding(true);
-
-      if (splashTimerRef.current) clearTimeout(splashTimerRef.current);
-      splashTimerRef.current = setTimeout(() => {
-        setShowLaunchBranding(false);
-        splashTimerRef.current = null;
-      }, SPLASH_DURATION_MS);
-    };
-
-    showLaunchSplash();
-
-    const subscription = AppState.addEventListener("change", (nextAppState) => {
-      const wasBackgrounded = appStateRef.current === "background" || appStateRef.current === "inactive";
-
-      if (wasBackgrounded && nextAppState === "active") showLaunchSplash();
-      appStateRef.current = nextAppState;
-    });
+    splashTimerRef.current = setTimeout(() => {
+      setShowLaunchBranding(false);
+      splashTimerRef.current = null;
+    }, SPLASH_DURATION_MS);
 
     return () => {
-      subscription.remove();
       if (splashTimerRef.current) clearTimeout(splashTimerRef.current);
     };
   }, []);

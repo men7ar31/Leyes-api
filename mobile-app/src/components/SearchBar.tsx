@@ -32,6 +32,8 @@ export const SearchBar = ({
       {onFilterPress ? (
         <Pressable
           onPress={onFilterPress}
+          unstable_pressDelay={0}
+          android_ripple={{ color: colors.primarySoft, borderless: true }}
           style={({ pressed }) => [
             styles.filterBtn,
             {

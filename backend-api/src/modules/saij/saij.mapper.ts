@@ -310,6 +310,223 @@ const normalizeNumberValue = (value: any): string | null => {
   return null;
 };
 
+const toReadableLabel = (value?: string | null) => {
+  const clean = normalizeTagText(value);
+  if (!clean) return null;
+  const lower = clean.toLowerCase();
+  if (lower.includes('decreto de necesidad y urgencia')) return 'DNU';
+  if (lower.includes('texto ordenado decreto')) return 'Texto ordenado decreto';
+  if (lower.includes('decreto ley') || lower.includes('decreto-ley')) return 'Decreto-ley';
+  if (lower.includes('decreto')) return 'Decreto';
+  if (lower.includes('resoluci')) return 'Resolucion';
+  if (lower.includes('disposici')) return 'Disposicion';
+  if (lower.includes('acordada')) return 'Acordada';
+  if (lower.includes('ordenanza')) return 'Ordenanza';
+  if (lower.includes('constituci')) return 'Constitucion';
+  if (lower.includes('codigo')) return 'Codigo';
+  if (lower.includes('ley')) return 'Ley';
+  if (lower.includes('dictamen')) return 'Dictamen';
+  if (lower.includes('sumario')) return 'Sumario';
+  if (lower.includes('fallo') || lower.includes('sentencia')) return 'Fallo';
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+};
+
+const normalizeNormNumberToken = (value: any): string | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  const raw = normalizeTagText(typeof value === 'string' ? value : normalizeSubtitleValue(value));
+  if (!raw) return null;
+
+  const compact = raw
+    .replace(/\u00a0/g, ' ')
+    .replace(/^(ley|decreto(?:-ley)?|dnu|resoluci[oó]n|disposici[oó]n|acordada|ordenanza|codigo|constituci[oó]n|norma(?:\s+juridica\s+de\s+facto)?|texto\s+ordenado)\s*/i, '')
+    .replace(/^(n(?:ro|r|umero)|n[°ºo])\.?\s*/i, '')
+    .replace(/^[:\-./\s]+/, '')
+    .trim();
+
+  if (!compact) return null;
+
+  const directCode = compact.match(/^[A-Za-z]{1,8}-\d{1,6}[A-Za-z]?$/);
+  if (directCode) return directCode[0].toUpperCase();
+
+  const romanCode = compact.match(/^[A-Za-z]{1,8}-\d{1,6}$/);
+  if (romanCode) return romanCode[0].toUpperCase();
+
+  const numeric = compact.match(/^(\d{1,3}(?:[.\s]\d{3})+|\d{1,7})(?:\s*\/\s*(\d{2,4}))?(?:-([A-Za-z]))?$/);
+  if (numeric) {
+    const main = numeric[1].replace(/[.\s]/g, '');
+    const suffix = numeric[2] ? `/${numeric[2]}` : '';
+    const letter = numeric[3] ? `-${numeric[3].toUpperCase()}` : '';
+    return `${main}${suffix}${letter}`;
+  }
+
+  const embedded =
+    compact.match(/\b([A-Za-z]{1,8}-\d{1,6}[A-Za-z]?)\b/) ??
+    compact.match(/\b(\d{1,3}(?:[.\s]\d{3})+|\d{1,7})(?:\s*\/\s*(\d{2,4}))?(?:-([A-Za-z]))?\b/);
+  if (!embedded) return null;
+  if (embedded[0].includes('-') && /[A-Za-z]/.test(embedded[0])) return embedded[0].replace(/\s+/g, '').toUpperCase();
+  const main = embedded[1].replace(/[.\s]/g, '');
+  const suffix = embedded[2] ? `/${embedded[2]}` : '';
+  const letter = embedded[3] ? `-${embedded[3].toUpperCase()}` : '';
+  return `${main}${suffix}${letter}`;
+};
+
+const extractNestedNormValue = (
+  root: any,
+  directKeys: string[],
+  pathPattern: RegExp,
+  rejectPattern: RegExp,
+  mapper: (value: any) => string | null
+): string | null => {
+  if (!root || typeof root !== 'object') return null;
+
+  for (const key of directKeys) {
+    const mapped = mapper((root as any)?.[key]);
+    if (mapped) return mapped;
+  }
+
+  const queue: Array<{ value: any; path: string }> = [{ value: root, path: '' }];
+  const visited = new Set<any>();
+  let scanned = 0;
+
+  while (queue.length > 0 && scanned < 260) {
+    const current = queue.shift();
+    if (!current) break;
+    const value = current.value;
+    const path = current.path;
+    if (!value || typeof value !== 'object') continue;
+    if (visited.has(value)) continue;
+    visited.add(value);
+
+    for (const [key, entry] of Object.entries(value)) {
+      const nextPath = path ? `${path}.${key}` : key;
+      if (entry && typeof entry === 'object') {
+        queue.push({ value: entry, path: nextPath });
+        continue;
+      }
+      if (typeof entry !== 'string' && typeof entry !== 'number') continue;
+      const lowerPath = nextPath.toLowerCase();
+      if (!pathPattern.test(lowerPath) || rejectPattern.test(lowerPath)) continue;
+      const mapped = mapper(entry);
+      if (mapped) return mapped;
+    }
+    scanned += 1;
+  }
+
+  return null;
+};
+
+const inferNormTypeFromTitle = (title?: string | null) => {
+  const clean = normalizeTagText(title);
+  if (!clean) return null;
+  return toReadableLabel(clean);
+};
+
+const resolveDocumentNormNumber = (params: {
+  metadata: Record<string, any>;
+  content: Record<string, any>;
+  subtitle?: string | null;
+  title?: string | null;
+  documentSubtype?: string | null;
+}) => {
+  const { metadata, content, subtitle, title, documentSubtype } = params;
+  const directKeys = [
+    'numeroNorma',
+    'numero_norma',
+    'numero-norma',
+    'nroNorma',
+    'nro_norma',
+    'nro-norma',
+    'numeroLey',
+    'numero_ley',
+    'numero-ley',
+    'leyNumero',
+    'ley_numero',
+    'ley-numero',
+  ];
+  const pathPattern = /(norma|ley|decreto|dnu|resoluci|disposici|acordada|ordenanza|codigo|constituci|numero|nro)/i;
+  const rejectPattern = /(fecha|anio|ano|articulo|texto|contenido|resumen|sumario|guid|uuid|(^|[._-])id([._-]|$))/i;
+
+  const directCandidates = [
+    content?.['numero-norma'],
+    (content as any)?.numero_norma,
+    content?.['numero-ley'],
+    (content as any)?.numero_ley,
+    metadata?.['numero-norma'],
+    (metadata as any)?.numero_norma,
+    (metadata as any)?.numeroNorma,
+    metadata?.['numero-ley'],
+    (metadata as any)?.numero_ley,
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = normalizeNormNumberToken(candidate);
+    if (normalized) return normalized;
+  }
+
+  const nestedContent = extractNestedNormValue(content, directKeys, pathPattern, rejectPattern, normalizeNormNumberToken);
+  if (nestedContent) return nestedContent;
+  const nestedMetadata = extractNestedNormValue(metadata, directKeys, pathPattern, rejectPattern, normalizeNormNumberToken);
+  if (nestedMetadata) return nestedMetadata;
+
+  return (
+    normalizeNormNumberToken(subtitle) ??
+    normalizeNormNumberToken(title) ??
+    normalizeNormNumberToken(documentSubtype) ??
+    null
+  );
+};
+
+const resolveDocumentNormType = (params: {
+  contentType: SaijContentType;
+  metadata: Record<string, any>;
+  content: Record<string, any>;
+  documentSubtype?: string | null;
+  title?: string | null;
+}) => {
+  const { contentType, metadata, content, documentSubtype, title } = params;
+  if (contentType === 'dictamen') return 'Dictamen';
+  if (contentType === 'doctrina') return 'Doctrina';
+  if (contentType === 'fallo') return 'Fallo';
+  if (contentType === 'sumario') return 'Sumario';
+
+  const directKeys = [
+    'tipoNorma',
+    'tipo_norma',
+    'tipo-norma',
+    'tipoDocumento',
+    'tipo_documento',
+    'tipo-documento',
+    'claseNorma',
+    'clase_norma',
+    'clase-norma',
+  ];
+  const pathPattern = /(tipo|clase|subtipo).*(norma|documento)|documentsubtype|tipo-norma|tipo_norma/i;
+  const rejectPattern = /(fecha|articulo|texto|contenido|resumen|sumario|guid|uuid|(^|[._-])id([._-]|$))/i;
+
+  const directCandidates = [
+    content?.['tipo-norma']?.texto,
+    content?.['tipo-norma'],
+    (content as any)?.tipo_norma?.texto,
+    (content as any)?.tipo_norma,
+    metadata?.['tipo-norma']?.texto,
+    metadata?.['tipo-norma'],
+    (metadata as any)?.tipo_norma?.texto,
+    (metadata as any)?.tipo_norma,
+    (metadata as any)?.tipoNorma,
+    documentSubtype,
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = toReadableLabel(typeof candidate === 'object' ? normalizeSubtitleValue(candidate) : String(candidate || ''));
+    if (normalized) return normalized;
+  }
+
+  const nestedContent = extractNestedNormValue(content, directKeys, pathPattern, rejectPattern, toReadableLabel);
+  if (nestedContent) return nestedContent;
+  const nestedMetadata = extractNestedNormValue(metadata, directKeys, pathPattern, rejectPattern, toReadableLabel);
+  if (nestedMetadata) return nestedMetadata;
+
+  return inferNormTypeFromTitle(title);
+};
+
 const buildDictamenNumberLabel = (content: Record<string, any>): string | null => {
   const numero =
     normalizeNumberValue(content['numero-dictamen']) ??
@@ -1780,7 +1997,29 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
             ? 'Dictamen'
             : contentType === 'doctrina'
               ? 'Doctrina'
-              : null) ?? null;
+            : null) ?? null;
+  const numeroNorma = resolveDocumentNormNumber({
+    metadata,
+    content,
+    subtitle,
+    title,
+    documentSubtype,
+  });
+  const tipoNorma = resolveDocumentNormType({
+    contentType,
+    metadata,
+    content,
+    documentSubtype,
+    title,
+  });
+  const smartCitation =
+    numeroNorma || tipoNorma || title
+      ? {
+          numero: numeroNorma ?? null,
+          tipo: tipoNorma ?? null,
+          nombre: normalizeTagText(title) ?? title ?? null,
+        }
+      : null;
   const estadoVigencia =
     normalizeLooseString(
       content['estado']?.texto ?? content['estado'] ?? (content as any)?.estado_vigencia?.texto ?? (content as any)?.estado_vigencia
@@ -2076,6 +2315,9 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     title,
     subtitle,
     contentType,
+    numeroNorma,
+    tipoNorma,
+    smartCitation,
     documentSubtype,
     estadoVigencia,
     tribunal,
@@ -2125,6 +2367,9 @@ export const mergeDocumentContent = (
     ...baseDoc,
     title: baseDoc.title || fallbackDoc.title,
     subtitle: baseDoc.subtitle || fallbackDoc.subtitle,
+    numeroNorma: (baseDoc as any).numeroNorma || (fallbackDoc as any).numeroNorma || null,
+    tipoNorma: (baseDoc as any).tipoNorma || (fallbackDoc as any).tipoNorma || null,
+    smartCitation: (baseDoc as any).smartCitation || (fallbackDoc as any).smartCitation || null,
     documentSubtype: (baseDoc as any).documentSubtype || (fallbackDoc as any).documentSubtype || null,
     estadoVigencia: (baseDoc as any).estadoVigencia || (fallbackDoc as any).estadoVigencia || null,
     tribunal: (baseDoc as any).tribunal || (fallbackDoc as any).tribunal || null,
