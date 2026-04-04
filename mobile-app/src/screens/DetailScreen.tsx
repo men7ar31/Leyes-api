@@ -1327,7 +1327,9 @@ export const DetailScreen = () => {
     .join("/ ");
 
   const falloParsed =
-    baseTypeLabel === "fallo" ? parseFalloContent(extractedRelated.mainText) : { headerLines: [] as string[], summaryText: null as string | null };
+    baseTypeLabel === "fallo"
+      ? parseFalloContent(extractedRelated.mainText)
+      : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   const falloFechaFromHeader = (() => {
     const index = falloParsed.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
     if (index >= 0 && falloParsed.headerLines[index + 1]) return falloParsed.headerLines[index + 1];
@@ -1414,6 +1416,15 @@ export const DetailScreen = () => {
   const shouldPrepareArticleCaches =
     document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
   const searchableArticles = shouldPrepareArticleCaches && Array.isArray(document.articles) ? document.articles : [];
+  const hasScrollableTextRail =
+    selectedSection === "texto" &&
+    (baseTypeLabel === "fallo" || baseTypeLabel === "sumario" || baseTypeLabel === "doctrina") &&
+    (baseTypeLabel === "fallo"
+      ? falloParsed.headerLines.length > 0 || !!falloParsed.summaryText || !!falloParsed.bodyText
+      : !!extractedRelated.mainText);
+  const scrubberMode = searchableArticles.length > 0 ? "articles" : hasScrollableTextRail ? "scroll" : "none";
+  const isContinuousTextRail = scrubberMode === "scroll";
+  const rightRailContentInset = isContinuousTextRail ? 16 : 0;
   if (articleShareCacheRef.current.source !== searchableArticles) {
     const nextItems = searchableArticles.map((article, index) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
@@ -1646,7 +1657,7 @@ export const DetailScreen = () => {
   };
 
   const scrubToLocationY = (locationY: number) => {
-    if (!searchableArticles.length || scrubberHeight <= 0) return;
+    if (scrubberMode === "none" || scrubberHeight <= 0) return;
     const half = getThumbHalf();
     const clampedCenter = Math.max(half, Math.min(locationY, Math.max(half, scrubberHeight - half)));
     const thumbTop = clampedCenter - half;
@@ -1654,11 +1665,12 @@ export const DetailScreen = () => {
     const ratio = travel > 0 ? thumbTop / travel : 0;
     const maxScroll = getMaxScrollableY();
     const targetScrollY = ratio * maxScroll;
-    const targetContentY = targetScrollY + jumpTopOffset;
     setThumbByRatio(ratio);
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ y: targetScrollY, animated: false });
     }
+    if (scrubberMode !== "articles") return;
+    const targetContentY = targetScrollY + jumpTopOffset;
     const nearestIndex = findNearestArticleIndexByY(targetContentY);
     const fallbackIndex = Math.max(0, Math.min(searchableArticles.length - 1, Math.round(ratio * Math.max(0, searchableArticles.length - 1))));
     const nextIndex = resolveStableNavigatorIndex(nearestIndex >= 0 ? nearestIndex : fallbackIndex, targetContentY);
@@ -1820,6 +1832,7 @@ export const DetailScreen = () => {
     scrollOffsetRef.current = y;
     if (isScrubbingArticlesRef.current) return;
     updateThumbByScrollY(y);
+    if (scrubberMode !== "articles") return;
     const nearestIndex = findNearestArticleIndexByY(y + jumpTopOffset);
     scrubActiveIndexRef.current = nearestIndex;
     pendingScrollYRef.current = y;
@@ -1855,7 +1868,7 @@ export const DetailScreen = () => {
       layoutRefreshRafRef.current = null;
     }
     pendingScrubLocationYRef.current = null;
-    if (scrubActiveIndexRef.current >= 0) {
+    if (scrubberMode === "articles" && scrubActiveIndexRef.current >= 0) {
       const snapOffset = articleOffsetsRef.current[scrubActiveIndexRef.current];
       if (typeof snapOffset === "number" && scrollRef.current) {
         const maxScroll = getMaxScrollableY();
@@ -1902,12 +1915,12 @@ export const DetailScreen = () => {
 
   const articleScrubberResponder = PanResponder.create({
     onStartShouldSetPanResponder: () =>
-      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0,
+      selectedSection === "texto" && scrubberMode !== "none" && scrubberHeight > 0,
     onMoveShouldSetPanResponder: (_, gestureState) =>
-      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0 && Math.abs(gestureState.dy) > 1,
+      selectedSection === "texto" && scrubberMode !== "none" && scrubberHeight > 0 && Math.abs(gestureState.dy) > 1,
     onPanResponderGrant: (event) => {
       setArticleScrubbing(true);
-      setPreviewBubbleVisible(true);
+      setPreviewBubbleVisible(scrubberMode === "articles");
       measureScrubberTrackWindowPosition();
       const trackY = getTrackYFromGestureEvent(event);
       const thumbCenter = scrubberThumbTopRef.current + SCRUBBER_THUMB_HEIGHT / 2;
@@ -2665,7 +2678,7 @@ export const DetailScreen = () => {
       if (document.contentType === "fallo") {
         const parsed = parseFalloContent(extractedRelated.mainText);
         return (
-          <View style={styles.falloContentCard}>
+          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 14 } : null]}>
             <View style={styles.inlineContentShareRow}>
               <Pressable
                 style={styles.articleShareBtn}
@@ -2749,6 +2762,7 @@ export const DetailScreen = () => {
                 paddingHorizontal: spacing.md + 1,
                 paddingVertical: spacing.md + 2,
                 borderRadius: radius.lg,
+                marginRight: isContinuousTextRail ? 14 : 0,
               },
             ]}
           >
@@ -3154,7 +3168,10 @@ export const DetailScreen = () => {
       </View>
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[
+          styles.container,
+          rightRailContentInset > 0 ? { paddingRight: readingTypography.horizontalPadding + rightRailContentInset } : null,
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         persistentScrollbar={false}
@@ -3379,7 +3396,7 @@ export const DetailScreen = () => {
           </View>
         ) : null}
       </ScrollView>
-      {selectedSection === "texto" && searchableArticles.length > 0 ? (
+      {selectedSection === "texto" && scrubberMode !== "none" ? (
         <View
           ref={scrubberTrackRef}
           style={[
@@ -3387,6 +3404,8 @@ export const DetailScreen = () => {
             {
               top: fixedHeaderHeight + 10,
               bottom: Math.max(spacing.xl + 12, insets.bottom + 34),
+              right: isContinuousTextRail ? 0 : 2,
+              width: isContinuousTextRail ? 12 : 14,
             },
             isScrubbingArticles ? styles.articleScrubberTrackActive : null,
           ]}
@@ -3405,6 +3424,8 @@ export const DetailScreen = () => {
             style={[
               styles.articleScrubberThumb,
               {
+                left: isContinuousTextRail ? 2 : 1,
+                width: isContinuousTextRail ? 8 : 10,
                 backgroundColor: isDarkMode ? "#233B66" : "#E2EEFF",
                 borderColor: isDarkMode ? "#2D497B" : "#C7DBFF",
                 borderWidth: 1,
@@ -3412,7 +3433,7 @@ export const DetailScreen = () => {
               },
             ]}
           />
-          {activeArticlePreviewLabel ? (
+          {scrubberMode === "articles" && activeArticlePreviewLabel ? (
             <Animated.View
               style={[
                 styles.scrubberPreviewBubble,
