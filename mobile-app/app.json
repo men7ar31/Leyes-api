@@ -16,7 +16,7 @@
     "assetBundlePatterns": [
       "**/*"
     ],
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "jsEngine": "hermes",
     "runtimeVersion": {
       "policy": "appVersion"
