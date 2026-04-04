@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { X } from "lucide-react-native";
 import { colors, radius, spacing, typography } from "../constants/theme";
 import type { SaijLegislationSubtype, SaijSearchRequest } from "../types/saij";
 import { useAppTheme } from "../theme/appTheme";
@@ -80,10 +81,12 @@ const jurisdictionOptions: Array<{ label: string; value: JurisdictionKind }> = [
 ];
 
 const legislationSubtypeGroups: Array<{
+  key: "leyes_tratados" | "codigos_constituciones" | "decretos_resoluciones";
   title: string;
   options: Array<{ label: string; value: SaijLegislationSubtype }>;
 }> = [
   {
+    key: "leyes_tratados",
     title: "Leyes y tratados",
     options: [
       { label: "Normas internacionales", value: "normas_internacionales" },
@@ -96,6 +99,7 @@ const legislationSubtypeGroups: Array<{
     ],
   },
   {
+    key: "codigos_constituciones",
     title: "Codigos y constituciones",
     options: [
       { label: "Codigos nacionales", value: "codigo_nacional" },
@@ -105,6 +109,7 @@ const legislationSubtypeGroups: Array<{
     ],
   },
   {
+    key: "decretos_resoluciones",
     title: "Decretos y resoluciones",
     options: [
       { label: "Decretos nacionales vigentes", value: "decretos_nacionales_vigentes" },
@@ -115,6 +120,12 @@ const legislationSubtypeGroups: Array<{
     ],
   },
 ];
+
+type LegislationQuickPick =
+  | "todas"
+  | "leyes_tratados"
+  | "codigos_constituciones"
+  | "decretos_resoluciones";
 
 const jurisprudenceSubtypeGroups: Array<{
   title: string;
@@ -209,11 +220,13 @@ export const SearchFilters = ({
   collapseToken,
 }: Props) => {
   const { colors: appColors } = useAppTheme();
-  const [isLegislationPanelOpen, setIsLegislationPanelOpen] = useState(true);
-  const [openLegislationGroup, setOpenLegislationGroup] = useState<string | null>("Leyes y tratados");
-  const [isJurisprudencePanelOpen, setIsJurisprudencePanelOpen] = useState(true);
-  const [openJurisprudenceGroup, setOpenJurisprudenceGroup] = useState<string | null>("Tipo");
+  const [isLegislationQuickPickOpen, setIsLegislationQuickPickOpen] = useState(false);
+  const [activeLegislationQuickPick, setActiveLegislationQuickPick] = useState<LegislationQuickPick>("todas");
+  const [openJurisprudenceGroup, setOpenJurisprudenceGroup] = useState<string | null>(null);
+  const [isJurisprudenceQuickPickOpen, setIsJurisprudenceQuickPickOpen] = useState(false);
+  const [isJurisprudenceExtrasOpen, setIsJurisprudenceExtrasOpen] = useState(false);
   const [openDoctrinaGroup, setOpenDoctrinaGroup] = useState<string | null>("Derecho privado");
+  const previousContentTypeRef = useRef<SaijSearchRequest["contentType"]>(contentType);
 
   const raisedSurfaceStyle = {
     backgroundColor: appColors.card,
@@ -228,162 +241,319 @@ export const SearchFilters = ({
   const isJurisprudenceType = contentType === "jurisprudencia" || contentType === "fallo" || contentType === "sumario";
 
   useEffect(() => {
-    if (contentType === "legislacion") {
-      setIsLegislationPanelOpen(false);
-      setOpenLegislationGroup(null);
-      return;
+    setIsLegislationQuickPickOpen(false);
+    setIsJurisprudenceQuickPickOpen(false);
+    setOpenJurisprudenceGroup(null);
+    setIsJurisprudenceExtrasOpen(false);
+    setOpenDoctrinaGroup(null);
+  }, [collapseToken]);
+
+  useEffect(() => {
+    const previousContentType = previousContentTypeRef.current;
+    if (previousContentType !== contentType) {
+      if (contentType === "legislacion") {
+        setIsLegislationQuickPickOpen(true);
+      } else {
+        setIsLegislationQuickPickOpen(false);
+      }
+
+      if (isJurisprudenceType) {
+        setOpenJurisprudenceGroup(null);
+        setIsJurisprudenceQuickPickOpen(true);
+        setIsJurisprudenceExtrasOpen(false);
+      } else {
+        setIsJurisprudenceQuickPickOpen(false);
+        setIsJurisprudenceExtrasOpen(false);
+      }
+
+      if (contentType === "doctrina") {
+        setOpenDoctrinaGroup(null);
+      }
     }
-    if (isJurisprudenceType) {
-      setIsJurisprudencePanelOpen(false);
-      setOpenJurisprudenceGroup(null);
-      return;
-    }
-    if (contentType === "doctrina") {
-      setOpenDoctrinaGroup("Derecho privado");
-    }
-  }, [collapseToken, contentType, isJurisprudenceType]);
+
+    previousContentTypeRef.current = contentType;
+  }, [contentType, isJurisprudenceType]);
 
   const onSelectJurisprudenceSubtype = (value: JurisprudenceSubtype) => {
     onChangeJurisprudenceSubtype(value);
     onChangeContentType("jurisprudencia");
+    setIsJurisprudenceQuickPickOpen(false);
   };
 
+  const onSelectContentType = (value: SaijSearchRequest["contentType"]) => {
+    onChangeContentType(value);
+    if (value === "legislacion") {
+      setIsLegislationQuickPickOpen(true);
+      return;
+    }
+    if (value === "jurisprudencia") {
+      setIsJurisprudenceQuickPickOpen(true);
+      return;
+    }
+    setIsJurisprudenceQuickPickOpen(false);
+  };
+
+  const onSelectLegislationQuickPick = (value: LegislationQuickPick) => {
+    setActiveLegislationQuickPick(value);
+    if (value === "todas") {
+      onChangeLegislationSubtype("todas");
+    }
+    setIsLegislationQuickPickOpen(false);
+  };
+
+  const visibleLegislationGroup =
+    activeLegislationQuickPick === "todas"
+      ? null
+      : legislationSubtypeGroups.find((group) => group.key === activeLegislationQuickPick) ?? null;
+
   return (
-    <View style={styles.container}>
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: appColors.muted }]}>Tipo de contenido</Text>
-        <View style={styles.chips}>
-          {contentOptions.map((option) => (
-            <FilterChip
-              key={option.value}
-              label={option.label}
-              selected={contentType === option.value}
-              onPress={() => onChangeContentType(option.value)}
-            />
-          ))}
-        </View>
-      </View>
-
-      {contentType === "legislacion" ? (
-        <View style={styles.field}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.mainAccordionHeader,
-              raisedSurfaceStyle,
-              pressed ? styles.mainAccordionHeaderPressed : null,
-            ]}
-            onPress={() => setIsLegislationPanelOpen((prev) => !prev)}
-          >
-            <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de legislacion</Text>
-            <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
-              {isLegislationPanelOpen ? "Ocultar" : "Mostrar"}
+    <>
+      <Modal
+        visible={contentType === "legislacion" && isLegislationQuickPickOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsLegislationQuickPickOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsLegislationQuickPickOpen(false)} />
+          <View style={[styles.modalCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+            <Text style={[styles.modalTitle, { color: appColors.text }]}>Elegi el tipo de legislacion</Text>
+            <Text style={[styles.modalText, { color: appColors.muted }]}>
+              Selecciona si queres ver todo, leyes y tratados, codigos y constituciones, o decretos y resoluciones.
             </Text>
-          </Pressable>
-
-          {isLegislationPanelOpen ? (
-            <View style={styles.groupBlock}>
-              <View style={styles.chips}>
-                <FilterChip
-                  label="Todas"
-                  selected={legislationSubtype === "todas"}
-                  onPress={() => onChangeLegislationSubtype("todas")}
-                />
-              </View>
-
+            <View style={styles.modalActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modalOption,
+                  {
+                    borderColor: activeLegislationQuickPick === "todas" ? appColors.primaryStrong : appColors.border,
+                    backgroundColor: activeLegislationQuickPick === "todas" ? appColors.primarySoft : appColors.surface,
+                  },
+                  pressed ? styles.chipPressed : null,
+                ]}
+                onPress={() => onSelectLegislationQuickPick("todas")}
+              >
+                <Text
+                  style={[
+                    styles.modalOptionText,
+                    { color: activeLegislationQuickPick === "todas" ? appColors.primaryStrong : appColors.text },
+                  ]}
+                >
+                  Todo
+                </Text>
+              </Pressable>
               {legislationSubtypeGroups.map((group) => (
-                <View key={group.title} style={styles.subGroup}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.accordionHeader,
-                      raisedSurfaceStyle,
-                      pressed ? styles.accordionHeaderPressed : null,
+                <Pressable
+                  key={group.key}
+                  style={({ pressed }) => [
+                    styles.modalOption,
+                    {
+                      borderColor:
+                        activeLegislationQuickPick === group.key ? appColors.primaryStrong : appColors.border,
+                      backgroundColor:
+                        activeLegislationQuickPick === group.key ? appColors.primarySoft : appColors.surface,
+                    },
+                    pressed ? styles.chipPressed : null,
+                  ]}
+                  onPress={() => onSelectLegislationQuickPick(group.key)}
+                >
+                  <Text
+                    style={[
+                      styles.modalOptionText,
+                      {
+                        color:
+                          activeLegislationQuickPick === group.key ? appColors.primaryStrong : appColors.text,
+                      },
                     ]}
-                    onPress={() =>
-                      setOpenLegislationGroup((prev) => (prev === group.title ? null : group.title))
-                    }
                   >
-                    <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
-                    <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
-                      {openLegislationGroup === group.title ? "Ocultar" : "Mostrar"}
-                    </Text>
-                  </Pressable>
-
-                  {openLegislationGroup === group.title ? (
-                    <View style={styles.chips}>
-                      {group.options.map((option) => (
-                        <FilterChip
-                          key={option.value}
-                          label={option.label}
-                          selected={legislationSubtype === option.value}
-                          onPress={() => onChangeLegislationSubtype(option.value)}
-                        />
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
+                    {group.title}
+                  </Text>
+                </Pressable>
               ))}
             </View>
-          ) : null}
+            <Pressable style={styles.modalClose} onPress={() => setIsLegislationQuickPickOpen(false)}>
+              <Text style={[styles.modalCloseText, { color: appColors.primaryStrong }]}>Cerrar</Text>
+            </Pressable>
+          </View>
         </View>
-      ) : null}
+      </Modal>
 
-      {isJurisprudenceType ? (
-        <View style={styles.field}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.mainAccordionHeader,
-              raisedSurfaceStyle,
-              pressed ? styles.mainAccordionHeaderPressed : null,
-            ]}
-            onPress={() => setIsJurisprudencePanelOpen((prev) => !prev)}
-          >
-            <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de jurisprudencia</Text>
-            <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
-              {isJurisprudencePanelOpen ? "Ocultar" : "Mostrar"}
+      <Modal
+        visible={contentType === "jurisprudencia" && isJurisprudenceQuickPickOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsJurisprudenceQuickPickOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsJurisprudenceQuickPickOpen(false)} />
+          <View style={[styles.modalCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+            <Text style={[styles.modalTitle, { color: appColors.text }]}>Elegi que buscar</Text>
+            <Text style={[styles.modalText, { color: appColors.muted }]}>
+              Selecciona si queres buscar en todos los resultados de jurisprudencia, solo fallos o solo sumarios.
             </Text>
-          </Pressable>
-
-          {isJurisprudencePanelOpen ? (
-            <View style={styles.groupBlock}>
-              {jurisprudenceSubtypeGroups.map((group) => (
-                <View key={group.title} style={styles.subGroup}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.accordionHeader,
-                      raisedSurfaceStyle,
-                      pressed ? styles.accordionHeaderPressed : null,
+            <View style={styles.modalActions}>
+              {jurisprudenceSubtypeGroups[0].options.map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={({ pressed }) => [
+                    styles.modalOption,
+                    {
+                      borderColor:
+                        jurisprudenceSubtype === option.value ? appColors.primaryStrong : appColors.border,
+                      backgroundColor:
+                        jurisprudenceSubtype === option.value ? appColors.primarySoft : appColors.surface,
+                    },
+                    pressed ? styles.chipPressed : null,
+                  ]}
+                  onPress={() => onSelectJurisprudenceSubtype(option.value)}
+                >
+                  <Text
+                    style={[
+                      styles.modalOptionText,
+                      {
+                        color:
+                          jurisprudenceSubtype === option.value ? appColors.primaryStrong : appColors.text,
+                      },
                     ]}
-                    onPress={() =>
-                      setOpenJurisprudenceGroup((prev) => (prev === group.title ? null : group.title))
-                    }
                   >
-                    <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
-                    <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
-                      {openJurisprudenceGroup === group.title ? "Ocultar" : "Mostrar"}
-                    </Text>
-                  </Pressable>
-
-                  {openJurisprudenceGroup === group.title ? (
-                    <View style={styles.chips}>
-                      {group.options.map((option) => (
-                        <FilterChip
-                          key={option.value}
-                          label={option.label}
-                          selected={jurisprudenceSubtype === option.value}
-                          onPress={() => onSelectJurisprudenceSubtype(option.value)}
-                        />
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
+                    {option.label}
+                  </Text>
+                </Pressable>
               ))}
             </View>
-          ) : null}
+            <Pressable style={styles.modalClose} onPress={() => setIsJurisprudenceQuickPickOpen(false)}>
+              <Text style={[styles.modalCloseText, { color: appColors.primaryStrong }]}>Cerrar</Text>
+            </Pressable>
+          </View>
         </View>
-      ) : null}
+      </Modal>
 
-      {contentType === "doctrina" ? (
+      <View style={styles.container}>
         <View style={styles.field}>
+          <Text style={[styles.label, { color: appColors.muted }]}>Tipo de contenido</Text>
+          <View style={styles.chips}>
+            {contentOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                label={option.label}
+                selected={contentType === option.value}
+                onPress={() => onSelectContentType(option.value)}
+              />
+            ))}
+          </View>
+        </View>
+
+        {contentType === "legislacion" ? (
+          <View style={styles.field}>
+            {visibleLegislationGroup ? (
+              <View style={styles.groupBlock}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.mainAccordionHeader,
+                    raisedSurfaceStyle,
+                    pressed ? styles.mainAccordionHeaderPressed : null,
+                  ]}
+                  onPress={() => setIsLegislationQuickPickOpen(true)}
+                >
+                  <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>
+                    {visibleLegislationGroup.title}
+                  </Text>
+                  <View style={styles.inlineActions}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.inlineIconButton,
+                        { borderColor: appColors.border, backgroundColor: appColors.surface },
+                        pressed ? styles.chipPressed : null,
+                      ]}
+                      onPress={() => {
+                        setActiveLegislationQuickPick("todas");
+                        onChangeLegislationSubtype("todas");
+                      }}
+                      hitSlop={8}
+                    >
+                      <X size={14} color={appColors.primaryStrong} strokeWidth={2.3} />
+                    </Pressable>
+                    <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>Cambiar</Text>
+                  </View>
+                </Pressable>
+
+                <View style={styles.chips}>
+                  <FilterChip
+                    label="Todo"
+                    selected={legislationSubtype === "todas"}
+                    onPress={() => onChangeLegislationSubtype("todas")}
+                  />
+                  {visibleLegislationGroup.options.map((option) => (
+                    <FilterChip
+                      key={option.value}
+                      label={option.label}
+                      selected={legislationSubtype === option.value}
+                      onPress={() => onChangeLegislationSubtype(option.value)}
+                    />
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {isJurisprudenceType ? (
+          <View style={styles.field}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.mainAccordionHeader,
+                raisedSurfaceStyle,
+                pressed ? styles.mainAccordionHeaderPressed : null,
+              ]}
+              onPress={() => setIsJurisprudenceExtrasOpen((prev) => !prev)}
+            >
+              <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Otros filtros</Text>
+              <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
+                {isJurisprudenceExtrasOpen ? "Ocultar" : "Mostrar"}
+              </Text>
+            </Pressable>
+
+            {isJurisprudenceExtrasOpen ? (
+              <View style={styles.groupBlock}>
+                {jurisprudenceSubtypeGroups.slice(1).map((group) => (
+                  <View key={group.title} style={styles.subGroup}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.accordionHeader,
+                        raisedSurfaceStyle,
+                        pressed ? styles.accordionHeaderPressed : null,
+                      ]}
+                      onPress={() =>
+                        setOpenJurisprudenceGroup((prev) => (prev === group.title ? null : group.title))
+                      }
+                    >
+                      <Text style={[styles.subGroupTitle, { color: appColors.muted }]}>{group.title}</Text>
+                      <Text style={[styles.accordionHint, { color: appColors.primaryStrong }]}>
+                        {openJurisprudenceGroup === group.title ? "Ocultar" : "Mostrar"}
+                      </Text>
+                    </Pressable>
+
+                    {openJurisprudenceGroup === group.title ? (
+                      <View style={styles.chips}>
+                        {group.options.map((option) => (
+                          <FilterChip
+                            key={option.value}
+                            label={option.label}
+                            selected={jurisprudenceSubtype === option.value}
+                            onPress={() => onSelectJurisprudenceSubtype(option.value)}
+                          />
+                        ))}
+                      </View>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {contentType === "doctrina" ? (
+          <View style={styles.field}>
           <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de doctrina</Text>
           <View style={styles.chips}>
             <FilterChip
@@ -428,11 +598,11 @@ export const SearchFilters = ({
               </View>
             ))}
           </View>
-        </View>
-      ) : null}
+          </View>
+        ) : null}
 
-      {contentType === "dictamen" ? (
-        <View style={styles.field}>
+        {contentType === "dictamen" ? (
+          <View style={styles.field}>
           <Text style={[styles.mainAccordionTitle, { color: appColors.text }]}>Subfiltro de dictamenes</Text>
           <View style={styles.chips}>
             {dictamenSubtypeOptions.map((option) => (
@@ -444,37 +614,38 @@ export const SearchFilters = ({
               />
             ))}
           </View>
-        </View>
-      ) : null}
+          </View>
+        ) : null}
 
-      <View style={styles.field}>
-        <Text style={[styles.label, { color: appColors.muted }]}>Jurisdiccion</Text>
-        <View style={styles.chips}>
-          {jurisdictionOptions.map((option) => (
-            <FilterChip
-              key={option.value}
-              label={option.label}
-              selected={jurisdictionKind === option.value}
-              onPress={() => onChangeJurisdictionKind(option.value)}
-            />
-          ))}
-        </View>
-      </View>
-
-      {jurisdictionKind === "provincial" ? (
         <View style={styles.field}>
-          <Text style={[styles.label, { color: appColors.muted }]}>Provincia</Text>
-          <TextInput
-            style={[styles.input, insetSurfaceStyle, { color: appColors.text }]}
-            placeholder="Ej: Buenos Aires"
-            placeholderTextColor={appColors.muted}
-            value={province}
-            onChangeText={onChangeProvince}
-            autoCapitalize="words"
-          />
+          <Text style={[styles.label, { color: appColors.muted }]}>Jurisdiccion</Text>
+          <View style={styles.chips}>
+            {jurisdictionOptions.map((option) => (
+              <FilterChip
+                key={option.value}
+                label={option.label}
+                selected={jurisdictionKind === option.value}
+                onPress={() => onChangeJurisdictionKind(option.value)}
+              />
+            ))}
+          </View>
         </View>
-      ) : null}
-    </View>
+
+        {jurisdictionKind === "provincial" ? (
+          <View style={styles.field}>
+            <Text style={[styles.label, { color: appColors.muted }]}>Provincia</Text>
+            <TextInput
+              style={[styles.input, insetSurfaceStyle, { color: appColors.text }]}
+              placeholder="Ej: Buenos Aires"
+              placeholderTextColor={appColors.muted}
+              value={province}
+              onChangeText={onChangeProvince}
+              autoCapitalize="words"
+            />
+          </View>
+        ) : null}
+      </View>
+    </>
   );
 };
 
@@ -532,6 +703,73 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: spacing.xs,
+  },
+  modalOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.lg,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(7, 16, 34, 0.28)",
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 320,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+    gap: spacing.sm,
+  },
+  modalTitle: {
+    fontSize: typography.body,
+    fontWeight: "700",
+  },
+  modalText: {
+    fontSize: typography.small,
+    lineHeight: 19,
+  },
+  modalActions: {
+    gap: spacing.xs,
+  },
+  inlineActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  inlineIconButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalOption: {
+    minHeight: 40,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+  },
+  modalOptionText: {
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  modalClose: {
+    alignSelf: "center",
+    minHeight: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+  },
+  modalCloseText: {
+    fontSize: typography.small,
+    fontWeight: "700",
   },
   mainAccordionHeader: {
     flexDirection: "row",

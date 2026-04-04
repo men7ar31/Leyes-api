@@ -1,5 +1,5 @@
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { RefreshCw } from "lucide-react-native";
@@ -105,8 +105,11 @@ export const CodesScreen = () => {
   const [scope, setScope] = useState<CodesScope>("nacional");
   const [selectedProvince, setSelectedProvince] = useState("");
   const [isProvinceListOpen, setIsProvinceListOpen] = useState(true);
+  const [pendingCodeKey, setPendingCodeKey] = useState<string | null>(null);
+  const [provincialGuidMap, setProvincialGuidMap] = useState<Record<string, string>>({});
   const openingGuidRef = useRef<string | null>(null);
   const openingEntryRef = useRef<string | null>(null);
+  const provincialOpenTokenRef = useRef(0);
 
   const {
     items: nationalRawItems,
@@ -156,6 +159,18 @@ export const CodesScreen = () => {
     []
   );
 
+  const loadProvincialCodeResolution = useCallback(
+    async (province: string, entry: ProvincialCodeCatalogEntry) => {
+      const resolveKey = resolveQueryKeyForEntry(province, entry);
+      return queryClient.fetchQuery({
+        queryKey: resolveKey,
+        queryFn: () => resolveProvincialCode(province, entry),
+        staleTime: 1000 * 60 * 30,
+      });
+    },
+    [queryClient, resolveQueryKeyForEntry]
+  );
+
   const prefetchCode = useCallback(
     (guid: string) => {
       const normalizedGuid = String(guid || "").trim();
@@ -177,36 +192,29 @@ export const CodesScreen = () => {
   const prefetchProvincialCodeResolution = useCallback(
     (province: string, entry: ProvincialCodeCatalogEntry) => {
       if (!province) return;
-      const resolveKey = resolveQueryKeyForEntry(province, entry);
-      const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
-      if (cached?.guid) {
-        prefetchCode(cached.guid);
-        return;
-      }
-
-      queryClient
-        .prefetchQuery({
-          queryKey: resolveKey,
-          queryFn: () => resolveProvincialCode(province, entry),
-          staleTime: 1000 * 60 * 30,
-        })
-        .then(() => {
-          const resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
+      loadProvincialCodeResolution(province, entry)
+        .then((resolved) => {
           if (resolved?.guid) {
             prefetchCode(resolved.guid);
+            setProvincialGuidMap((current) => {
+              const rowKey = getCatalogEntryKey(province, entry);
+              if (current[rowKey] === resolved.guid) return current;
+              return { ...current, [rowKey]: resolved.guid };
+            });
           }
         })
         .catch(() => {
           // best effort warm-up
         });
     },
-    [prefetchCode, queryClient, resolveQueryKeyForEntry]
+    [loadProvincialCodeResolution, prefetchCode]
   );
 
   const openCode = useCallback((guid: string) => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
+    setPendingCodeKey(normalizedGuid);
     openingGuidRef.current = normalizedGuid;
     prefetchCode(normalizedGuid);
     router.push({
@@ -220,24 +228,28 @@ export const CodesScreen = () => {
     }, 60);
   }, [prefetchCode]);
 
+  const invalidatePendingProvincialOpen = useCallback(() => {
+    provincialOpenTokenRef.current += 1;
+    openingEntryRef.current = null;
+    openingGuidRef.current = null;
+    setPendingCodeKey(null);
+  }, []);
+
   const resolveAndOpenProvincialCode = useCallback(
     async (entry: ProvincialCodeCatalogEntry) => {
       if (!selectedProvince) return;
       const entryKey = getCatalogEntryKey(selectedProvince, entry);
       if (openingEntryRef.current === entryKey) return;
+      const openToken = provincialOpenTokenRef.current + 1;
+      provincialOpenTokenRef.current = openToken;
       openingEntryRef.current = entryKey;
 
       try {
-        const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
-        let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
-        if (!resolved?.guid) {
-          resolved = await resolveProvincialCode(selectedProvince, entry);
-          if (resolved?.guid) {
-            queryClient.setQueryData(resolveKey, resolved);
-          }
-        }
+        const resolved = await loadProvincialCodeResolution(selectedProvince, entry);
         const guid = String(resolved?.guid || "").trim();
+        if (provincialOpenTokenRef.current !== openToken) return;
         if (!guid) {
+          setPendingCodeKey(null);
           const manualHint = getManualLawSearchHint(entry);
           const message = manualHint
             ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
@@ -245,8 +257,11 @@ export const CodesScreen = () => {
           Alert.alert("Codigo no encontrado", message);
           return;
         }
+        setProvincialGuidMap((current) => (current[entryKey] === guid ? current : { ...current, [entryKey]: guid }));
         openCode(guid);
       } catch {
+        if (provincialOpenTokenRef.current !== openToken) return;
+        setPendingCodeKey(null);
         const manualHint = getManualLawSearchHint(entry);
         const message = manualHint
           ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
@@ -254,14 +269,26 @@ export const CodesScreen = () => {
         Alert.alert("Codigo no encontrado", message);
       } finally {
         setTimeout(() => {
-          if (openingEntryRef.current === entryKey) {
+          if (openingEntryRef.current === entryKey && provincialOpenTokenRef.current === openToken) {
             openingEntryRef.current = null;
           }
         }, 60);
       }
     },
-    [openCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
+    [loadProvincialCodeResolution, openCode, provincialOpenTokenRef, selectedProvince]
   );
+
+  useEffect(() => {
+    if (scope !== "nacional" || nationalCodes.length < 1) return;
+    nationalCodes.slice(0, 8).forEach((code) => prefetchCode(code.guid));
+  }, [nationalCodes, prefetchCode, scope]);
+
+  useEffect(() => {
+    if (!canShowProvincialCodes || !selectedProvince || provincialCatalog.length < 1) return;
+    provincialCatalog.forEach((entry) => {
+      prefetchProvincialCodeResolution(selectedProvince, entry);
+    });
+  }, [canShowProvincialCodes, prefetchProvincialCodeResolution, provincialCatalog, selectedProvince]);
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}> 
@@ -275,6 +302,8 @@ export const CodesScreen = () => {
           ]}
           value={scope}
           onChange={(value) => {
+            invalidatePendingProvincialOpen();
+            setProvincialGuidMap({});
             setScope(value);
             if (value === "provincial") setIsProvinceListOpen(true);
           }}
@@ -315,7 +344,11 @@ export const CodesScreen = () => {
                     key={code.guid}
                     title={code.title}
                     subtitle={code.subtitle || undefined}
-                    onPressIn={() => prefetchCode(code.guid)}
+                    active={pendingCodeKey === code.guid}
+                    onPressIn={() => {
+                      setPendingCodeKey(code.guid);
+                      prefetchCode(code.guid);
+                    }}
                     onPress={() => openCode(code.guid)}
                   />
                 ))
@@ -326,7 +359,10 @@ export const CodesScreen = () => {
             <View style={styles.headerRow}>
               <Text style={[styles.blockTitle, { color: colors.text }]}>Provincia: {selectedProvince || "Seleccionar"}</Text>
               <Pressable
-                onPress={() => setIsProvinceListOpen((prev) => !prev)}
+                onPress={() => {
+                  invalidatePendingProvincialOpen();
+                  setIsProvinceListOpen((prev) => !prev);
+                }}
                 unstable_pressDelay={0}
                 android_ripple={{ color: colors.primarySoft, borderless: true }}
                 hitSlop={8}
@@ -344,6 +380,8 @@ export const CodesScreen = () => {
                       abbr={province.abbr}
                       active={selectedProvince === province.name}
                       onPress={() => {
+                        invalidatePendingProvincialOpen();
+                        setProvincialGuidMap({});
                         setSelectedProvince(province.name);
                         setIsProvinceListOpen(false);
                       }}
@@ -360,13 +398,24 @@ export const CodesScreen = () => {
                 ) : (
                   provincialCatalog.map((entry) => {
                     const rowKey = getCatalogEntryKey(selectedProvince, entry);
+                    const resolvedGuid = provincialGuidMap[rowKey];
                     return (
                       <CodeCard
                         key={rowKey}
                         title={entry.area}
                         subtitle={entry.reference}
-                        onPressIn={() => prefetchProvincialCodeResolution(selectedProvince, entry)}
-                        onPress={() => resolveAndOpenProvincialCode(entry)}
+                        active={pendingCodeKey === rowKey}
+                        onPressIn={() => {
+                          setPendingCodeKey(rowKey);
+                          prefetchProvincialCodeResolution(selectedProvince, entry);
+                        }}
+                        onPress={() => {
+                          if (resolvedGuid) {
+                            openCode(resolvedGuid);
+                            return;
+                          }
+                          resolveAndOpenProvincialCode(entry);
+                        }}
                       />
                     );
                   })

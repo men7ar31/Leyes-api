@@ -3,6 +3,7 @@
 const DEFAULT_HEADERS = {
   "Content-Type": "application/json",
 };
+const REQUEST_TIMEOUT_MS = 20000;
 
 const getBaseUrl = () => {
   const base = process.env.EXPO_PUBLIC_API_URL;
@@ -29,8 +30,32 @@ const parseJson = async (res: Response) => {
 
 const request = async <T>(path: string, options: RequestInit): Promise<T> => {
   const url = buildUrl(path);
-  const res = await fetch(url, options);
-  const data = await parseJson(res);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const externalSignal = options.signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  let res: Response;
+  let data: any;
+  try {
+    res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    data = await parseJson(res);
+  } catch (error: any) {
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      const err = new Error("La solicitud demoro demasiado. Intenta nuevamente.") as ApiError;
+      err.status = 408;
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     const message =

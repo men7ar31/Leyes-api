@@ -33,6 +33,9 @@ const CONTENT_TYPE_FACETS: Record<SaijContentType, string | null> = {
   todo: null,
 };
 
+const isJurisprudenceLikeContentType = (contentType: SaijContentType) =>
+  contentType === 'jurisprudencia' || contentType === 'fallo' || contentType === 'sumario';
+
 type LegislationSubtypeConfig = {
   contentFacet: string;
   overrides?: Partial<Record<BaseFacetName, string>>;
@@ -270,6 +273,71 @@ const shouldPreferNormTitleSearch = (rawValue?: string) => {
   return hasNormKeyword || hasNormNumber;
 };
 
+const toSaijTokenizedTerm = (value: string) => value.trim().replace(/\s+/g, '?');
+
+const splitSearchWords = (value: string) =>
+  String(value || '')
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.replace(/^["']+|["']+$/g, '').trim())
+    .filter(Boolean);
+
+const buildFieldAllWordsExpression = (field: string, rawValue: string) => {
+  const tokens = splitSearchWords(rawValue);
+  if (!tokens.length) return '';
+  if (tokens.length === 1) return `${field}:${toSaijTokenizedTerm(tokens[0])}`;
+  return tokens.map((token) => `${field}:${toSaijTokenizedTerm(token)}`).join(' y ');
+};
+
+const uniqueNonEmpty = (values: Array<string | null | undefined>) =>
+  Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+
+const buildContextualSearchExpression = (input: SaijSearchRequest, rawValue: string) => {
+  const searchTerm = toSaijTokenizedTerm(rawValue);
+  if (!searchTerm) return '';
+
+  const jurisprudenceSubtype = String(input.filters.tipoNorma || '').trim().toLowerCase();
+
+  if (input.contentType === 'fallo') {
+    return buildFieldAllWordsExpression('titulo', rawValue);
+  }
+
+  if (input.contentType === 'sumario') {
+    return `tema:${searchTerm}`;
+  }
+
+  if (input.contentType === 'doctrina') {
+    return `tema:${searchTerm}`;
+  }
+
+  if (input.contentType === 'dictamen') {
+    return `tema:${searchTerm}`;
+  }
+
+  if (input.contentType === 'jurisprudencia') {
+    if (jurisprudenceSubtype === 'fallo') {
+      return buildFieldAllWordsExpression('titulo', rawValue);
+    }
+    if (jurisprudenceSubtype === 'sumario') {
+      return `tema:${searchTerm}`;
+    }
+    return uniqueNonEmpty([`titulo:${searchTerm}`, `tema:${searchTerm}`]).join(' OR ');
+  }
+
+  if (input.contentType === 'todo') {
+    return uniqueNonEmpty([`titulo:${searchTerm}`, `tema:${searchTerm}`, `texto:${searchTerm}`]).join(' OR ');
+  }
+
+  if (input.contentType === 'legislacion') {
+    if (shouldPreferNormTitleSearch(rawValue)) {
+      return uniqueNonEmpty([`titulo:${searchTerm}`, `texto:${searchTerm}`]).join(' OR ');
+    }
+    return `texto:${searchTerm}`;
+  }
+
+  return `texto:${searchTerm}`;
+};
+
 export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
   const rParts: string[] = [];
 
@@ -279,24 +347,10 @@ export const buildSaijRawQuery = (input: SaijSearchRequest): string => {
 
   if (input.filters.textoEnNorma) {
     const rawSearchTerm = input.filters.textoEnNorma.trim();
-    const searchTerm = rawSearchTerm.replace(/\s+/g, '?');
-    // Alineado con SAIJ web:
-    // - fallo: titulo:
-    // - sumario: tema:
-    // - resto: texto:
-    const field =
-      input.contentType === 'fallo'
-        ? 'titulo'
-        : input.contentType === 'jurisprudencia' ||
-            input.contentType === 'sumario' ||
-            input.contentType === 'doctrina' ||
-            input.contentType === 'dictamen'
-          ? 'tema'
-          : (input.contentType === 'legislacion' || input.contentType === 'todo') &&
-              shouldPreferNormTitleSearch(rawSearchTerm)
-            ? 'titulo'
-          : 'texto';
-    rParts.push(`${field}:${searchTerm}`);
+    const contextualExpression = buildContextualSearchExpression(input, rawSearchTerm);
+    if (contextualExpression) {
+      rParts.push(contextualExpression);
+    }
   }
 
   return rParts.join(' ').trim();
@@ -332,7 +386,7 @@ export const buildSaijFacets = (input: SaijSearchRequest): string => {
 
   // Jurisdicción facet (filtro manual general)
   const jurisdiccion = input.filters.jurisdiccion;
-  if (jurisdiccion && jurisdiccion.kind !== "todas") {
+  if (jurisdiccion && jurisdiccion.kind !== "todas" && !isJurisprudenceLikeContentType(input.contentType)) {
     let value = 'Jurisdicción';
     if (jurisdiccion.kind === 'provincial' && jurisdiccion.provincia) {
       value = `Jurisdicción/Local/${jurisdiccion.provincia}`;
@@ -349,7 +403,9 @@ export const buildSaijFacets = (input: SaijSearchRequest): string => {
   if (fechaFacet) setFacet(facets, 'Fecha', fechaFacet);
 
   const jurisdiccionFacet = normalizeFacetValue('Jurisdicción', input.filters.facetJurisdiccion);
-  if (jurisdiccionFacet) setFacet(facets, 'Jurisdicción', jurisdiccionFacet);
+  if (jurisdiccionFacet && !isJurisprudenceLikeContentType(input.contentType)) {
+    setFacet(facets, 'Jurisdicción', jurisdiccionFacet);
+  }
 
   const estadoFacet = normalizeFacetValue('Estado de Vigencia', input.filters.facetEstadoVigencia);
   if (estadoFacet) setFacet(facets, 'Estado de Vigencia', estadoFacet);

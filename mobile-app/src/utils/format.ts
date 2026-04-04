@@ -12,7 +12,11 @@
 export const cleanText = (text?: unknown) => {
   if (text === null || text === undefined) return "";
   const value = typeof text === "string" ? text : String(text);
-  return value.replace(/\s+/g, " ").trim();
+  return value
+    .replace(/ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·|ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·|Â·/g, " · ")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 };
 
 export const maybeTruncate = (text: string, max: number) => {

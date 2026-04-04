@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { getSaijDocument } from "../services/saijApi";
-import { getFavoriteByGuid } from "../services/favorites";
+import { getFavoriteByGuid, getFavoriteOfflineDocument, hydrateFavoriteOfflineDocument } from "../services/favorites";
 import type { SaijDocumentResponse } from "../types/saij";
 
 export const useSaijDocument = (guid?: string) => {
@@ -9,14 +9,25 @@ export const useSaijDocument = (guid?: string) => {
     enabled: !!guid,
     staleTime: 1000 * 60 * 20,
     gcTime: 1000 * 60 * 60,
+    retry: 1,
+    retryDelay: 500,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     queryFn: async () => {
       const key = guid as string;
       try {
-        return await getSaijDocument(key);
+        const response = await getSaijDocument(key);
+        await hydrateFavoriteOfflineDocument(response?.document);
+        return response;
       } catch (error) {
+        const offlineDocument = await getFavoriteOfflineDocument(key);
+        if (offlineDocument) {
+          return {
+            ok: true,
+            document: offlineDocument,
+          };
+        }
         const fallback = await getFavoriteByGuid(key);
         if (fallback?.snapshot) {
           return {
