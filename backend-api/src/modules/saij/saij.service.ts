@@ -17,7 +17,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 27;
+const DOCUMENT_EXTRACTOR_VERSION = 28;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =

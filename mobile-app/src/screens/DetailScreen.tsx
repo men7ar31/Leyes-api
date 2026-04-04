@@ -419,11 +419,11 @@ const extractRelatedContentBlock = (text?: string | null) => {
 
 const parseFalloContent = (text?: string | null) => {
   if (!text || typeof text !== "string") {
-    return { headerLines: [] as string[], summaryText: null as string | null };
+    return { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   }
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
-    return { headerLines: [] as string[], summaryText: null as string | null };
+    return { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   }
 
   const lines = normalized
@@ -432,13 +432,23 @@ const parseFalloContent = (text?: string | null) => {
     .filter((line) => line.length > 0);
 
   const sumarioIndex = lines.findIndex((line) => /^SUMARIO\b/i.test(line));
-  if (sumarioIndex < 0) {
-    return { headerLines: lines, summaryText: null };
+  const fullTextIndex = lines.findIndex((line) => /^TEXTO\s+COMPLETO\b/i.test(line));
+  if (sumarioIndex < 0 && fullTextIndex < 0) {
+    return { headerLines: lines, summaryText: null, bodyText: null };
   }
 
-  const headerLines = lines.slice(0, sumarioIndex);
-  const summaryText = lines.slice(sumarioIndex + 1).join("\n").trim() || null;
-  return { headerLines, summaryText };
+  const cutIndexCandidates = [sumarioIndex, fullTextIndex].filter((value) => value >= 0);
+  const firstCutIndex = cutIndexCandidates.length > 0 ? Math.min(...cutIndexCandidates) : -1;
+  const headerLines = firstCutIndex >= 0 ? lines.slice(0, firstCutIndex) : lines;
+
+  let summaryText: string | null = null;
+  if (sumarioIndex >= 0) {
+    const summaryEndIndex = fullTextIndex > sumarioIndex ? fullTextIndex : lines.length;
+    summaryText = lines.slice(sumarioIndex + 1, summaryEndIndex).join("\n").trim() || null;
+  }
+
+  const bodyText = fullTextIndex >= 0 ? lines.slice(fullTextIndex + 1).join("\n\n").trim() || null : null;
+  return { headerLines, summaryText, bodyText };
 };
 
 type RelatedContentItem = {
@@ -1401,7 +1411,9 @@ export const DetailScreen = () => {
         ].filter((item) => item.visible);
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
-  const searchableArticles = Array.isArray(document.articles) ? document.articles : [];
+  const shouldPrepareArticleCaches =
+    document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
+  const searchableArticles = shouldPrepareArticleCaches && Array.isArray(document.articles) ? document.articles : [];
   if (articleShareCacheRef.current.source !== searchableArticles) {
     const nextItems = searchableArticles.map((article, index) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
@@ -2691,6 +2703,17 @@ export const DetailScreen = () => {
                   parsed.summaryText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-summary",
+                  true
+                )}
+              </View>
+            ) : null}
+            {parsed.bodyText ? (
+              <View style={styles.falloSummarySection}>
+                <Text style={styles.falloSummaryTitle}>Texto completo</Text>
+                {renderHighlightedBlock(
+                  parsed.bodyText,
+                  [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
+                  "fallo-body",
                   true
                 )}
               </View>

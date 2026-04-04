@@ -263,6 +263,33 @@ const normalizeComparableText = (value?: string | null) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const scoreContentRichness = (value?: string | null) => {
+  const normalized = normalizeTagText(value);
+  if (!normalized) return Number.NEGATIVE_INFINITY;
+
+  let score = normalized.length;
+  const paragraphCount = normalized.split(/\n{2,}/).filter(Boolean).length;
+  score += paragraphCount * 40;
+  if (/\btexto completo\b/i.test(normalized)) score += 300;
+  if (/\b(sumario|sintesis|resumen)\b/i.test(normalized) && normalized.length < 1200) score -= 180;
+  return score;
+};
+
+const pickRicherContentText = (...candidates: Array<string | null | undefined>): string | null => {
+  let best: string | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    const normalized = normalizeTagText(candidate);
+    if (!normalized) continue;
+    const score = scoreContentRichness(normalized);
+    if (score > bestScore) {
+      best = normalized;
+      bestScore = score;
+    }
+  }
+  return best;
+};
+
 const PROVINCE_LABELS: Array<{ patterns: string[]; label: string }> = [
   { patterns: ['ciudad autonoma de buenos aires', ' caba '], label: 'Caba' },
   { patterns: ['buenos aires'], label: 'Buenos Aires' },
@@ -2114,6 +2141,7 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
   }));
   const rawHtml = (abstractObj as any)?.html ?? options.fallbackHtml ?? null;
   const contentHtmlBase = extractMainHtml(rawHtml);
+  const htmlTextBase = htmlToText(contentHtmlBase);
   const rawSintesis =
     normalizeTagText(typeof content['sintesis'] === 'string' ? content['sintesis'] : null) ??
     normalizeTagText(typeof (content as any)?.sintesis === 'string' ? (content as any).sintesis : null) ??
@@ -2128,25 +2156,43 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
     normalizeTagText(typeof content['sumario'] === 'string' ? content['sumario'] : null) ??
     null;
   let contentTextBase =
-    htmlToText(contentHtmlBase) ??
+    htmlTextBase ??
     rawTexto ??
     rawSintesis ??
     rawSumario ??
     null;
+  let falloDetailText: string | null = null;
   if (inferredDocContentType === 'fallo') {
-    const falloDetailText = buildFalloDetailText(content as Record<string, any>, metadata as Record<string, any>);
-    if (falloDetailText) {
+    falloDetailText = buildFalloDetailText(content as Record<string, any>, metadata as Record<string, any>);
+    const falloBodyCandidate = pickRicherContentText(htmlTextBase, rawTexto, rawSumario);
+    if (
+      falloDetailText &&
+      falloBodyCandidate &&
+      normalizeComparableText(falloBodyCandidate) !== normalizeComparableText(falloDetailText) &&
+      scoreContentRichness(falloBodyCandidate) > scoreContentRichness(falloDetailText) + 120
+    ) {
+      contentTextBase = `${falloDetailText}\n\nTEXTO COMPLETO\n${falloBodyCandidate}`;
+    } else if (falloBodyCandidate) {
+      contentTextBase = falloBodyCandidate;
+    } else if (falloDetailText) {
       contentTextBase = falloDetailText;
-    } else {
-      contentTextBase = rawTexto ?? rawSumario ?? contentTextBase;
     }
   }
+  let dictamenDetailText: string | null = null;
   if (inferredDocContentType === 'dictamen') {
-    const dictamenDetailText = buildDictamenDetailText(content as Record<string, any>);
-    if (dictamenDetailText) {
+    dictamenDetailText = buildDictamenDetailText(content as Record<string, any>);
+    const dictamenBodyCandidate = pickRicherContentText(htmlTextBase, rawTexto, rawSintesis, rawSumario);
+    if (
+      dictamenDetailText &&
+      dictamenBodyCandidate &&
+      normalizeComparableText(dictamenBodyCandidate) !== normalizeComparableText(dictamenDetailText) &&
+      scoreContentRichness(dictamenBodyCandidate) > scoreContentRichness(dictamenDetailText) + 120
+    ) {
+      contentTextBase = `${dictamenDetailText}\n\nTEXTO COMPLETO\n${dictamenBodyCandidate}`;
+    } else if (dictamenBodyCandidate) {
+      contentTextBase = dictamenBodyCandidate;
+    } else if (dictamenDetailText) {
       contentTextBase = dictamenDetailText;
-    } else {
-      contentTextBase = rawTexto ?? rawSintesis ?? rawSumario ?? contentTextBase;
     }
   }
   const fuenteSumario =
@@ -2194,7 +2240,34 @@ export const mapSaijDocument = (raw: any, options: MapDocOptions) => {
 
   const fromArticulo = deep.fromArticulo === true;
   const contentHtml = fromArticulo ? null : contentHtmlBase || deep.contentHtml || null;
-  const contentText = fromArticulo ? deep.contentText || contentTextBase || null : contentTextBase || deep.contentText || null;
+  let contentText = fromArticulo ? deep.contentText || contentTextBase || null : contentTextBase || deep.contentText || null;
+  if (!fromArticulo && contentType !== 'legislacion') {
+    contentText = pickRicherContentText(contentTextBase, deep.contentText, htmlTextBase) ?? null;
+    if (inferredDocContentType === 'fallo' && falloDetailText) {
+      const fullBody = pickRicherContentText(deep.contentText, htmlTextBase, rawTexto, rawSumario);
+      if (
+        fullBody &&
+        normalizeComparableText(fullBody) !== normalizeComparableText(falloDetailText) &&
+        scoreContentRichness(fullBody) > scoreContentRichness(falloDetailText) + 120
+      ) {
+        contentText = `${falloDetailText}\n\nTEXTO COMPLETO\n${fullBody}`;
+      } else if (!contentText) {
+        contentText = falloDetailText;
+      }
+    }
+    if (inferredDocContentType === 'dictamen' && dictamenDetailText) {
+      const fullBody = pickRicherContentText(deep.contentText, htmlTextBase, rawTexto, rawSintesis, rawSumario);
+      if (
+        fullBody &&
+        normalizeComparableText(fullBody) !== normalizeComparableText(dictamenDetailText) &&
+        scoreContentRichness(fullBody) > scoreContentRichness(dictamenDetailText) + 120
+      ) {
+        contentText = `${dictamenDetailText}\n\nTEXTO COMPLETO\n${fullBody}`;
+      } else if (!contentText) {
+        contentText = dictamenDetailText;
+      }
+    }
+  }
   const headerText = pickBestHeaderText(
     deep.leadText ?? null,
     extractLeadTextBeforeFirstArticle(contentTextBase),

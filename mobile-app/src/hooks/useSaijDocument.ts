@@ -9,6 +9,8 @@ export const useSaijDocument = (guid?: string) => {
     enabled: !!guid,
     staleTime: 1000 * 60 * 20,
     gcTime: 1000 * 60 * 60,
+    retry: 1,
+    retryDelay: 500,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
