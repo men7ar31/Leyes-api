@@ -28,6 +28,17 @@ const getFavoriteOfflinePath = (guid?: string | null) => {
   return `${FAVORITES_OFFLINE_DIR}/${encodeURIComponent(normalizedGuid)}.json`;
 };
 
+const hasFavoriteOfflineDocument = async (guid?: string | null) => {
+  const fileUri = getFavoriteOfflinePath(guid);
+  if (!fileUri) return false;
+  try {
+    const info = await FileSystem.getInfoAsync(fileUri);
+    return Boolean(info.exists && Number(info.size || 0) > 32);
+  } catch {
+    return false;
+  }
+};
+
 const ensureFavoritesOfflineDir = async () => {
   if (!FAVORITES_OFFLINE_DIR) return false;
   try {
@@ -135,9 +146,11 @@ export const loadFavorites = async (): Promise<FavoriteItem[]> => {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as FavoriteItem[];
     if (!Array.isArray(parsed)) return [];
-    const valid = parsed
-      .filter((item) => normalizeGuid(item?.guid).length > 0)
-      .map((item) => {
+    const valid = await Promise.all(
+      parsed
+        .filter((item) => normalizeGuid(item?.guid).length > 0)
+        .map(async (item) => {
+          const hasOfflineFile = await hasFavoriteOfflineDocument(item.guid);
         const normalized: FavoriteItem = {
           guid: normalizeGuid(item.guid),
           title: String(item.title || "").trim(),
@@ -145,7 +158,7 @@ export const loadFavorites = async (): Promise<FavoriteItem[]> => {
           contentType: String(item.contentType || "").trim(),
           jurisdiction: (typeof (item as any).jurisdiction === "string" && (item as any).jurisdiction.trim()) || null,
           savedAt: String(item.savedAt || ""),
-          offlineReady: Boolean(item.offlineReady),
+          offlineReady: hasOfflineFile || Boolean(item.offlineReady),
           snapshot:
             item.snapshot && typeof item.snapshot === "object"
               ? {
@@ -214,7 +227,8 @@ export const loadFavorites = async (): Promise<FavoriteItem[]> => {
         }
 
         return normalized;
-      });
+      })
+    );
     return sortFavorites(valid);
   } catch {
     return [];
@@ -340,4 +354,34 @@ export const toggleFavoriteFromDocument = async (document: SaijDocument) => {
   }
   const { favorites } = await upsertFavoriteFromDocument(document);
   return { favorites, isFavorite: true };
+};
+
+export const hydrateFavoriteOfflineDocument = async (document: SaijDocument | null | undefined) => {
+  const key = normalizeGuid(document?.guid);
+  if (!document || !key) return false;
+  const existing = await getFavoriteByGuid(key);
+  if (!existing) return false;
+
+  const offlineReady = await persistFavoriteOfflineDocument(document);
+  const list = await loadFavorites();
+  const next = list.map((item) =>
+    normalizeGuid(item.guid) === key
+      ? {
+          ...item,
+          title: String(document.title || item.title || "").trim(),
+          subtitle: (typeof document.subtitle === "string" && document.subtitle.trim()) || item.subtitle || null,
+          contentType: String(document.contentType || item.contentType || "").trim(),
+          jurisdiction:
+            resolveJurisdictionLabel({
+              subtitle: document.subtitle,
+              title: document.title,
+              metadata: document.metadata,
+            }) || item.jurisdiction,
+          offlineReady,
+          snapshot: buildFavoriteSnapshot(document),
+        }
+      : item
+  );
+  await saveFavorites(next);
+  return offlineReady;
 };
