@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+dist
+.env
+*.log
+*.err.log
+*.dev.log
+npm-debug.log*
+mobile-app
+.idea

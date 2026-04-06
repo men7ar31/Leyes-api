@@ -4,6 +4,9 @@
   "private": true,
   "type": "commonjs",
   "main": "dist/dev-server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/dev-server.ts",
     "build": "tsc -p .",
