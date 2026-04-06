@@ -156,6 +156,7 @@ const getDisplayArticleHeaderAndBody = (section: CivilCodeSimpleSection) => {
 type RowProps = {
   section: CivilCodeSimpleSection;
   query: string;
+  hasActiveHighlights: boolean;
   isActiveMatch: boolean;
   isDarkMode: boolean;
   colors: ReturnType<typeof useAppTheme>["colors"];
@@ -164,18 +165,18 @@ type RowProps = {
 };
 
 const ReaderRow = memo(
-  ({ section, query, isActiveMatch, isDarkMode, colors, bodyFontSize, bodyLineHeight }: RowProps) => {
+  ({ section, query, hasActiveHighlights, isActiveMatch, isDarkMode, colors, bodyFontSize, bodyLineHeight }: RowProps) => {
     const articleDisplay = section.kind === "article" ? getDisplayArticleHeaderAndBody(section) : null;
-    const headingParts = getHighlightedParts(section.headingText, query);
     const bodyText = articleDisplay?.bodyText ?? section.bodyText;
-    const bodyParts = getHighlightedParts(bodyText, query);
     const articleLabel = section.articleNumber ? `Articulo ${section.articleNumber}` : section.headingText;
     const articleTitle = articleDisplay?.articleTitle ?? "";
     const articleTitleDisplay = articleTitle
       ? `.- ${/[.!?]$/.test(articleTitle) ? articleTitle : `${articleTitle}.`}`
       : "";
     const articleHeadingDisplay = articleTitleDisplay ? `${articleLabel} ${articleTitleDisplay}` : articleLabel;
-    const articleHeadingParts = getHighlightedParts(articleHeadingDisplay, query);
+    const articleHeadingParts = hasActiveHighlights ? getHighlightedParts(articleHeadingDisplay, query) : null;
+    const headingParts = hasActiveHighlights ? getHighlightedParts(section.headingText, query) : null;
+    const bodyParts = hasActiveHighlights ? getHighlightedParts(bodyText, query) : null;
 
     return (
       <View
@@ -200,56 +201,72 @@ const ReaderRow = memo(
             ]}
           >
             <Text style={[styles.articleHeading, { color: colors.text }]}>
-              {articleHeadingParts.map((part, index) => (
-                <Text
-                  key={`${section.key}-heading-${index}`}
-                  style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
-                >
-                  {part.text}
-                </Text>
-              ))}
+              {hasActiveHighlights && articleHeadingParts
+                ? articleHeadingParts.map((part, index) => (
+                    <Text
+                      key={`${section.key}-heading-${index}`}
+                      style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
+                    >
+                      {part.text}
+                    </Text>
+                  ))
+                : articleHeadingDisplay}
             </Text>
             {bodyText ? (
               <>
                 {"\n"}
-                {bodyParts.map((part, index) => (
-                  <Text
-                    key={`${section.key}-body-${index}`}
-                    style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
-                  >
-                    {part.text}
-                  </Text>
-                ))}
+                {hasActiveHighlights && bodyParts
+                  ? bodyParts.map((part, index) => (
+                      <Text
+                        key={`${section.key}-body-${index}`}
+                        style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
+                      >
+                        {part.text}
+                      </Text>
+                    ))
+                  : bodyText}
               </>
             ) : null}
           </Text>
         ) : (
-          <Text
-            selectable
-            style={[
-              styles.sectionBody,
-              {
-                color: colors.text,
-                fontSize: bodyFontSize,
-                lineHeight: bodyLineHeight,
-              },
-            ]}
-          >
-            <Text style={[styles.sectionLabel, { color: colors.primaryStrong }]}>{section.headingText}</Text>
+          <View style={styles.sectionTextStack}>
+            <Text selectable style={[styles.sectionLabel, { color: colors.primaryStrong }]}>
+              {hasActiveHighlights && headingParts
+                ? headingParts.map((part, index) => (
+                    <Text
+                      key={`${section.key}-section-heading-${index}`}
+                      style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
+                    >
+                      {part.text}
+                    </Text>
+                  ))
+                : section.headingText}
+            </Text>
             {bodyText ? (
-              <>
-                {"\n"}
-                {bodyParts.map((part, index) => (
-                  <Text
-                    key={`${section.key}-body-${index}`}
-                    style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
-                  >
-                    {part.text}
-                  </Text>
-                ))}
-              </>
+              <Text
+                selectable
+                style={[
+                  styles.sectionBody,
+                  {
+                    color: colors.text,
+                    fontSize: bodyFontSize,
+                    lineHeight: bodyLineHeight,
+                  },
+                ]}
+              >
+                {hasActiveHighlights && bodyParts
+                  ? bodyParts.map((part, index) => (
+                      <Text
+                        key={`${section.key}-body-${index}`}
+                        style={part.hit ? [styles.highlight, { backgroundColor: "#FFE08A" }] : undefined}
+                      >
+                        {part.text}
+                      </Text>
+                    ))
+                  : bodyText}
+              </Text>
             ) : null}
-          </Text>
+          </View>
         )}
       </View>
     );
@@ -279,6 +296,7 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
   const isScrubbingRef = useRef(false);
   const previewArticlePointerRef = useRef<number | null>(null);
   const deferredNormalizedQuery = normalizeCivilCodeSearchText(deferredQuery);
+  const hasActiveHighlights = deferredNormalizedQuery.length >= HIGHLIGHT_MIN_QUERY_LENGTH;
   const { fontSize: bodyFontSize, lineHeight: bodyLineHeight } = getReadingBodyMetrics(0.94);
 
   const readerModel = useMemo(
@@ -680,6 +698,7 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
       <ReaderRow
         section={item}
         query={deferredQuery}
+        hasActiveHighlights={hasActiveHighlights}
         isActiveMatch={matchSectionIndices[safeMatchPointer] === index}
         isDarkMode={isDarkMode}
         colors={colors}
@@ -1006,7 +1025,7 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
           initialNumToRender={8}
           maxToRenderPerBatch={8}
           windowSize={6}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.listContent}
           getItemLayout={(_, index) => ({
@@ -1344,6 +1363,9 @@ const styles = StyleSheet.create({
   sectionRow: {
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
+    gap: spacing.xs,
+  },
+  sectionTextStack: {
     gap: spacing.xs,
   },
   sectionLabel: {

@@ -2,7 +2,6 @@ import {
   Animated,
   Alert,
   Linking,
-  InteractionManager,
   Modal,
   PanResponder,
   Pressable,
@@ -14,13 +13,15 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
 import { useSaijDocument } from "../hooks/useSaijDocument";
 import { LoadingState } from "../components/LoadingState";
 import { ErrorState } from "../components/ErrorState";
@@ -31,7 +32,7 @@ import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
 import { isCivilAndCommercialCodeDocument } from "../utils/civilCodeReader";
-import { searchSaij } from "../services/saijApi";
+import { resolveProvincialCode, searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
 import { getReadingBodyMetrics, readingTypography } from "../theme/readingTypography";
@@ -42,6 +43,33 @@ const SCRUBBER_BUBBLE_HEIGHT = 48;
 const SCRUBBER_TAIL_SIZE = 14;
 const SCRUBBER_DRAG_TOUCH_RADIUS = 30;
 const SCRUBBER_INDEX_HYSTERESIS_PX = 26;
+
+const normalizeLoose = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
+  [normalizeLoose(province), normalizeLoose(entry.area), normalizeLoose(entry.reference), normalizeLoose(entry.numeroNorma || "")].join("|");
+
+const getManualLawSearchHint = (entry?: ProvincialCodeCatalogEntry | null, fallbackHint?: string | null) => {
+  const normalizedFallbackHint = String(fallbackHint || "").trim();
+  if (normalizedFallbackHint) return normalizedFallbackHint;
+  if (!entry) return null;
+
+  const fromNumeroNorma = String(entry.numeroNorma || "")
+    .replace(/[^\d]/g, "")
+    .trim();
+  if (fromNumeroNorma) return `Ley ${fromNumeroNorma}`;
+
+  const fromReference = String(entry.reference || "").match(/\d{2,7}/)?.[0] || "";
+  if (fromReference) return `Ley ${fromReference}`;
+
+  return null;
+};
 
 const parseNormNumberToken = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -1017,11 +1045,48 @@ const getHighlightedParts = (text: string, query: string) => {
 
 export const DetailScreen = () => {
   const { colors: appColors, isDarkMode } = useAppTheme();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ guid?: string }>();
+  const params = useLocalSearchParams<{
+    guid?: string;
+    province?: string;
+    codeKey?: string;
+    pendingTitle?: string;
+    pendingReference?: string;
+    pendingHint?: string;
+    resolvedGuid?: string;
+  }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
+  const pendingProvince = Array.isArray(params.province) ? params.province[0] : params.province;
+  const pendingCodeKey = Array.isArray(params.codeKey) ? params.codeKey[0] : params.codeKey;
+  const pendingTitleParam = Array.isArray(params.pendingTitle) ? params.pendingTitle[0] : params.pendingTitle;
+  const pendingReferenceParam = Array.isArray(params.pendingReference) ? params.pendingReference[0] : params.pendingReference;
+  const pendingHintParam = Array.isArray(params.pendingHint) ? params.pendingHint[0] : params.pendingHint;
+  const resolvedGuidParam = Array.isArray(params.resolvedGuid) ? params.resolvedGuid[0] : params.resolvedGuid;
+  const isPendingProvincialCode = guidParam === "__provincial_pending__";
+  const pendingEntry = useMemo(() => {
+    const province = String(pendingProvince || "").trim();
+    const codeKey = String(pendingCodeKey || "").trim();
+    if (!province || !codeKey) return null;
+    const catalog = PROVINCIAL_CODES_CATALOG[province] || [];
+    return catalog.find((item) => getCatalogEntryKey(province, item) === codeKey) || null;
+  }, [pendingCodeKey, pendingProvince]);
+  const pendingManualHint = getManualLawSearchHint(pendingEntry, pendingHintParam);
+  const pendingDisplayTitle = String(pendingTitleParam || pendingEntry?.area || "Codigo provincial").trim() || "Codigo provincial";
+  const pendingDisplayReference = String(pendingReferenceParam || pendingEntry?.reference || "").trim();
 
-  const { document, isLoading, isError, error, refetch } = useSaijDocument(guidParam);
+  const resolveProvincialQuery = useQuery({
+    queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
+    enabled: isPendingProvincialCode && Boolean(pendingProvince && pendingEntry) && !String(resolvedGuidParam || "").trim(),
+    staleTime: 1000 * 60 * 30,
+    retry: 0,
+    queryFn: ({ signal }) => resolveProvincialCode(String(pendingProvince), pendingEntry as ProvincialCodeCatalogEntry, { signal }),
+  });
+
+  const effectiveGuid = isPendingProvincialCode
+    ? String(resolvedGuidParam || resolveProvincialQuery.data?.guid || "").trim()
+    : String(guidParam || "").trim();
+  const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
@@ -1111,6 +1176,25 @@ export const DetailScreen = () => {
   }>({ key: "", payload: null });
   const wholeDocumentShareBusyRef = useRef(false);
 
+  const cancelDocumentOpenAndGoBack = useCallback(() => {
+    const normalizedEffectiveGuid = String(effectiveGuid || "").trim();
+    if (normalizedEffectiveGuid) {
+      queryClient.cancelQueries({ queryKey: ["saij-document", normalizedEffectiveGuid], exact: true }).catch(() => {
+        // best effort cancel on leave
+      });
+    }
+    if (isPendingProvincialCode) {
+      queryClient
+        .cancelQueries({
+          queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
+        })
+        .catch(() => {
+          // best effort cancel on leave
+        });
+    }
+    router.back();
+  }, [effectiveGuid, isPendingProvincialCode, pendingCodeKey, pendingProvince, queryClient]);
+
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
     setIsScrubbingArticles(value);
@@ -1185,23 +1269,23 @@ export const DetailScreen = () => {
         scrollRef.current.scrollTo({ y: 0, animated: false });
       }
     });
-  }, [guidParam]);
+  }, [effectiveGuid || guidParam, pendingCodeKey, pendingProvince]);
 
   useEffect(() => {
     let cancelled = false;
     const loadFavoriteState = async () => {
-      if (!guidParam) {
+      if (!effectiveGuid) {
         if (!cancelled) setIsFavorite(false);
         return;
       }
-      const value = await isFavoriteGuid(guidParam);
+      const value = await isFavoriteGuid(effectiveGuid);
       if (!cancelled) setIsFavorite(value);
     };
     loadFavoriteState();
     return () => {
       cancelled = true;
     };
-  }, [guidParam]);
+  }, [effectiveGuid]);
 
   useEffect(() => {
     if (!document?.guid) {
@@ -1213,39 +1297,157 @@ export const DetailScreen = () => {
       setIsTextSectionReady(true);
       return;
     }
-
-    let cancelled = false;
-    setIsTextSectionReady(false);
-    const task = InteractionManager.runAfterInteractions(() => {
-      if (!cancelled) setIsTextSectionReady(true);
-    });
-
-    return () => {
-      cancelled = true;
-      task.cancel?.();
-    };
+    setIsTextSectionReady(true);
   }, [document?.guid, activeSection]);
 
 
   if (!guidParam) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message="No se encontro el documento." />
       </SafeAreaView>
     );
   }
 
+  if (isPendingProvincialCode) {
+    const pendingNotFoundMessage = pendingManualHint
+      ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${pendingManualHint}.`
+      : "No pudimos abrir ese codigo ahora.";
+    const pendingErrorMessage =
+      (!effectiveGuid && resolveProvincialQuery.isError && (resolveProvincialQuery.error as Error | null)?.message) ||
+      (effectiveGuid && isError && (error as Error | null)?.message) ||
+      pendingNotFoundMessage;
+
+    if (!pendingProvince || !pendingEntry) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <ErrorState message="No se encontro el codigo provincial." onRetry={() => router.back()} />
+        </SafeAreaView>
+      );
+    }
+
+    if (!effectiveGuid || isLoading || (effectiveGuid && !document && !isError)) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <View
+            style={[
+              styles.fixedHeaderWrap,
+              {
+                backgroundColor: appColors.background,
+                borderBottomColor: appColors.border,
+              },
+            ]}
+          >
+            <View style={styles.headerMainRow}>
+              <View style={styles.headerTextWrap}>
+                <Text
+                  style={[
+                    styles.headerTitle,
+                    {
+                      color: appColors.text,
+                      fontSize: readingTypography.lawTitleSize,
+                      lineHeight: readingTypography.lawTitleLineHeight,
+                    },
+                  ]}
+                >
+                  {pendingDisplayTitle}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
+            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
+              <MetadataRow label="Provincia" value={pendingProvince} />
+              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
+            </View>
+
+            <View style={styles.sectionTabs}>
+              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
+                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
+              </View>
+            </View>
+
+            <LoadingState
+              message={!effectiveGuid ? "Abriendo codigo..." : "Cargando documento..."}
+              onCancel={cancelDocumentOpenAndGoBack}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+
+    if (isError || !document) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <View
+            style={[
+              styles.fixedHeaderWrap,
+              {
+                backgroundColor: appColors.background,
+                borderBottomColor: appColors.border,
+              },
+            ]}
+          >
+            <View style={styles.headerMainRow}>
+              <View style={styles.headerTextWrap}>
+                <Text
+                  style={[
+                    styles.headerTitle,
+                    {
+                      color: appColors.text,
+                      fontSize: readingTypography.lawTitleSize,
+                      lineHeight: readingTypography.lawTitleLineHeight,
+                    },
+                  ]}
+                >
+                  {pendingDisplayTitle}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
+            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
+              <MetadataRow label="Provincia" value={pendingProvince} />
+              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
+            </View>
+
+            <View style={styles.sectionTabs}>
+              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
+                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
+              </View>
+            </View>
+
+            <ErrorState
+              message={pendingErrorMessage}
+              onRetry={() => {
+                if (!effectiveGuid) {
+                  resolveProvincialQuery.refetch();
+                  return;
+                }
+                refetch();
+              }}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+  }
+
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-        <LoadingState message="Cargando documento..." />
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+        <LoadingState message="Cargando documento..." onCancel={cancelDocumentOpenAndGoBack} />
       </SafeAreaView>
     );
   }
 
   if (isError || !document) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
       </SafeAreaView>
     );
@@ -2193,7 +2395,7 @@ export const DetailScreen = () => {
     }
 
     await new Promise<void>((resolve) => {
-      InteractionManager.runAfterInteractions(() => resolve());
+      requestAnimationFrame(() => resolve());
     });
 
     const title = cleanText(document.title || citationLawName || "Norma");
@@ -2902,7 +3104,7 @@ export const DetailScreen = () => {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
       <View
         style={[
           styles.fixedHeaderWrap,
@@ -3270,7 +3472,11 @@ export const DetailScreen = () => {
           </View>
         ) : null}
 
-        {selectedSection === "texto" ? (isTextSectionReady ? contentRenderCacheRef.current.node : <LoadingState message="Preparando texto..." />) : null}
+        {selectedSection === "texto"
+          ? isTextSectionReady
+            ? contentRenderCacheRef.current.node
+            : <LoadingState message="Preparando texto..." onCancel={cancelDocumentOpenAndGoBack} />
+          : null}
 
         {selectedSection === "normasComplementarias" && normasComplementarias.length > 0 ? (
           <View style={styles.relatedSection}>

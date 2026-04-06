@@ -2,10 +2,13 @@ import { api } from "./api";
 import type { ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
 import type { SaijDocumentResponse, SaijSearchHit, SaijSearchRequest, SaijSearchResponse } from "../types/saij";
 
-export const searchSaij = (payload: SaijSearchRequest) => api.post<SaijSearchResponse>("/api/saij/search", payload);
+type SaijRequestOptions = { signal?: AbortSignal; timeoutMs?: number };
 
-export const getSaijDocument = (guid: string) =>
-  api.get<SaijDocumentResponse>(`/api/saij/document/${encodeURIComponent(guid)}`);
+export const searchSaij = (payload: SaijSearchRequest, options?: SaijRequestOptions) =>
+  api.post<SaijSearchResponse>("/api/saij/search", payload, options);
+
+export const getSaijDocument = (guid: string, options?: SaijRequestOptions) =>
+  api.get<SaijDocumentResponse>(`/api/saij/document/${encodeURIComponent(guid)}`, options);
 
 const SAIJ_BASE_URL = "https://www.saij.gob.ar";
 const DIRECT_PROVINCIAL_FACET =
@@ -283,7 +286,8 @@ const candidateMatchesEntryArea = (hit: SaijSearchHit, entry: ProvincialCodeCata
 const searchProvincialCandidates = async (
   province: string,
   entry: ProvincialCodeCatalogEntry,
-  phase: ProvincialCandidatePhase
+  phase: ProvincialCandidatePhase,
+  options?: SaijRequestOptions
 ): Promise<SaijSearchHit[]> => {
   const provinceQueryLabel = getProvinceQueryLabel(province);
   const provinceTermDirect = normalizeProvinceForDirectQuery(province);
@@ -300,7 +304,7 @@ const searchProvincialCandidates = async (
         filters,
         offset: 0,
         pageSize,
-      })
+      }, options)
         .then((response) => (Array.isArray(response.hits) ? response.hits : []))
         .catch(() => [])
     );
@@ -395,16 +399,17 @@ const searchProvincialCandidates = async (
 
 export const resolveProvincialCode = async (
   province: string,
-  entry: ProvincialCodeCatalogEntry
+  entry: ProvincialCodeCatalogEntry,
+  options?: SaijRequestOptions
 ): Promise<SaijSearchHit | null> => {
   const provinceTokens = buildProvinceTokens(province);
-  const narrowCandidates = await searchProvincialCandidates(province, entry, "narrow");
+  const narrowCandidates = await searchProvincialCandidates(province, entry, "narrow", options);
   if (narrowCandidates.length > 0) {
     const bestNarrow = rankProvincialCandidates(narrowCandidates, provinceTokens, entry)[0];
     if (bestNarrow && bestNarrow.score >= EARLY_ACCEPT_PROVINCIAL_SCORE) return bestNarrow.hit;
   }
 
-  const broadCandidates = await searchProvincialCandidates(province, entry, "broad");
+  const broadCandidates = await searchProvincialCandidates(province, entry, "broad", options);
   const candidates = dedupeHitsByGuid([...narrowCandidates, ...broadCandidates]);
   if (!candidates.length) return null;
 
