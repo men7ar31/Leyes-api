@@ -280,7 +280,7 @@ const normalizeCitationOptionalValue = (raw?: string | null) => {
     "no informada",
     "no informado",
     "sin informacion",
-    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n",
+    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n",
     "desconocida",
     "desconocido",
     "s/d",
@@ -337,8 +337,8 @@ const simplifySubtype = (value?: string | null) => {
 const getSubtypeFromSubtitle = (subtitle?: string | null) => {
   const raw = String(subtitle || "").trim();
   if (!raw) return "";
-  if (raw.includes("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
-    return raw.split("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
+  if (raw.includes("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
+    return raw.split("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
   }
   if (raw.includes(".")) {
     return raw.split(".")[0]?.trim() || "";
@@ -472,7 +472,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
   const parseNormIdentity = (value?: string | null) => {
     if (!value || typeof value !== "string") return "";
     const compact = value
-      .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+      .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
       .replace(/[./-]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -484,7 +484,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     if (dnu) return `dnu:${Number(dnu[1])}`;
     const decreto = compact.match(/\bdecreto\b[^\d]*(\d{1,7})\b/i);
     if (decreto) return `decreto:${Number(decreto[1])}`;
-    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
+    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
     if (resol) return `resolucion:${Number(resol[1])}`;
     const rawCode = compact.match(/^(ley|dnu|dec|decreto|res|resolucion)\s+c?\s*0*(\d{1,7})\b/i);
     if (rawCode) return `${rawCode[1]}:${Number(rawCode[2])}`;
@@ -495,7 +495,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     const title = String(item.title || "").trim();
     const subtitle = String(item.subtitle || "").trim();
     const guid = String(item.guid || "").trim();
-    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
+    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
     let value = 0;
     if (guid) value += 100;
     if (!generic) value += 40;
@@ -540,8 +540,8 @@ const prettifyNormLabel = (value?: string | null) => {
   const decreto = clean.match(/^DEC(?:RETO)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
   if (decreto) return `Decreto ${Number(decreto[1])}${decreto[2] ? `/${decreto[2]}` : ""}`;
 
-  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œN)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
-  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
+  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“N)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
+  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
 
   return clean;
 };
@@ -566,7 +566,7 @@ const normalizeHeadingToken = (value?: string | null) =>
     .toLowerCase();
 
 const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo|seccion|libro|parte)\b/i.test(normalizeHeadingToken(value));
-const isParagraphHeadingLine = (value?: string | null) => /^par(a|á)grafo\b/i.test(normalizeHeadingToken(value));
+const isParagraphHeadingLine = (value?: string | null) => /^par(a|Ã¡)grafo\b/i.test(normalizeHeadingToken(value));
 const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
 const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
 
@@ -576,11 +576,11 @@ const parseArticleTitleContext = (title?: string | null) => {
   }
 
   const canonicalTitle = cleanText(title)
-    .replace(/\u00C2?\u00B7/g, "Â·")
-    .replace(/\u2022/g, "Â·");
+    .replace(/\u00C2?\u00B7/g, "Ã‚Â·")
+    .replace(/\u2022/g, "Ã‚Â·");
 
   const parts = canonicalTitle
-    .split(/\s*(?:Â·|\|)\s*/g)
+    .split(/\s*(?:Ã‚Â·|\|)\s*/g)
     .map((part) => cleanText(part))
     .filter((part) => part.length > 0);
 
@@ -599,7 +599,7 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
   if (!clean) return null;
 
   const collapsed = clean.replace(
-    /\b(?:[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\s+){2,}[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\b/g,
+    /\b(?:[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\s+){2,}[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\b/g,
     (chunk) => chunk.replace(/\s+/g, "")
   );
 
@@ -788,8 +788,8 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
 
   const compact = raw
     .replace(/\u00A0/g, " ")
-    .replace(/[��]/g, "")
-    .replace(/[.:;,\-��]+$/g, "")
+    .replace(/[º°]/g, "")
+    .replace(/[.:;,\-–—]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -804,7 +804,7 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
     return suffix ? `${base} ${suffix}` : String(base);
   }
 
-  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-z�������]+)$/i);
+  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-záéíóúüñ]+)$/i);
   if (withLiteralSuffix) {
     return `${Number(withLiteralSuffix[1])} ${withLiteralSuffix[2].toLowerCase()}`;
   }
@@ -834,7 +834,7 @@ const normalizeArticleSelectorToken = (value?: string | null) => {
   const normalizedSafe = withAsciiDigits
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+    .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
     .replace(/[\[\]{}()]/g, " ")
     .replace(/[^\w\s\.\,\;\:\-]/g, " ")
     .replace(/[_]/g, " ")
@@ -1284,8 +1284,9 @@ export const DetailScreen = () => {
   const comfortableBodyLineHeight = isComfortableDetail ? Math.max(bodyLineHeight + 3, Math.round(comfortableBodyFontSize * 1.66)) : bodyLineHeight;
   const comfortableTitleFontSize = isComfortableDetail ? readingTypography.lawTitleSize : readingTypography.lawTitleSize;
   const comfortableTitleLineHeight = isComfortableDetail ? readingTypography.lawTitleLineHeight + 2 : readingTypography.lawTitleLineHeight;
-  const stickyViewportOffset = 26;
-  const jumpTopOffset = spacing.md;
+  const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
+  const stickyViewportOffset = Math.max(26, headerAwareOffset + spacing.xs);
+  const jumpTopOffset = Math.max(spacing.md, headerAwareOffset + spacing.sm);
   const subtitleText = getSubtitleText(document.subtitle);
   const headerTitleText = (() => {
     const clean = cleanText(document.title || "").replace(/\r/g, "\n");
@@ -1952,7 +1953,7 @@ export const DetailScreen = () => {
     }
 
     const cleanedTitle = fallo.title
-      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â±\s]/g, " ")
+      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const titleTokens = cleanedTitle.split(" ").filter((token) => token.length > 2);
@@ -2162,7 +2163,7 @@ export const DetailScreen = () => {
 
     const safeFileName = sanitizeShareFileToken(fileBaseName) || sanitizeShareFileToken(title) || "norma";
     const fileUri = `${exportDir}${safeFileName}-${Date.now()}.txt`;
-    const fileContent = `�${normalizedContent}`;
+    const fileContent = `ÿ${normalizedContent}`;
 
     await FileSystem.writeAsStringAsync(fileUri, fileContent, { encoding: FileSystem.EncodingType.UTF8 });
     const fileInfo = await FileSystem.getInfoAsync(fileUri);
@@ -3474,7 +3475,15 @@ export const DetailScreen = () => {
         animationType="fade"
         onRequestClose={() => setIsStickyIndexOpen(false)}
       >
-        <Pressable style={styles.stickyIndexBackdrop} onPress={() => setIsStickyIndexOpen(false)}>
+        <Pressable
+          style={[
+            styles.stickyIndexBackdrop,
+            {
+              paddingTop: fixedHeaderHeight > 0 ? fixedHeaderHeight + spacing.md : spacing.xl,
+            },
+          ]}
+          onPress={() => setIsStickyIndexOpen(false)}
+        >
           <Pressable
             style={[styles.stickyIndexCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}
             onPress={() => {}}
@@ -4162,7 +4171,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
     paddingHorizontal: spacing.md,
-    justifyContent: "center",
+    justifyContent: "flex-start",
   },
   stickyIndexCard: {
     maxHeight: "72%",
