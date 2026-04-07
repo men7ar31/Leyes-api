@@ -17,7 +17,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 27;
+const DOCUMENT_EXTRACTOR_VERSION = 28;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
@@ -81,6 +81,203 @@ const parseIsoDate = (value?: string | null): number => {
   if (!value || typeof value !== 'string') return Number.NEGATIVE_INFINITY;
   const ts = Date.parse(value);
   return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+};
+
+const normalizeComparableText = (value?: string | null) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const splitComparableTokens = (value?: string | null) =>
+  normalizeComparableText(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1);
+
+const shouldUseStrictFalloTitleFilter = (input: SaijSearchRequest) =>
+  Boolean(
+    input.filters?.textoEnNorma &&
+      (input.contentType === 'fallo' ||
+        (input.contentType === 'jurisprudencia' && String(input.filters?.tipoNorma || '').trim().toLowerCase() === 'fallo'))
+  );
+
+const shouldUseStrictSumarioThemeFilter = (input: SaijSearchRequest) =>
+  Boolean(
+    input.filters?.textoEnNorma &&
+      (input.contentType === 'sumario' ||
+        (input.contentType === 'jurisprudencia' && String(input.filters?.tipoNorma || '').trim().toLowerCase() === 'sumario'))
+  );
+
+const shouldUseStrictDoctrinaThemeFilter = (input: SaijSearchRequest) =>
+  Boolean(input.filters?.textoEnNorma && input.contentType === 'doctrina');
+
+const applyStrictFalloTitleFilter = <T extends { title?: string | null; summary?: string | null }>(
+  hits: T[],
+  rawSearch?: string | null
+) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return hits;
+
+  const filtered = hits.filter((hit) => {
+    const haystack = normalizeComparableText(
+      [hit.title, hit.summary].filter(Boolean).join(' ')
+    );
+    return tokens.every((token) => haystack.includes(token));
+  });
+
+  return filtered;
+};
+
+const applyStrictSumarioThemeFilter = <T extends { title?: string | null; summary?: string | null }>(
+  hits: T[],
+  rawSearch?: string | null
+) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return hits;
+
+  const filtered = hits.filter((hit) => {
+    const haystack = normalizeComparableText([hit.title, hit.summary].filter(Boolean).join(' '));
+    return tokens.every((token) => haystack.includes(token));
+  });
+
+  return filtered;
+};
+
+const applyStrictDoctrinaThemeFilter = <T extends { title?: string | null; summary?: string | null }>(
+  hits: T[],
+  rawSearch?: string | null
+) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return hits;
+
+  const filtered = hits.filter((hit) => {
+    const haystack = normalizeComparableText([hit.summary, hit.title].filter(Boolean).join(' '));
+    return tokens.every((token) => haystack.includes(token));
+  });
+
+  return filtered;
+};
+
+const deriveJurisprudenceJurisdictionTarget = (input: SaijSearchRequest): string | null => {
+  const direct = String(input.filters?.facetJurisdiccion || '').trim();
+  if (direct) {
+    const normalized = normalizeComparableText(direct.split('/').pop() || direct);
+    if (normalized) return normalized;
+  }
+
+  const jurisdiccion = input.filters?.jurisdiccion;
+  if (!jurisdiccion || jurisdiccion.kind === 'todas') return null;
+  if (jurisdiccion.kind === 'provincial') {
+    const province = normalizeComparableText(jurisdiccion.provincia || '');
+    return province || 'provincial';
+  }
+  return normalizeComparableText(jurisdiccion.kind);
+};
+
+const applyJurisprudenceJurisdictionFilter = <T extends { jurisdiccion?: string | null; subtitle?: string | null; summary?: string | null }>(
+  hits: T[],
+  input: SaijSearchRequest
+) => {
+  const target = deriveJurisprudenceJurisdictionTarget(input);
+  if (!target) return hits;
+
+  const filtered = hits.filter((hit) => {
+    const jurisdictionText = normalizeComparableText(hit.jurisdiccion);
+    const extraText = normalizeComparableText([hit.subtitle, hit.summary].filter(Boolean).join(' '));
+    const haystack = `${jurisdictionText} ${extraText}`.trim();
+    if (!haystack) return false;
+
+    if (target === 'nacional') return haystack.includes('nacional') || haystack.includes('nacion');
+    if (target === 'federal') return haystack.includes('federal');
+    if (target === 'internacional') return haystack.includes('internacional');
+    if (target === 'provincial' || target === 'local') {
+      return haystack.includes('provincial') || haystack.includes('local');
+    }
+
+    return haystack.includes(target);
+  });
+
+  return filtered;
+};
+
+const buildRawFalloCaratula = (rawHit: any): string => {
+  const abstractObj = safeParseJson(typeof rawHit?.documentAbstract === 'string' ? rawHit.documentAbstract : undefined);
+  const content = abstractObj?.document?.content ?? {};
+  const rawCaratula = String(content?.caratula || '').trim();
+  if (rawCaratula) return rawCaratula;
+
+  const actor = String(content?.actor || '').trim();
+  const demandado = String(content?.demandado || '').trim();
+  const sobre = String(content?.sobre || '').trim();
+
+  let base = actor && demandado ? `${actor} c/ ${demandado}` : actor || demandado || '';
+  if (sobre) {
+    base = base ? `${base} s/ ${sobre}` : sobre;
+  }
+  return base.trim();
+};
+
+const applyStrictRawFalloTitleFilter = (rawHits: any[], rawSearch?: string | null) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return rawHits;
+
+  return rawHits.filter((rawHit) => {
+    const rawTitle = normalizeComparableText(buildRawFalloCaratula(rawHit));
+    if (!rawTitle) return false;
+    return tokens.every((token) => rawTitle.includes(token));
+  });
+};
+
+const buildRawSumarioThemeText = (rawHit: any): string => {
+  const abstractObj = safeParseJson(typeof rawHit?.documentAbstract === 'string' ? rawHit.documentAbstract : undefined);
+  const content = abstractObj?.document?.content ?? {};
+  const rawTema = String(content?.titulo || '').trim();
+  if (rawTema) return rawTema;
+
+  const rawSumario = String(content?.sumario || '').trim();
+  if (rawSumario) return rawSumario;
+
+  const rawTexto = String(content?.texto || '').trim();
+  return rawTexto;
+};
+
+const applyStrictRawSumarioThemeFilter = (rawHits: any[], rawSearch?: string | null) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return rawHits;
+
+  return rawHits.filter((rawHit) => {
+    const rawThemeText = normalizeComparableText(buildRawSumarioThemeText(rawHit));
+    if (!rawThemeText) return false;
+    return tokens.every((token) => rawThemeText.includes(token));
+  });
+};
+
+const buildRawDoctrinaThemeText = (rawHit: any): string => {
+  const abstractObj = safeParseJson(typeof rawHit?.documentAbstract === 'string' ? rawHit.documentAbstract : undefined);
+  const content = abstractObj?.document?.content ?? {};
+  const rawTema = String(content?.sumario || '').trim();
+  if (rawTema) return rawTema;
+
+  const rawTitulo = String(content?.['titulo-doctrina'] || content?.titulo || '').trim();
+  if (rawTitulo) return rawTitulo;
+
+  const rawTexto = String(content?.texto || '').trim();
+  return rawTexto;
+};
+
+const applyStrictRawDoctrinaThemeFilter = (rawHits: any[], rawSearch?: string | null) => {
+  const tokens = splitComparableTokens(rawSearch);
+  if (!tokens.length) return rawHits;
+
+  return rawHits.filter((rawHit) => {
+    const rawThemeText = normalizeComparableText(buildRawDoctrinaThemeText(rawHit));
+    if (!rawThemeText) return false;
+    return tokens.every((token) => rawThemeText.includes(token));
+  });
 };
 
 const isCurrentExtractorVersion = (doc: any) =>
@@ -964,18 +1161,47 @@ export const SaijService = {
       raw.results ??
       [];
 
-    const mappedHits = rawHits.map((item: any) => mapSaijSearchHit(item, input.contentType));
+    const usedStrictFalloTitleFilter = shouldUseStrictFalloTitleFilter(input);
+    const usedStrictSumarioThemeFilter = shouldUseStrictSumarioThemeFilter(input);
+    const usedStrictDoctrinaThemeFilter = shouldUseStrictDoctrinaThemeFilter(input);
+    let strictRawHits = rawHits;
+    if (usedStrictFalloTitleFilter) {
+      strictRawHits = applyStrictRawFalloTitleFilter(strictRawHits, input.filters?.textoEnNorma);
+    }
+    if (usedStrictSumarioThemeFilter) {
+      strictRawHits = applyStrictRawSumarioThemeFilter(strictRawHits, input.filters?.textoEnNorma);
+    }
+    if (usedStrictDoctrinaThemeFilter) {
+      strictRawHits = applyStrictRawDoctrinaThemeFilter(strictRawHits, input.filters?.textoEnNorma);
+    }
+    const mappedHits = strictRawHits.map((item: any) => mapSaijSearchHit(item, input.contentType));
+    let strictMappedHits = mappedHits;
+    if (usedStrictFalloTitleFilter) {
+      strictMappedHits = applyStrictFalloTitleFilter(strictMappedHits, input.filters?.textoEnNorma);
+    }
+    if (usedStrictSumarioThemeFilter) {
+      strictMappedHits = applyStrictSumarioThemeFilter(strictMappedHits, input.filters?.textoEnNorma);
+    }
+    if (usedStrictDoctrinaThemeFilter) {
+      strictMappedHits = applyStrictDoctrinaThemeFilter(strictMappedHits, input.filters?.textoEnNorma);
+    }
+    const jurisprudenceScopedHits =
+      input.contentType === 'jurisprudencia' || input.contentType === 'fallo' || input.contentType === 'sumario'
+        ? applyJurisprudenceJurisdictionFilter(strictMappedHits, input)
+        : strictMappedHits;
     const hits =
       input.contentType === 'sumario' || input.contentType === 'doctrina' || input.contentType === 'dictamen'
-        ? [...mappedHits].sort((a, b) => parseIsoDate(b.fecha ?? null) - parseIsoDate(a.fecha ?? null))
-        : mappedHits;
+        ? [...jurisprudenceScopedHits].sort((a, b) => parseIsoDate(b.fecha ?? null) - parseIsoDate(a.fecha ?? null))
+        : jurisprudenceScopedHits;
     const response: SaijSearchResponse = {
       ok: true,
       query,
       total:
-        (raw as any)?.searchResults?.totalSearchResults ??
-        raw.total ??
-        hits.length,
+        usedStrictFalloTitleFilter
+          ? hits.length
+          : ((raw as any)?.searchResults?.totalSearchResults ??
+            raw.total ??
+            hits.length),
       hits,
       facets:
         (raw as any)?.searchResults?.categoriesResultList ??

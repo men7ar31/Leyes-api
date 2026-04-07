@@ -180,3 +180,11 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+if (!(findProperty('newArchEnabled') ?: 'false').toBoolean()) {
+    afterEvaluate {
+        tasks.matching { it.name.startsWith("externalNativeBuild") }.configureEach {
+            enabled = false
+        }
+    }
+}

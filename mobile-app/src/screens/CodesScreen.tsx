@@ -1,11 +1,12 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { RefreshCw } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { radius, spacing, typography } from "../constants/theme";
 import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
+import { getStaticProvincialCodeHit } from "../constants/provincialCodeGuidMap";
 import { useSaijSearch } from "../hooks/useSaijSearch";
 import { getSaijDocument, resolveProvincialCode } from "../services/saijApi";
 import { useAppTheme } from "../theme/appTheme";
@@ -105,8 +106,9 @@ export const CodesScreen = () => {
   const [scope, setScope] = useState<CodesScope>("nacional");
   const [selectedProvince, setSelectedProvince] = useState("");
   const [isProvinceListOpen, setIsProvinceListOpen] = useState(true);
+  const [pendingCodeKey, setPendingCodeKey] = useState<string | null>(null);
+  const [provincialGuidMap, setProvincialGuidMap] = useState<Record<string, string>>({});
   const openingGuidRef = useRef<string | null>(null);
-  const openingEntryRef = useRef<string | null>(null);
 
   const {
     items: nationalRawItems,
@@ -160,6 +162,8 @@ export const CodesScreen = () => {
     (guid: string) => {
       const normalizedGuid = String(guid || "").trim();
       if (!normalizedGuid) return;
+      const queryState = queryClient.getQueryState(["saij-document", normalizedGuid]);
+      if (queryState?.data || queryState?.fetchStatus === "fetching") return;
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
@@ -174,45 +178,22 @@ export const CodesScreen = () => {
     [queryClient]
   );
 
-  const prefetchProvincialCodeResolution = useCallback(
-    (province: string, entry: ProvincialCodeCatalogEntry) => {
-      if (!province) return;
-      const resolveKey = resolveQueryKeyForEntry(province, entry);
-      const cached = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
-      if (cached?.guid) {
-        prefetchCode(cached.guid);
-        return;
-      }
-
-      queryClient
-        .prefetchQuery({
-          queryKey: resolveKey,
-          queryFn: () => resolveProvincialCode(province, entry),
-          staleTime: 1000 * 60 * 30,
-        })
-        .then(() => {
-          const resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey);
-          if (resolved?.guid) {
-            prefetchCode(resolved.guid);
-          }
-        })
-        .catch(() => {
-          // best effort warm-up
-        });
-    },
-    [prefetchCode, queryClient, resolveQueryKeyForEntry]
-  );
-
   const openCode = useCallback((guid: string) => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
+    setPendingCodeKey(normalizedGuid);
     openingGuidRef.current = normalizedGuid;
-    prefetchCode(normalizedGuid);
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: normalizedGuid, fromCodes: "1" },
     });
+    setTimeout(() => {
+      prefetchCode(normalizedGuid);
+    }, 0);
+    setTimeout(() => {
+      setPendingCodeKey((current) => (current === normalizedGuid ? null : current));
+    }, 220);
     setTimeout(() => {
       if (openingGuidRef.current === normalizedGuid) {
         openingGuidRef.current = null;
@@ -220,48 +201,30 @@ export const CodesScreen = () => {
     }, 60);
   }, [prefetchCode]);
 
-  const resolveAndOpenProvincialCode = useCallback(
-    async (entry: ProvincialCodeCatalogEntry) => {
-      if (!selectedProvince) return;
-      const entryKey = getCatalogEntryKey(selectedProvince, entry);
-      if (openingEntryRef.current === entryKey) return;
-      openingEntryRef.current = entryKey;
+  const invalidatePendingProvincialOpen = useCallback(() => {
+    openingGuidRef.current = null;
+    setPendingCodeKey(null);
+  }, []);
 
-      try {
-        const resolveKey = resolveQueryKeyForEntry(selectedProvince, entry);
-        let resolved = queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveKey) || null;
-        if (!resolved?.guid) {
-          resolved = await resolveProvincialCode(selectedProvince, entry);
-          if (resolved?.guid) {
-            queryClient.setQueryData(resolveKey, resolved);
-          }
-        }
-        const guid = String(resolved?.guid || "").trim();
-        if (!guid) {
-          const manualHint = getManualLawSearchHint(entry);
-          const message = manualHint
-            ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
-            : "No pudimos abrir ese codigo ahora.";
-          Alert.alert("Codigo no encontrado", message);
-          return;
-        }
-        openCode(guid);
-      } catch {
-        const manualHint = getManualLawSearchHint(entry);
-        const message = manualHint
-          ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${manualHint}.`
-          : "No pudimos abrir ese codigo ahora.";
-        Alert.alert("Codigo no encontrado", message);
-      } finally {
-        setTimeout(() => {
-          if (openingEntryRef.current === entryKey) {
-            openingEntryRef.current = null;
-          }
-        }, 60);
-      }
-    },
-    [openCode, queryClient, resolveQueryKeyForEntry, selectedProvince]
-  );
+  useEffect(() => {
+    if (!canShowProvincialCodes || !selectedProvince || provincialCatalog.length < 1) return;
+    setProvincialGuidMap((current) => {
+      let changed = false;
+      const next = { ...current };
+      provincialCatalog.forEach((entry) => {
+        const rowKey = getCatalogEntryKey(selectedProvince, entry);
+        const cachedResolved =
+          getStaticProvincialCodeHit(selectedProvince, entry) ||
+          queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveQueryKeyForEntry(selectedProvince, entry)) ||
+          null;
+        const guid = String(cachedResolved?.guid || "").trim();
+        if (!guid || next[rowKey] === guid) return;
+        next[rowKey] = guid;
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [canShowProvincialCodes, provincialCatalog, queryClient, resolveQueryKeyForEntry, selectedProvince]);
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}> 
@@ -275,6 +238,8 @@ export const CodesScreen = () => {
           ]}
           value={scope}
           onChange={(value) => {
+            invalidatePendingProvincialOpen();
+            setProvincialGuidMap({});
             setScope(value);
             if (value === "provincial") setIsProvinceListOpen(true);
           }}
@@ -315,7 +280,8 @@ export const CodesScreen = () => {
                     key={code.guid}
                     title={code.title}
                     subtitle={code.subtitle || undefined}
-                    onPressIn={() => prefetchCode(code.guid)}
+                    active={pendingCodeKey === code.guid}
+                    onPressIn={() => setPendingCodeKey(code.guid)}
                     onPress={() => openCode(code.guid)}
                   />
                 ))
@@ -326,7 +292,10 @@ export const CodesScreen = () => {
             <View style={styles.headerRow}>
               <Text style={[styles.blockTitle, { color: colors.text }]}>Provincia: {selectedProvince || "Seleccionar"}</Text>
               <Pressable
-                onPress={() => setIsProvinceListOpen((prev) => !prev)}
+                onPress={() => {
+                  invalidatePendingProvincialOpen();
+                  setIsProvinceListOpen((prev) => !prev);
+                }}
                 unstable_pressDelay={0}
                 android_ripple={{ color: colors.primarySoft, borderless: true }}
                 hitSlop={8}
@@ -344,6 +313,8 @@ export const CodesScreen = () => {
                       abbr={province.abbr}
                       active={selectedProvince === province.name}
                       onPress={() => {
+                        invalidatePendingProvincialOpen();
+                        setProvincialGuidMap({});
                         setSelectedProvince(province.name);
                         setIsProvinceListOpen(false);
                       }}
@@ -360,13 +331,41 @@ export const CodesScreen = () => {
                 ) : (
                   provincialCatalog.map((entry) => {
                     const rowKey = getCatalogEntryKey(selectedProvince, entry);
+                    const resolvedGuid =
+                      provincialGuidMap[rowKey] ||
+                      String(getStaticProvincialCodeHit(selectedProvince, entry)?.guid || "").trim();
+                    const manualHint = getManualLawSearchHint(entry);
                     return (
                       <CodeCard
                         key={rowKey}
                         title={entry.area}
                         subtitle={entry.reference}
-                        onPressIn={() => prefetchProvincialCodeResolution(selectedProvince, entry)}
-                        onPress={() => resolveAndOpenProvincialCode(entry)}
+                        active={pendingCodeKey === rowKey}
+                        onPressIn={() => setPendingCodeKey(rowKey)}
+                        onPress={() => {
+                          setPendingCodeKey(rowKey);
+                          router.push({
+                            pathname: "/detail/[guid]",
+                            params: {
+                              guid: "__provincial_pending__",
+                              province: selectedProvince,
+                              codeKey: rowKey,
+                              pendingTitle: entry.area,
+                              pendingReference: entry.reference,
+                              pendingHint: manualHint || "",
+                              resolvedGuid,
+                              fromCodes: "1",
+                            },
+                          });
+                          if (resolvedGuid) {
+                            setTimeout(() => {
+                              prefetchCode(resolvedGuid);
+                            }, 0);
+                          }
+                          setTimeout(() => {
+                            setPendingCodeKey((current) => (current === rowKey ? null : current));
+                          }, 220);
+                        }}
                       />
                     );
                   })

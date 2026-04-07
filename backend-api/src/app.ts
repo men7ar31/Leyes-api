@@ -15,6 +15,15 @@ export const createApp = () => {
   app.use(json({ limit: '1mb' }));
   app.use(urlencoded({ extended: true }));
 
+  app.get('/', (_req, res) => {
+    res.json({
+      ok: true,
+      service: 'leyes-api',
+      status: 'running',
+      routes: ['/api/health', '/api/saij/search', '/api/saij/document/:guid'],
+    });
+  });
+
   app.use('/api/health', healthRouter);
   app.use('/api/saij', saijRouter);
 

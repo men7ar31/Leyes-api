@@ -9,9 +9,10 @@ type Props = {
   subtitle?: string;
   onPress: () => void;
   onPressIn?: () => void;
+  active?: boolean;
 };
 
-const CodeCardComponent = ({ title, subtitle, onPress, onPressIn }: Props) => {
+const CodeCardComponent = ({ title, subtitle, onPress, onPressIn, active = false }: Props) => {
   const { colors } = useAppTheme();
   return (
     <Pressable
@@ -21,25 +22,28 @@ const CodeCardComponent = ({ title, subtitle, onPress, onPressIn }: Props) => {
       android_ripple={{ color: colors.primarySoft }}
       style={({ pressed }) => [
         styles.card,
-        { backgroundColor: colors.card, borderColor: colors.border },
+        {
+          backgroundColor: active ? colors.primarySoft : colors.card,
+          borderColor: active ? colors.primaryStrong : colors.border,
+        },
         shadows.soft,
         pressed ? styles.cardPressed : null,
       ]}
     >
       <View style={styles.leftIcon}>
-        <BookText size={16} color={colors.primaryStrong} strokeWidth={2} />
+        <BookText size={16} color={active ? colors.primaryStrong : colors.primaryStrong} strokeWidth={2} />
       </View>
       <View style={styles.body}>
-        <Text style={[styles.title, { color: colors.text }]} numberOfLines={2}>
+        <Text style={[styles.title, { color: active ? colors.primaryStrong : colors.text }]} numberOfLines={2}>
           {title}
         </Text>
         {subtitle ? (
-          <Text style={[styles.subtitle, { color: colors.muted }]} numberOfLines={1}>
+          <Text style={[styles.subtitle, { color: active ? colors.primaryStrong : colors.muted }]} numberOfLines={1}>
             {subtitle}
           </Text>
         ) : null}
       </View>
-      <ChevronRight size={18} color={colors.iconDefault} strokeWidth={2} />
+      <ChevronRight size={18} color={active ? colors.primaryStrong : colors.iconDefault} strokeWidth={2} />
     </Pressable>
   );
 };

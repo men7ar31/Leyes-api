@@ -1,8 +1,10 @@
-﻿type ApiError = Error & { status?: number; data?: unknown };
+type ApiError = Error & { status?: number; data?: unknown };
+type ApiRequestOptions = RequestInit & { timeoutMs?: number };
 
 const DEFAULT_HEADERS = {
   "Content-Type": "application/json",
 };
+const REQUEST_TIMEOUT_MS = 20000;
 
 const getBaseUrl = () => {
   const base = process.env.EXPO_PUBLIC_API_URL;
@@ -27,15 +29,37 @@ const parseJson = async (res: Response) => {
   }
 };
 
-const request = async <T>(path: string, options: RequestInit): Promise<T> => {
+const request = async <T>(path: string, options: ApiRequestOptions): Promise<T> => {
   const url = buildUrl(path);
-  const res = await fetch(url, options);
-  const data = await parseJson(res);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const externalSignal = options.signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  let res: Response;
+  let data: any;
+  try {
+    res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    data = await parseJson(res);
+  } catch (error: any) {
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      const err = new Error("La solicitud demoro demasiado. Intenta nuevamente.") as ApiError;
+      err.status = 408;
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
-    const message =
-      (data && (data.message || data.error)) ||
-      `Request failed with status ${res.status}`;
+    const message = (data && (data.message || data.error)) || `Request failed with status ${res.status}`;
     const err = new Error(message) as ApiError;
     err.status = res.status;
     err.data = data;
@@ -46,17 +70,19 @@ const request = async <T>(path: string, options: RequestInit): Promise<T> => {
 };
 
 export const api = {
-  get: <T>(path: string) =>
+  get: <T>(path: string, options?: Omit<ApiRequestOptions, "method">) =>
     request<T>(path, {
+      ...options,
       method: "GET",
-      headers: DEFAULT_HEADERS,
+      headers: { ...DEFAULT_HEADERS, ...(options?.headers || {}) },
     }),
-  post: <T>(path: string, body?: unknown) =>
+  post: <T>(path: string, body?: unknown, options?: Omit<ApiRequestOptions, "method" | "body">) =>
     request<T>(path, {
+      ...options,
       method: "POST",
-      headers: DEFAULT_HEADERS,
+      headers: { ...DEFAULT_HEADERS, ...(options?.headers || {}) },
       body: body ? JSON.stringify(body) : undefined,
     }),
 };
 
-export type { ApiError };
+export type { ApiError, ApiRequestOptions };

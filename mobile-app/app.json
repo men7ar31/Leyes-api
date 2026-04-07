@@ -11,12 +11,12 @@
     "splash": {
       "image": "./src/assets/branding/lexplora-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#F4F7FB"
+      "backgroundColor": "#ffffff"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "jsEngine": "hermes",
     "runtimeVersion": {
       "policy": "appVersion"

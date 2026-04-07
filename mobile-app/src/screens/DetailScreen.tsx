@@ -2,7 +2,6 @@ import {
   Animated,
   Alert,
   Linking,
-  InteractionManager,
   Modal,
   PanResponder,
   Pressable,
@@ -14,13 +13,15 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
 import { useSaijDocument } from "../hooks/useSaijDocument";
 import { LoadingState } from "../components/LoadingState";
 import { ErrorState } from "../components/ErrorState";
@@ -31,7 +32,7 @@ import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
 import { isCivilAndCommercialCodeDocument } from "../utils/civilCodeReader";
-import { searchSaij } from "../services/saijApi";
+import { resolveProvincialCode, searchSaij } from "../services/saijApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
 import { getReadingBodyMetrics, readingTypography } from "../theme/readingTypography";
@@ -42,6 +43,33 @@ const SCRUBBER_BUBBLE_HEIGHT = 48;
 const SCRUBBER_TAIL_SIZE = 14;
 const SCRUBBER_DRAG_TOUCH_RADIUS = 30;
 const SCRUBBER_INDEX_HYSTERESIS_PX = 26;
+
+const normalizeLoose = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
+  [normalizeLoose(province), normalizeLoose(entry.area), normalizeLoose(entry.reference), normalizeLoose(entry.numeroNorma || "")].join("|");
+
+const getManualLawSearchHint = (entry?: ProvincialCodeCatalogEntry | null, fallbackHint?: string | null) => {
+  const normalizedFallbackHint = String(fallbackHint || "").trim();
+  if (normalizedFallbackHint) return normalizedFallbackHint;
+  if (!entry) return null;
+
+  const fromNumeroNorma = String(entry.numeroNorma || "")
+    .replace(/[^\d]/g, "")
+    .trim();
+  if (fromNumeroNorma) return `Ley ${fromNumeroNorma}`;
+
+  const fromReference = String(entry.reference || "").match(/\d{2,7}/)?.[0] || "";
+  if (fromReference) return `Ley ${fromReference}`;
+
+  return null;
+};
 
 const parseNormNumberToken = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -280,7 +308,7 @@ const normalizeCitationOptionalValue = (raw?: string | null) => {
     "no informada",
     "no informado",
     "sin informacion",
-    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n",
+    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n",
     "desconocida",
     "desconocido",
     "s/d",
@@ -337,8 +365,8 @@ const simplifySubtype = (value?: string | null) => {
 const getSubtypeFromSubtitle = (subtitle?: string | null) => {
   const raw = String(subtitle || "").trim();
   if (!raw) return "";
-  if (raw.includes("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
-    return raw.split("ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
+  if (raw.includes("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
+    return raw.split("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
   }
   if (raw.includes(".")) {
     return raw.split(".")[0]?.trim() || "";
@@ -419,11 +447,11 @@ const extractRelatedContentBlock = (text?: string | null) => {
 
 const parseFalloContent = (text?: string | null) => {
   if (!text || typeof text !== "string") {
-    return { headerLines: [] as string[], summaryText: null as string | null };
+    return { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   }
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
-    return { headerLines: [] as string[], summaryText: null as string | null };
+    return { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   }
 
   const lines = normalized
@@ -432,13 +460,23 @@ const parseFalloContent = (text?: string | null) => {
     .filter((line) => line.length > 0);
 
   const sumarioIndex = lines.findIndex((line) => /^SUMARIO\b/i.test(line));
-  if (sumarioIndex < 0) {
-    return { headerLines: lines, summaryText: null };
+  const fullTextIndex = lines.findIndex((line) => /^TEXTO\s+COMPLETO\b/i.test(line));
+  if (sumarioIndex < 0 && fullTextIndex < 0) {
+    return { headerLines: lines, summaryText: null, bodyText: null };
   }
 
-  const headerLines = lines.slice(0, sumarioIndex);
-  const summaryText = lines.slice(sumarioIndex + 1).join("\n").trim() || null;
-  return { headerLines, summaryText };
+  const cutIndexCandidates = [sumarioIndex, fullTextIndex].filter((value) => value >= 0);
+  const firstCutIndex = cutIndexCandidates.length > 0 ? Math.min(...cutIndexCandidates) : -1;
+  const headerLines = firstCutIndex >= 0 ? lines.slice(0, firstCutIndex) : lines;
+
+  let summaryText: string | null = null;
+  if (sumarioIndex >= 0) {
+    const summaryEndIndex = fullTextIndex > sumarioIndex ? fullTextIndex : lines.length;
+    summaryText = lines.slice(sumarioIndex + 1, summaryEndIndex).join("\n").trim() || null;
+  }
+
+  const bodyText = fullTextIndex >= 0 ? lines.slice(fullTextIndex + 1).join("\n\n").trim() || null : null;
+  return { headerLines, summaryText, bodyText };
 };
 
 type RelatedContentItem = {
@@ -462,7 +500,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
   const parseNormIdentity = (value?: string | null) => {
     if (!value || typeof value !== "string") return "";
     const compact = value
-      .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+      .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
       .replace(/[./-]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -474,7 +512,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     if (dnu) return `dnu:${Number(dnu[1])}`;
     const decreto = compact.match(/\bdecreto\b[^\d]*(\d{1,7})\b/i);
     if (decreto) return `decreto:${Number(decreto[1])}`;
-    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
+    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
     if (resol) return `resolucion:${Number(resol[1])}`;
     const rawCode = compact.match(/^(ley|dnu|dec|decreto|res|resolucion)\s+c?\s*0*(\d{1,7})\b/i);
     if (rawCode) return `${rawCode[1]}:${Number(rawCode[2])}`;
@@ -485,7 +523,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     const title = String(item.title || "").trim();
     const subtitle = String(item.subtitle || "").trim();
     const guid = String(item.guid || "").trim();
-    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
+    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
     let value = 0;
     if (guid) value += 100;
     if (!generic) value += 40;
@@ -530,8 +568,8 @@ const prettifyNormLabel = (value?: string | null) => {
   const decreto = clean.match(/^DEC(?:RETO)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
   if (decreto) return `Decreto ${Number(decreto[1])}${decreto[2] ? `/${decreto[2]}` : ""}`;
 
-  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œN)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
-  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
+  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“N)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
+  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
 
   return clean;
 };
@@ -556,7 +594,7 @@ const normalizeHeadingToken = (value?: string | null) =>
     .toLowerCase();
 
 const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo|seccion|libro|parte)\b/i.test(normalizeHeadingToken(value));
-const isParagraphHeadingLine = (value?: string | null) => /^par(a|á)grafo\b/i.test(normalizeHeadingToken(value));
+const isParagraphHeadingLine = (value?: string | null) => /^par(a|Ã¡)grafo\b/i.test(normalizeHeadingToken(value));
 const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
 const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
 
@@ -566,11 +604,11 @@ const parseArticleTitleContext = (title?: string | null) => {
   }
 
   const canonicalTitle = cleanText(title)
-    .replace(/\u00C2?\u00B7/g, "Â·")
-    .replace(/\u2022/g, "Â·");
+    .replace(/\u00C2?\u00B7/g, "Ã‚Â·")
+    .replace(/\u2022/g, "Ã‚Â·");
 
   const parts = canonicalTitle
-    .split(/\s*(?:Â·|\|)\s*/g)
+    .split(/\s*(?:Ã‚Â·|\|)\s*/g)
     .map((part) => cleanText(part))
     .filter((part) => part.length > 0);
 
@@ -589,7 +627,7 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
   if (!clean) return null;
 
   const collapsed = clean.replace(
-    /\b(?:[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\s+){2,}[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]\b/g,
+    /\b(?:[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\s+){2,}[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\b/g,
     (chunk) => chunk.replace(/\s+/g, "")
   );
 
@@ -778,8 +816,8 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
 
   const compact = raw
     .replace(/\u00A0/g, " ")
-    .replace(/[��]/g, "")
-    .replace(/[.:;,\-��]+$/g, "")
+    .replace(/[º°]/g, "")
+    .replace(/[.:;,\-–—]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -794,7 +832,7 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
     return suffix ? `${base} ${suffix}` : String(base);
   }
 
-  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-z�������]+)$/i);
+  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-záéíóúüñ]+)$/i);
   if (withLiteralSuffix) {
     return `${Number(withLiteralSuffix[1])} ${withLiteralSuffix[2].toLowerCase()}`;
   }
@@ -824,7 +862,7 @@ const normalizeArticleSelectorToken = (value?: string | null) => {
   const normalizedSafe = withAsciiDigits
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+    .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
     .replace(/[\[\]{}()]/g, " ")
     .replace(/[^\w\s\.\,\;\:\-]/g, " ")
     .replace(/[_]/g, " ")
@@ -1007,11 +1045,48 @@ const getHighlightedParts = (text: string, query: string) => {
 
 export const DetailScreen = () => {
   const { colors: appColors, isDarkMode } = useAppTheme();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ guid?: string }>();
+  const params = useLocalSearchParams<{
+    guid?: string;
+    province?: string;
+    codeKey?: string;
+    pendingTitle?: string;
+    pendingReference?: string;
+    pendingHint?: string;
+    resolvedGuid?: string;
+  }>();
   const guidParam = Array.isArray(params.guid) ? params.guid[0] : params.guid;
+  const pendingProvince = Array.isArray(params.province) ? params.province[0] : params.province;
+  const pendingCodeKey = Array.isArray(params.codeKey) ? params.codeKey[0] : params.codeKey;
+  const pendingTitleParam = Array.isArray(params.pendingTitle) ? params.pendingTitle[0] : params.pendingTitle;
+  const pendingReferenceParam = Array.isArray(params.pendingReference) ? params.pendingReference[0] : params.pendingReference;
+  const pendingHintParam = Array.isArray(params.pendingHint) ? params.pendingHint[0] : params.pendingHint;
+  const resolvedGuidParam = Array.isArray(params.resolvedGuid) ? params.resolvedGuid[0] : params.resolvedGuid;
+  const isPendingProvincialCode = guidParam === "__provincial_pending__";
+  const pendingEntry = useMemo(() => {
+    const province = String(pendingProvince || "").trim();
+    const codeKey = String(pendingCodeKey || "").trim();
+    if (!province || !codeKey) return null;
+    const catalog = PROVINCIAL_CODES_CATALOG[province] || [];
+    return catalog.find((item) => getCatalogEntryKey(province, item) === codeKey) || null;
+  }, [pendingCodeKey, pendingProvince]);
+  const pendingManualHint = getManualLawSearchHint(pendingEntry, pendingHintParam);
+  const pendingDisplayTitle = String(pendingTitleParam || pendingEntry?.area || "Codigo provincial").trim() || "Codigo provincial";
+  const pendingDisplayReference = String(pendingReferenceParam || pendingEntry?.reference || "").trim();
 
-  const { document, isLoading, isError, error, refetch } = useSaijDocument(guidParam);
+  const resolveProvincialQuery = useQuery({
+    queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
+    enabled: isPendingProvincialCode && Boolean(pendingProvince && pendingEntry) && !String(resolvedGuidParam || "").trim(),
+    staleTime: 1000 * 60 * 30,
+    retry: 0,
+    queryFn: ({ signal }) => resolveProvincialCode(String(pendingProvince), pendingEntry as ProvincialCodeCatalogEntry, { signal }),
+  });
+
+  const effectiveGuid = isPendingProvincialCode
+    ? String(resolvedGuidParam || resolveProvincialQuery.data?.guid || "").trim()
+    : String(guidParam || "").trim();
+  const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
@@ -1101,6 +1176,25 @@ export const DetailScreen = () => {
   }>({ key: "", payload: null });
   const wholeDocumentShareBusyRef = useRef(false);
 
+  const cancelDocumentOpenAndGoBack = useCallback(() => {
+    const normalizedEffectiveGuid = String(effectiveGuid || "").trim();
+    if (normalizedEffectiveGuid) {
+      queryClient.cancelQueries({ queryKey: ["saij-document", normalizedEffectiveGuid], exact: true }).catch(() => {
+        // best effort cancel on leave
+      });
+    }
+    if (isPendingProvincialCode) {
+      queryClient
+        .cancelQueries({
+          queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
+        })
+        .catch(() => {
+          // best effort cancel on leave
+        });
+    }
+    router.back();
+  }, [effectiveGuid, isPendingProvincialCode, pendingCodeKey, pendingProvince, queryClient]);
+
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
     setIsScrubbingArticles(value);
@@ -1175,23 +1269,23 @@ export const DetailScreen = () => {
         scrollRef.current.scrollTo({ y: 0, animated: false });
       }
     });
-  }, [guidParam]);
+  }, [effectiveGuid || guidParam, pendingCodeKey, pendingProvince]);
 
   useEffect(() => {
     let cancelled = false;
     const loadFavoriteState = async () => {
-      if (!guidParam) {
+      if (!effectiveGuid) {
         if (!cancelled) setIsFavorite(false);
         return;
       }
-      const value = await isFavoriteGuid(guidParam);
+      const value = await isFavoriteGuid(effectiveGuid);
       if (!cancelled) setIsFavorite(value);
     };
     loadFavoriteState();
     return () => {
       cancelled = true;
     };
-  }, [guidParam]);
+  }, [effectiveGuid]);
 
   useEffect(() => {
     if (!document?.guid) {
@@ -1203,39 +1297,157 @@ export const DetailScreen = () => {
       setIsTextSectionReady(true);
       return;
     }
-
-    let cancelled = false;
-    setIsTextSectionReady(false);
-    const task = InteractionManager.runAfterInteractions(() => {
-      if (!cancelled) setIsTextSectionReady(true);
-    });
-
-    return () => {
-      cancelled = true;
-      task.cancel?.();
-    };
+    setIsTextSectionReady(true);
   }, [document?.guid, activeSection]);
 
 
   if (!guidParam) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message="No se encontro el documento." />
       </SafeAreaView>
     );
   }
 
+  if (isPendingProvincialCode) {
+    const pendingNotFoundMessage = pendingManualHint
+      ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${pendingManualHint}.`
+      : "No pudimos abrir ese codigo ahora.";
+    const pendingErrorMessage =
+      (!effectiveGuid && resolveProvincialQuery.isError && (resolveProvincialQuery.error as Error | null)?.message) ||
+      (effectiveGuid && isError && (error as Error | null)?.message) ||
+      pendingNotFoundMessage;
+
+    if (!pendingProvince || !pendingEntry) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <ErrorState message="No se encontro el codigo provincial." onRetry={() => router.back()} />
+        </SafeAreaView>
+      );
+    }
+
+    if (!effectiveGuid || isLoading || (effectiveGuid && !document && !isError)) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <View
+            style={[
+              styles.fixedHeaderWrap,
+              {
+                backgroundColor: appColors.background,
+                borderBottomColor: appColors.border,
+              },
+            ]}
+          >
+            <View style={styles.headerMainRow}>
+              <View style={styles.headerTextWrap}>
+                <Text
+                  style={[
+                    styles.headerTitle,
+                    {
+                      color: appColors.text,
+                      fontSize: readingTypography.lawTitleSize,
+                      lineHeight: readingTypography.lawTitleLineHeight,
+                    },
+                  ]}
+                >
+                  {pendingDisplayTitle}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
+            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
+              <MetadataRow label="Provincia" value={pendingProvince} />
+              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
+            </View>
+
+            <View style={styles.sectionTabs}>
+              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
+                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
+              </View>
+            </View>
+
+            <LoadingState
+              message={!effectiveGuid ? "Abriendo codigo..." : "Cargando documento..."}
+              onCancel={cancelDocumentOpenAndGoBack}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+
+    if (isError || !document) {
+      return (
+        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+          <View
+            style={[
+              styles.fixedHeaderWrap,
+              {
+                backgroundColor: appColors.background,
+                borderBottomColor: appColors.border,
+              },
+            ]}
+          >
+            <View style={styles.headerMainRow}>
+              <View style={styles.headerTextWrap}>
+                <Text
+                  style={[
+                    styles.headerTitle,
+                    {
+                      color: appColors.text,
+                      fontSize: readingTypography.lawTitleSize,
+                      lineHeight: readingTypography.lawTitleLineHeight,
+                    },
+                  ]}
+                >
+                  {pendingDisplayTitle}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
+            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
+              <MetadataRow label="Provincia" value={pendingProvince} />
+              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
+            </View>
+
+            <View style={styles.sectionTabs}>
+              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
+                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
+              </View>
+            </View>
+
+            <ErrorState
+              message={pendingErrorMessage}
+              onRetry={() => {
+                if (!effectiveGuid) {
+                  resolveProvincialQuery.refetch();
+                  return;
+                }
+                refetch();
+              }}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+  }
+
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-        <LoadingState message="Cargando documento..." />
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+        <LoadingState message="Cargando documento..." onCancel={cancelDocumentOpenAndGoBack} />
       </SafeAreaView>
     );
   }
 
   if (isError || !document) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
       </SafeAreaView>
     );
@@ -1269,8 +1481,14 @@ export const DetailScreen = () => {
   const readingBodyColor = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
   const readingSecondaryColor = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
   const readingLabelColor = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
-  const stickyViewportOffset = 26;
-  const jumpTopOffset = spacing.md;
+  const isComfortableDetail = document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
+  const comfortableBodyFontSize = isComfortableDetail ? bodyFontSize : bodyFontSize;
+  const comfortableBodyLineHeight = isComfortableDetail ? Math.max(bodyLineHeight + 3, Math.round(comfortableBodyFontSize * 1.66)) : bodyLineHeight;
+  const comfortableTitleFontSize = isComfortableDetail ? readingTypography.lawTitleSize : readingTypography.lawTitleSize;
+  const comfortableTitleLineHeight = isComfortableDetail ? readingTypography.lawTitleLineHeight + 2 : readingTypography.lawTitleLineHeight;
+  const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
+  const stickyViewportOffset = Math.max(26, headerAwareOffset + spacing.xs);
+  const jumpTopOffset = Math.max(spacing.md, headerAwareOffset + spacing.sm);
   const subtitleText = getSubtitleText(document.subtitle);
   const headerTitleText = (() => {
     const clean = cleanText(document.title || "").replace(/\r/g, "\n");
@@ -1312,14 +1530,16 @@ export const DetailScreen = () => {
     .join("/ ");
 
   const falloParsed =
-    baseTypeLabel === "fallo" ? parseFalloContent(extractedRelated.mainText) : { headerLines: [] as string[], summaryText: null as string | null };
+    baseTypeLabel === "fallo"
+      ? parseFalloContent(extractedRelated.mainText)
+      : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
   const falloFechaFromHeader = (() => {
     const index = falloParsed.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
     if (index >= 0 && falloParsed.headerLines[index + 1]) return falloParsed.headerLines[index + 1];
     return null;
   })();
   const falloTribunalFromHeader =
-    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C[ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂA]MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
+    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
   const falloFechaDisplay =
     (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
     (metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null) ||
@@ -1343,7 +1563,7 @@ export const DetailScreen = () => {
     baseTypeLabel === "fallo"
       ? {
           label: "Sentencia / Tribunal",
-          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") || "No informado",
+          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" / ") || "No informado",
           color: appColors.text,
         }
       : baseTypeLabel === "doctrina"
@@ -1396,7 +1616,18 @@ export const DetailScreen = () => {
         ].filter((item) => item.visible);
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
-  const searchableArticles = Array.isArray(document.articles) ? document.articles : [];
+  const shouldPrepareArticleCaches =
+    document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
+  const searchableArticles = shouldPrepareArticleCaches && Array.isArray(document.articles) ? document.articles : [];
+  const hasScrollableTextRail =
+    selectedSection === "texto" &&
+    (baseTypeLabel === "fallo" || baseTypeLabel === "sumario" || baseTypeLabel === "doctrina") &&
+    (baseTypeLabel === "fallo"
+      ? falloParsed.headerLines.length > 0 || !!falloParsed.summaryText || !!falloParsed.bodyText
+      : !!extractedRelated.mainText);
+  const scrubberMode = searchableArticles.length > 0 ? "articles" : hasScrollableTextRail ? "scroll" : "none";
+  const isContinuousTextRail = scrubberMode === "scroll";
+  const rightRailContentInset = isContinuousTextRail ? 16 : 0;
   if (articleShareCacheRef.current.source !== searchableArticles) {
     const nextItems = searchableArticles.map((article, index) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
@@ -1629,7 +1860,7 @@ export const DetailScreen = () => {
   };
 
   const scrubToLocationY = (locationY: number) => {
-    if (!searchableArticles.length || scrubberHeight <= 0) return;
+    if (scrubberMode === "none" || scrubberHeight <= 0) return;
     const half = getThumbHalf();
     const clampedCenter = Math.max(half, Math.min(locationY, Math.max(half, scrubberHeight - half)));
     const thumbTop = clampedCenter - half;
@@ -1637,11 +1868,12 @@ export const DetailScreen = () => {
     const ratio = travel > 0 ? thumbTop / travel : 0;
     const maxScroll = getMaxScrollableY();
     const targetScrollY = ratio * maxScroll;
-    const targetContentY = targetScrollY + jumpTopOffset;
     setThumbByRatio(ratio);
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ y: targetScrollY, animated: false });
     }
+    if (scrubberMode !== "articles") return;
+    const targetContentY = targetScrollY + jumpTopOffset;
     const nearestIndex = findNearestArticleIndexByY(targetContentY);
     const fallbackIndex = Math.max(0, Math.min(searchableArticles.length - 1, Math.round(ratio * Math.max(0, searchableArticles.length - 1))));
     const nextIndex = resolveStableNavigatorIndex(nearestIndex >= 0 ? nearestIndex : fallbackIndex, targetContentY);
@@ -1795,14 +2027,15 @@ export const DetailScreen = () => {
       </Text>
     ));
 
-  const renderHighlightedBlock = (value: string, style: any, keyPrefix: string) => (
-    <Text style={style}>{renderHighlightedInline(value, keyPrefix)}</Text>
+  const renderHighlightedBlock = (value: string, style: any, keyPrefix: string, selectable = false) => (
+    <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>
   );
 
   const handleDetailScroll = (y: number) => {
     scrollOffsetRef.current = y;
     if (isScrubbingArticlesRef.current) return;
     updateThumbByScrollY(y);
+    if (scrubberMode !== "articles") return;
     const nearestIndex = findNearestArticleIndexByY(y + jumpTopOffset);
     scrubActiveIndexRef.current = nearestIndex;
     pendingScrollYRef.current = y;
@@ -1838,7 +2071,7 @@ export const DetailScreen = () => {
       layoutRefreshRafRef.current = null;
     }
     pendingScrubLocationYRef.current = null;
-    if (scrubActiveIndexRef.current >= 0) {
+    if (scrubberMode === "articles" && scrubActiveIndexRef.current >= 0) {
       const snapOffset = articleOffsetsRef.current[scrubActiveIndexRef.current];
       if (typeof snapOffset === "number" && scrollRef.current) {
         const maxScroll = getMaxScrollableY();
@@ -1885,12 +2118,12 @@ export const DetailScreen = () => {
 
   const articleScrubberResponder = PanResponder.create({
     onStartShouldSetPanResponder: () =>
-      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0,
+      selectedSection === "texto" && scrubberMode !== "none" && scrubberHeight > 0,
     onMoveShouldSetPanResponder: (_, gestureState) =>
-      selectedSection === "texto" && searchableArticles.length > 0 && scrubberHeight > 0 && Math.abs(gestureState.dy) > 1,
+      selectedSection === "texto" && scrubberMode !== "none" && scrubberHeight > 0 && Math.abs(gestureState.dy) > 1,
     onPanResponderGrant: (event) => {
       setArticleScrubbing(true);
-      setPreviewBubbleVisible(true);
+      setPreviewBubbleVisible(scrubberMode === "articles");
       measureScrubberTrackWindowPosition();
       const trackY = getTrackYFromGestureEvent(event);
       const thumbCenter = scrubberThumbTopRef.current + SCRUBBER_THUMB_HEIGHT / 2;
@@ -1922,7 +2155,7 @@ export const DetailScreen = () => {
     }
 
     const cleanedTitle = fallo.title
-      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â±\s]/g, " ")
+      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const titleTokens = cleanedTitle.split(" ").filter((token) => token.length > 2);
@@ -2132,7 +2365,7 @@ export const DetailScreen = () => {
 
     const safeFileName = sanitizeShareFileToken(fileBaseName) || sanitizeShareFileToken(title) || "norma";
     const fileUri = `${exportDir}${safeFileName}-${Date.now()}.txt`;
-    const fileContent = `�${normalizedContent}`;
+    const fileContent = `ÿ${normalizedContent}`;
 
     await FileSystem.writeAsStringAsync(fileUri, fileContent, { encoding: FileSystem.EncodingType.UTF8 });
     const fileInfo = await FileSystem.getInfoAsync(fileUri);
@@ -2162,7 +2395,7 @@ export const DetailScreen = () => {
     }
 
     await new Promise<void>((resolve) => {
-      InteractionManager.runAfterInteractions(() => resolve());
+      requestAnimationFrame(() => resolve());
     });
 
     const title = cleanText(document.title || citationLawName || "Norma");
@@ -2266,6 +2499,33 @@ export const DetailScreen = () => {
     void shareWholeDocumentAsTxt();
   };
 
+  const buildNonLegislationCitation = () => {
+    const heading = cleanText(document.title || "Contenido");
+    const relatedFalloTitle = cleanText(relatedFallos[0]?.title || "");
+    const parts =
+      baseTypeLabel === "doctrina"
+        ? [heading, autorDoctrina || null, metadataDate || citationPublication || null]
+        : baseTypeLabel === "fallo"
+          ? [heading, falloTribunalDisplay || null, falloFechaDisplay || null]
+          : baseTypeLabel === "sumario"
+            ? [heading, relatedFalloTitle && relatedFalloTitle !== heading ? relatedFalloTitle : null, metadataDate || null]
+            : baseTypeLabel === "dictamen"
+              ? [heading, (typeof document.organismo === "string" && document.organismo.trim()) || null, metadataDate || null]
+              : [heading, metadataDate || citationPublication || null];
+    return "(" + parts.filter(Boolean).join(", ") + ")";
+  };
+
+  const shareCurrentTextDocument = async () => {
+    const heading = cleanText(document.title || "Contenido");
+    const body = cleanContentText(extractedRelated.mainText) || cleanContentText(document.contentText) || cleanContentText(leadText);
+    if (!body) {
+      Alert.alert("Sin contenido", "No encontramos texto suficiente para compartir este contenido.");
+      return;
+    }
+    const message = [heading, body, buildNonLegislationCitation()].filter(Boolean).join("\n\n").trim();
+    await shareTextPayload(heading, message);
+  };
+
   const shareSingleArticle = async (params: {
     displayNumber: string;
     articleLeadTitle: string;
@@ -2275,7 +2535,7 @@ export const DetailScreen = () => {
     const message = `${heading}\n\n${params.articleLeadTitle}\n${params.articleBody}\n\n${buildCitation(
       params.displayNumber
     )}`.trim();
-    await shareTextPayload(`${heading} ? Art. ${params.displayNumber}`, message);
+    await shareTextPayload(`${heading} - Art. ${params.displayNumber}`, message);
   };
 
   const toggleArticleSelectedForShare = (articleKey: string) => {
@@ -2621,13 +2881,26 @@ export const DetailScreen = () => {
       if (document.contentType === "fallo") {
         const parsed = parseFalloContent(extractedRelated.mainText);
         return (
-          <View style={styles.falloContentCard}>
+          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 14 } : null]}>
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
             {parsed.headerLines.map((line, index) => {
               const isPrimary = index === 0 || /^SENTENCIA$/i.test(line);
               const isMetaLabel = /^Nro\.?\s*Interno:|^Id\s*SAIJ:|^Magistrados:/i.test(line);
               return (
                 <Text
                   key={`${index}-${line}`}
+                  selectable
                   style={[
                     styles.falloHeaderLine,
                     { fontSize: bodyFontSize, lineHeight: bodyLineHeight },
@@ -2645,7 +2918,19 @@ export const DetailScreen = () => {
                 {renderHighlightedBlock(
                   parsed.summaryText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
-                  "fallo-summary"
+                  "fallo-summary",
+                  true
+                )}
+              </View>
+            ) : null}
+            {parsed.bodyText ? (
+              <View style={styles.falloSummarySection}>
+                <Text style={styles.falloSummaryTitle}>Texto completo</Text>
+                {renderHighlightedBlock(
+                  parsed.bodyText,
+                  [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
+                  "fallo-body",
+                  true
                 )}
               </View>
             ) : null}
@@ -2653,11 +2938,75 @@ export const DetailScreen = () => {
         );
       }
 
-      return renderHighlightedBlock(
-        extractedRelated.mainText,
-        [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
-        "main-text"
+      const comfortableMainText = isComfortableDetail
+        ? extractedRelated.mainText
+            .replace(/\r\n?/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .replace(/([^\n])\n([^\n])/g, "$1\n\n$2")
+        : extractedRelated.mainText;
+      const mainTextBlock = renderHighlightedBlock(
+        comfortableMainText,
+        [
+          styles.contentText,
+          { fontSize: comfortableBodyFontSize, lineHeight: comfortableBodyLineHeight, color: readingBodyColor },
+        ],
+        "main-text",
+        isComfortableDetail || document.contentType === "fallo" || document.contentType === "dictamen"
       );
+
+      if (isComfortableDetail) {
+        return (
+          <View
+            style={[
+              styles.falloContentCard,
+              {
+                backgroundColor: appColors.card,
+                borderColor: appColors.border,
+                paddingHorizontal: spacing.md + 1,
+                paddingVertical: spacing.md + 2,
+                borderRadius: radius.lg,
+                marginRight: isContinuousTextRail ? 14 : 0,
+              },
+            ]}
+          >
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
+            {mainTextBlock}
+          </View>
+        );
+      }
+
+      if (document.contentType !== "legislacion") {
+        return (
+          <View style={styles.inlineTextShareWrap}>
+            <View style={styles.inlineContentShareRow}>
+              <Pressable
+                style={styles.articleShareBtn}
+                onPress={() => {
+                  void shareCurrentTextDocument();
+                }}
+                unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+              >
+                <Text style={styles.articleShareBtnText}>{"\u2197"}</Text>
+              </Pressable>
+            </View>
+            {mainTextBlock}
+          </View>
+        );
+      }
+
+      return mainTextBlock;
     }
 
     return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
@@ -2755,7 +3104,7 @@ export const DetailScreen = () => {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
       <View
         style={[
           styles.fixedHeaderWrap,
@@ -2774,7 +3123,19 @@ export const DetailScreen = () => {
       >
         <View style={styles.headerMainRow}>
           <View style={styles.headerTextWrap}>
-            <Text style={[styles.headerTitle, { color: appColors.text }]}>{headerTitleText}</Text>
+            <Text
+              style={[
+                styles.headerTitle,
+                {
+                  color: appColors.text,
+                  fontSize: comfortableTitleFontSize,
+                  lineHeight: comfortableTitleLineHeight,
+                  letterSpacing: isComfortableDetail ? -0.2 : 0,
+                },
+              ]}
+            >
+              {headerTitleText}
+            </Text>
           </View>
           <View style={styles.headerActions}>
             <Pressable
@@ -2826,6 +3187,21 @@ export const DetailScreen = () => {
                 <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>
                   {isDocSearchOpen ? "Ocultar buscador" : "Buscar en documento"}
                 </Text>
+              </Pressable>
+            ) : null}
+            {selectedSection === "texto" && document.contentType !== "legislacion" ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.headerMenuItem,
+                  { borderTopColor: appColors.border },
+                  pressed ? styles.headerMenuItemPressed : null,
+                ]}
+                onPress={() => {
+                  setIsHeaderMenuOpen(false);
+                  shareCurrentTextDocument();
+                }}
+              >
+                <Text style={[styles.headerMenuItemText, { color: appColors.text }]}>Compartir contenido</Text>
               </Pressable>
             ) : null}
             {selectedSection === "texto" && articleShareItems.length > 0 ? (
@@ -2995,7 +3371,10 @@ export const DetailScreen = () => {
       </View>
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[
+          styles.container,
+          rightRailContentInset > 0 ? { paddingRight: readingTypography.horizontalPadding + rightRailContentInset } : null,
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         persistentScrollbar={false}
@@ -3013,9 +3392,24 @@ export const DetailScreen = () => {
           restoreSavedScrollIfNeeded();
         }}
       >
-        <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-          <MetadataRow label="Tipo" value={typeLabel} />
-          <MetadataRow label={secondaryMeta.label} value={secondaryMeta.value} valueColor={secondaryMeta.color} />
+        <View
+          style={[
+            styles.metaCard,
+            {
+              backgroundColor: appColors.card,
+              borderColor: appColors.border,
+              paddingVertical: isComfortableDetail ? spacing.md + 2 : undefined,
+              paddingHorizontal: isComfortableDetail ? readingTypography.cardPadding + 2 : undefined,
+            },
+          ]}
+        >
+          <MetadataRow label="Tipo" value={typeLabel} variant={isComfortableDetail ? "comfortable" : "default"} />
+          <MetadataRow
+            label={secondaryMeta.label}
+            value={secondaryMeta.value}
+            valueColor={secondaryMeta.color}
+            variant={isComfortableDetail ? "comfortable" : "default"}
+          />
         </View>
 
         {attachmentUrl ? (
@@ -3078,7 +3472,11 @@ export const DetailScreen = () => {
           </View>
         ) : null}
 
-        {selectedSection === "texto" ? (isTextSectionReady ? contentRenderCacheRef.current.node : <LoadingState message="Preparando texto..." />) : null}
+        {selectedSection === "texto"
+          ? isTextSectionReady
+            ? contentRenderCacheRef.current.node
+            : <LoadingState message="Preparando texto..." onCancel={cancelDocumentOpenAndGoBack} />
+          : null}
 
         {selectedSection === "normasComplementarias" && normasComplementarias.length > 0 ? (
           <View style={styles.relatedSection}>
@@ -3205,7 +3603,7 @@ export const DetailScreen = () => {
           </View>
         ) : null}
       </ScrollView>
-      {selectedSection === "texto" && searchableArticles.length > 0 ? (
+      {selectedSection === "texto" && scrubberMode !== "none" ? (
         <View
           ref={scrubberTrackRef}
           style={[
@@ -3213,6 +3611,8 @@ export const DetailScreen = () => {
             {
               top: fixedHeaderHeight + 10,
               bottom: Math.max(spacing.xl + 12, insets.bottom + 34),
+              right: isContinuousTextRail ? 0 : 2,
+              width: isContinuousTextRail ? 12 : 14,
             },
             isScrubbingArticles ? styles.articleScrubberTrackActive : null,
           ]}
@@ -3231,6 +3631,8 @@ export const DetailScreen = () => {
             style={[
               styles.articleScrubberThumb,
               {
+                left: isContinuousTextRail ? 2 : 1,
+                width: isContinuousTextRail ? 8 : 10,
                 backgroundColor: isDarkMode ? "#233B66" : "#E2EEFF",
                 borderColor: isDarkMode ? "#2D497B" : "#C7DBFF",
                 borderWidth: 1,
@@ -3238,7 +3640,7 @@ export const DetailScreen = () => {
               },
             ]}
           />
-          {activeArticlePreviewLabel ? (
+          {scrubberMode === "articles" && activeArticlePreviewLabel ? (
             <Animated.View
               style={[
                 styles.scrubberPreviewBubble,
@@ -3279,7 +3681,15 @@ export const DetailScreen = () => {
         animationType="fade"
         onRequestClose={() => setIsStickyIndexOpen(false)}
       >
-        <Pressable style={styles.stickyIndexBackdrop} onPress={() => setIsStickyIndexOpen(false)}>
+        <Pressable
+          style={[
+            styles.stickyIndexBackdrop,
+            {
+              paddingTop: fixedHeaderHeight > 0 ? fixedHeaderHeight + spacing.md : spacing.xl,
+            },
+          ]}
+          onPress={() => setIsStickyIndexOpen(false)}
+        >
           <Pressable
             style={[styles.stickyIndexCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}
             onPress={() => {}}
@@ -3361,17 +3771,17 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 8,
     paddingTop: 0,
   },
   headerActionBtn: {
-    minWidth: 32,
+    minWidth: 34,
     height: 32,
     borderRadius: 0,
     borderWidth: 0,
     borderColor: "transparent",
     backgroundColor: "transparent",
-    paddingHorizontal: 3,
+    paddingHorizontal: 4,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -3707,13 +4117,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.md,
-    gap: spacing.xs,
+    paddingHorizontal: spacing.md + 2,
+    paddingVertical: spacing.md + 3,
+    gap: spacing.sm,
+    alignSelf: "center",
+    width: "100%",
   },
   falloHeaderLine: {
     fontSize: readingTypography.articleBodySize,
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
+    textAlign: "center",
   },
   falloHeaderPrimary: {
     fontWeight: "700",
@@ -3733,12 +4147,14 @@ const styles = StyleSheet.create({
     color: readingTypography.labelTextColor,
     letterSpacing: readingTypography.sectionLabelLetterSpacing,
     textTransform: "uppercase",
+    textAlign: "center",
   },
   contentText: {
     fontSize: readingTypography.articleBodySize,
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
     letterSpacing: 0.1,
+    textAlign: "justify",
   },
   searchHighlight: {
     backgroundColor: "#FFE08A",
@@ -3807,6 +4223,8 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   articleLeadInline: {
+    flex: 1,
+    flexShrink: 1,
     fontWeight: "600",
     color: readingTypography.bodyTextColor,
     letterSpacing: 0.1,
@@ -3874,6 +4292,14 @@ const styles = StyleSheet.create({
     color: readingTypography.bodyTextColor,
     lineHeight: Math.round(readingTypography.articleBodySize * readingTypography.articleBodyLineHeightRatio),
     letterSpacing: 0.1,
+  },
+  inlineTextShareWrap: {
+    gap: spacing.xs,
+  },
+  inlineContentShareRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
   },
   articleScrubberTrack: {
     position: "absolute",
@@ -3951,7 +4377,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
     paddingHorizontal: spacing.md,
-    justifyContent: "center",
+    justifyContent: "flex-start",
   },
   stickyIndexCard: {
     maxHeight: "72%",

@@ -1,34 +1,45 @@
-import { createServer } from 'http';
-import mongoose from 'mongoose';
+import type { Request, Response } from 'express';
 import createApp from './app';
 import { env } from './config/env';
 import { connectDb } from './config/db';
 import { logger } from './utils/logger';
 
-const start = async () => {
-  try {
-    await connectDb(env.mongoUri);
+const app = createApp();
+let dbReadyPromise: Promise<void> | null = null;
 
-    const app = createApp();
-    const server = createServer(app);
-
-    server.listen(env.port, () => {
-      logger.info({ port: env.port }, 'backend-api listening');
-    });
-
-    const shutdown = async () => {
-      logger.info('Shutting down...');
-      server.close();
-      await mongoose.connection.close();
-      process.exit(0);
-    };
-
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-  } catch (error) {
-    logger.error({ err: error }, 'Failed to start server');
-    process.exit(1);
-  }
+const shouldConnectDb = (req: Request) => {
+  const url = req.url || '';
+  return url.startsWith('/api/saij');
 };
 
-start();
+const ensureDbReady = async () => {
+  if (!dbReadyPromise) {
+    dbReadyPromise = connectDb(env.mongoUri).catch((error) => {
+      dbReadyPromise = null;
+      throw error;
+    });
+  }
+
+  await dbReadyPromise;
+};
+
+export default async function handler(req: Request, res: Response) {
+  try {
+    if (shouldConnectDb(req)) {
+      await ensureDbReady();
+    }
+
+    return app(req, res);
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to handle request');
+    if (!res.headersSent) {
+      res.status(500).json({
+        ok: false,
+        error: 'backend_unavailable',
+        message: 'El backend no pudo inicializarse correctamente.',
+      });
+      return;
+    }
+    throw error;
+  }
+}

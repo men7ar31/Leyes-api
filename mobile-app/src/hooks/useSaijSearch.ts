@@ -21,6 +21,8 @@ export const useSaijSearch = ({
     enabled,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 20,
+    retry: 1,
+    retryDelay: 500,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

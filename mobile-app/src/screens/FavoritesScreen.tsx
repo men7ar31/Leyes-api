@@ -20,6 +20,7 @@ export const FavoritesScreen = () => {
   const queryClient = useQueryClient();
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingGuid, setPendingGuid] = useState<string | null>(null);
   const openingGuidRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -57,6 +58,7 @@ export const FavoritesScreen = () => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
+    setPendingGuid(normalizedGuid);
     openingGuidRef.current = normalizedGuid;
     prefetchDocument(normalizedGuid);
     router.push({
@@ -110,15 +112,18 @@ export const FavoritesScreen = () => {
               style={({ pressed }) => [
                 styles.card,
                 {
-                  backgroundColor: colors.card,
-                  borderColor: colors.border,
+                  backgroundColor: pendingGuid === item.guid ? colors.primarySoft : colors.card,
+                  borderColor: pendingGuid === item.guid ? colors.primaryStrong : colors.border,
                 },
                 shadows.card,
                 pressed ? styles.cardPressed : null,
               ]}
               unstable_pressDelay={0}
               android_ripple={{ color: colors.primarySoft }}
-              onPressIn={() => prefetchDocument(item.guid)}
+              onPressIn={() => {
+                setPendingGuid(item.guid);
+                prefetchDocument(item.guid);
+              }}
               onPress={() => openDetail(item.guid)}
             >
               <View style={styles.rowBetween}>
@@ -130,7 +135,10 @@ export const FavoritesScreen = () => {
                   </View>
                   {jurisdictionLabel ? (
                     <View style={[styles.jurisdictionBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                      <Text style={[styles.jurisdictionBadgeText, { color: colors.iconDefault }]} numberOfLines={1}>
+                      <Text
+                        style={[styles.jurisdictionBadgeText, { color: pendingGuid === item.guid ? colors.primaryStrong : colors.iconDefault }]}
+                        numberOfLines={1}
+                      >
                         {jurisdictionLabel}
                       </Text>
                     </View>
@@ -141,12 +149,15 @@ export const FavoritesScreen = () => {
                 </Text>
               </View>
 
-              <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={3}>
+              <Text style={[styles.itemTitle, { color: pendingGuid === item.guid ? colors.primaryStrong : colors.text }]} numberOfLines={3}>
                 {item.title || "Sin titulo"}
               </Text>
 
               {item.subtitle ? (
-                <Text style={[styles.itemSubtitle, { color: colors.muted }]} numberOfLines={2}>
+                <Text
+                  style={[styles.itemSubtitle, { color: pendingGuid === item.guid ? colors.primaryStrong : colors.muted }]}
+                  numberOfLines={2}
+                >
                   {item.subtitle}
                 </Text>
               ) : null}
