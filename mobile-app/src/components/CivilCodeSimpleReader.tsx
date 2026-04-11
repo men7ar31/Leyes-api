@@ -276,7 +276,7 @@ const ReaderRow = memo(
 
 ReaderRow.displayName = "ReaderRow";
 
-export const CivilCodeSimpleReader = ({ document }: Props) => {
+export const CivilCodeSimpleReader = memo(({ document }: Props) => {
   const { colors, isDarkMode } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [isFavorite, setIsFavorite] = useState(false);
@@ -1111,7 +1111,7 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
       </View>
     </SafeAreaView>
   );
-};
+});
 
 const styles = StyleSheet.create({
   safeArea: {

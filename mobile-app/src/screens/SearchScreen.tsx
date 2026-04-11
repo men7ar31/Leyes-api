@@ -34,6 +34,7 @@ const PAGE_SIZE = 20;
 const SEARCH_PREFETCH_COUNT = 1;
 const RECENT_SEARCHES_MAX = 4;
 const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
+const DOCUMENT_OPEN_GUARD_MS = 900;
 const SAIJ_HOME_URL = "https://www.saij.gob.ar/home";
 const INFOLEG_HOME_URL = "https://www.infoleg.gob.ar/";
 const CC_BY_25_AR_URL = "https://creativecommons.org/licenses/by/2.5/ar/";
@@ -401,12 +402,14 @@ export const SearchScreen = () => {
     (guid?: string | null) => {
       const key = String(guid || "").trim();
       if (!key) return;
+      const queryState = queryClient.getQueryState(["saij-document", key]);
+      if (queryState?.data || queryState?.fetchStatus === "fetching") return;
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", key],
-          queryFn: () => getSaijDocument(key),
-          staleTime: 1000 * 60 * 20,
-          gcTime: 1000 * 60 * 60,
+          queryFn: () => getSaijDocument(key, { timeoutMs: 15000 }),
+          staleTime: 1000 * 60 * 60,
+          gcTime: 1000 * 60 * 60 * 4,
         })
         .catch(() => {
           // best effort cache warmup
@@ -554,6 +557,7 @@ export const SearchScreen = () => {
     setIsRefineOpen(false);
     setActiveRefineSection(null);
     setCollapseToken((prev) => prev + 1);
+    Keyboard.dismiss();
     if (sameSearch) {
       refetch();
     }
@@ -651,11 +655,14 @@ export const SearchScreen = () => {
           if (openingGuidRef.current === normalizedGuid) return;
           openingGuidRef.current = normalizedGuid;
           prefetchDocument(normalizedGuid);
-          setActiveResultGuid(normalizedGuid);
 
           router.push({
             pathname: "/detail/[guid]",
             params: { guid: normalizedGuid },
+          });
+
+          startTransition(() => {
+            setActiveResultGuid(normalizedGuid);
           });
 
           setTimeout(() => {
@@ -671,7 +678,7 @@ export const SearchScreen = () => {
 
           setTimeout(() => {
             if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
-          }, 60);
+          }, DOCUMENT_OPEN_GUARD_MS);
 
           setTimeout(() => {
             setActiveResultGuid((current) => (current === normalizedGuid ? null : current));

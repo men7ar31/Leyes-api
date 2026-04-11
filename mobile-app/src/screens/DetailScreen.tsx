@@ -14,7 +14,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
@@ -619,6 +619,7 @@ const isBookHeadingLine = (value?: string | null) => /^libro\b/i.test(normalizeH
 type StickyIndexNode = {
   key: string;
   label: string;
+  normalizedLabel: string;
   y: number;
   children: StickyIndexNode[];
 };
@@ -663,11 +664,12 @@ const buildStickyIndexTree = (entries: Array<{ y: number; label: string; heading
     y: number
   ) => {
     const existing = map.get(key);
+    const normalizedLabel = normalizeHeadingToken(label);
     if (existing) {
       existing.y = Math.min(existing.y, y);
       return existing;
     }
-    const next: StickyIndexNode = { key, label, y, children: [] };
+    const next: StickyIndexNode = { key, label, normalizedLabel, y, children: [] };
     collection.push(next);
     map.set(key, next);
     return next;
@@ -1227,6 +1229,7 @@ export const DetailScreen = () => {
   const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
+  const [sectionVisualKey, setSectionVisualKey] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
   const [docSearchQuery, setDocSearchQuery] = useState("");
   const [searchMatchPointer, setSearchMatchPointer] = useState(0);
@@ -1246,6 +1249,7 @@ export const DetailScreen = () => {
   const [stickyIndexTree, setStickyIndexTree] = useState<StickyIndexNode[]>([]);
   const [expandedStickyNodeKeys, setExpandedStickyNodeKeys] = useState<Record<string, boolean>>({});
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
+  const deferredDocSearchQuery = useDeferredValue(docSearchQuery);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrubberTrackRef = useRef<View | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
@@ -1344,6 +1348,8 @@ export const DetailScreen = () => {
   };
 
   const setActiveSectionSafe = (nextSection: string) => {
+    if (nextSection === sectionVisualKey && nextSection === activeSection) return;
+    setSectionVisualKey(nextSection);
     setArticleScrubbing(false);
     setPreviewBubbleVisible(false);
     setActiveArticlePreviewIndex(-1);
@@ -1354,7 +1360,9 @@ export const DetailScreen = () => {
     setStickyIndexTree([]);
     setExpandedStickyNodeKeys({});
     if (nextSection !== "texto") setIsDocSearchOpen(false);
-    setActiveSection(nextSection);
+    startTransition(() => {
+      setActiveSection(nextSection);
+    });
   };
 
   const zoomOut = () => setTextZoom((prev) => Math.max(0.82, Math.round((prev - 0.06) * 100) / 100));
@@ -1406,6 +1414,7 @@ export const DetailScreen = () => {
     scrubberBubbleTailTopAnimRef.current.setValue((SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE) / 2);
     scrubberThumbTopAnimRef.current.setValue(0);
     scrubberThumbTopRef.current = 0;
+    setSectionVisualKey("texto");
     requestAnimationFrame(() => {
       if (scrollRef.current) {
         scrollRef.current.scrollTo({ y: 0, animated: false });
@@ -1599,138 +1608,218 @@ export const DetailScreen = () => {
     return <CivilCodeSimpleReader document={document} />;
   }
 
-  const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
-  const attachmentLabel = document.attachment?.fileName
-    ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
-    : "Ver archivo adjunto";
-  const normasQueModificaRaw = Array.isArray(document.normasQueModifica) ? document.normasQueModifica : [];
-  const normasComplementariasRaw = Array.isArray(document.normasComplementarias) ? document.normasComplementarias : [];
-  const observaciones = Array.isArray(document.observaciones) ? document.observaciones : [];
-  const normasQueModifica = dedupeRelatedByTitle(normasQueModificaRaw as RelatedContentItem[]);
-  const normasComplementarias = dedupeRelatedByTitle(normasComplementariasRaw as RelatedContentItem[]);
-  const observacionesItems = dedupeRelatedByTitle(observaciones as RelatedContentItem[]);
-  const relatedFallos = Array.isArray(document.relatedFallos) ? document.relatedFallos : [];
-  const relatedContentsFromApi = Array.isArray(document.relatedContents) ? document.relatedContents : [];
-  const metadataDateRaw = getMetadataDate(document.metadata);
-  const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
-
-  const contentWidth = Math.max(0, width - spacing.md * 2);
-  const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
-  const { fontSize: bodyFontSize, lineHeight: bodyLineHeight } = getReadingBodyMetrics(clampedTextZoom);
-  const headingFontSize =
-    Math.round(Math.max(bodyFontSize + 1.5, readingTypography.sectionLabelSize * clampedTextZoom + 2) * 10) / 10;
-  const headingLineHeight = Math.max(22, Math.round(headingFontSize * 1.34));
-  const readingBodyColor = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
-  const readingSecondaryColor = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
-  const readingLabelColor = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
-  const isComfortableDetail = document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
-  const comfortableBodyFontSize = isComfortableDetail ? bodyFontSize : bodyFontSize;
-  const comfortableBodyLineHeight = isComfortableDetail ? Math.max(bodyLineHeight + 3, Math.round(comfortableBodyFontSize * 1.66)) : bodyLineHeight;
-  const comfortableTitleFontSize = isComfortableDetail ? readingTypography.lawTitleSize : readingTypography.lawTitleSize;
-  const comfortableTitleLineHeight = isComfortableDetail ? readingTypography.lawTitleLineHeight + 2 : readingTypography.lawTitleLineHeight;
-  const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
-  const stickyViewportOffset = Math.max(26, headerAwareOffset + spacing.xs);
-  const jumpTopOffset = Math.max(spacing.md, headerAwareOffset + spacing.sm);
-  const subtitleText = getSubtitleText(document.subtitle);
-  const headerTitleText = (() => {
-    const clean = cleanText(document.title || "").replace(/\r/g, "\n");
-    const firstLine = clean
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    return firstLine || clean;
-  })();
-  const cleanedContentText = cleanContentText(document.contentText);
-  const extractedRelated =
-    document.contentType === "sumario"
-      ? extractRelatedContentBlock(cleanedContentText)
-      : { mainText: cleanedContentText, relatedItems: [] as string[] };
-  const relatedContentItems: RelatedContentItem[] =
-    relatedContentsFromApi.length > 0
-      ? relatedContentsFromApi
-      : extractedRelated.relatedItems.map((item) => ({
-          title: item,
-          subtitle: null,
-          contentTypeHint: "legislacion",
-          guid: null,
-          sourceUrl: null,
-          url: null,
-        }));
-  const leadText = cleanContentText(document.headerText) || extractLeadTextBeforeFirstArticle(extractedRelated.mainText);
-  const baseTypeLabel = getContentTypeLabel(document.contentType);
-  const subtypeRaw =
-    (typeof document.documentSubtype === "string" ? document.documentSubtype : null) || getSubtypeFromSubtitle(subtitleText);
-  const subtypeLabel = simplifySubtype(subtypeRaw);
-  const typeLabelRaw =
-    subtypeLabel && subtypeLabel !== baseTypeLabel && !baseTypeLabel.includes(subtypeLabel)
-      ? `${baseTypeLabel}/${subtypeLabel}`
-      : baseTypeLabel;
-  const typeLabel = typeLabelRaw
-    .split("/")
-    .map((part) => toSentenceCaseLabel(part))
-    .filter(Boolean)
-    .join("/ ");
-
-  const falloParsed =
-    baseTypeLabel === "fallo"
-      ? parseFalloContent(extractedRelated.mainText)
-      : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
-  const falloFechaFromHeader = (() => {
-    const index = falloParsed.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
-    if (index >= 0 && falloParsed.headerLines[index + 1]) return falloParsed.headerLines[index + 1];
-    return null;
-  })();
-  const falloTribunalFromHeader =
-    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
-  const falloFechaDisplay =
-    (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
-    (metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null) ||
-    falloFechaFromHeader;
-  const falloTribunalDisplay = (typeof document.tribunal === "string" && document.tribunal.trim()) || falloTribunalFromHeader || null;
-
-  const doctrinaAuthorFromSubtitle = (() => {
-    const subtitle = String(subtitleText || "").trim();
-    if (!subtitle) return null;
-    const parts = subtitle.split(".").map((part) => part.trim()).filter(Boolean);
-    if (parts.length >= 2 && /^doctrina$/i.test(parts[0])) return parts[1];
-    return null;
-  })();
-  const autorDoctrina =
-    (typeof document.autor === "string" && document.autor.trim()) || doctrinaAuthorFromSubtitle || null;
-  const estadoVigencia = normalizeVigencia(
-    (typeof document.estadoVigencia === "string" ? document.estadoVigencia : null) || null
-  );
-
-  const secondaryMeta =
-    baseTypeLabel === "fallo"
-      ? {
-          label: "Sentencia / Tribunal",
-          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" / ") || "No informado",
-          color: appColors.text,
-        }
-      : baseTypeLabel === "doctrina"
+  const {
+    attachmentUrl,
+    attachmentLabel,
+    normasQueModifica,
+    normasComplementarias,
+    observacionesItems,
+    relatedFallos,
+    relatedContentItems,
+    metadataDateRaw,
+    metadataDate,
+    contentWidth,
+    bodyFontSize,
+    bodyLineHeight,
+    headingFontSize,
+    headingLineHeight,
+    readingBodyColor,
+    readingSecondaryColor,
+    readingLabelColor,
+    isComfortableDetail,
+    comfortableBodyFontSize,
+    comfortableBodyLineHeight,
+    comfortableTitleFontSize,
+    comfortableTitleLineHeight,
+    stickyViewportOffset,
+    jumpTopOffset,
+    subtitleText,
+    headerTitleText,
+    extractedRelated,
+    leadText,
+    baseTypeLabel,
+    typeLabel,
+    falloParsed,
+    falloFechaDisplay,
+    falloTribunalDisplay,
+    autorDoctrina,
+    estadoVigencia,
+    secondaryMeta,
+    sanitizedHtml,
+  } = (() => {
+    const attachmentUrlValue = document.attachment?.url || document.attachment?.fallbackUrl || null;
+    const attachmentLabelValue = document.attachment?.fileName
+      ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
+      : "Ver archivo adjunto";
+    const normasQueModificaRaw = Array.isArray(document.normasQueModifica) ? document.normasQueModifica : [];
+    const normasComplementariasRaw = Array.isArray(document.normasComplementarias) ? document.normasComplementarias : [];
+    const observacionesRaw = Array.isArray(document.observaciones) ? document.observaciones : [];
+    const relatedFallosValue = Array.isArray(document.relatedFallos) ? document.relatedFallos : [];
+    const relatedContentsFromApi = Array.isArray(document.relatedContents) ? document.relatedContents : [];
+    const metadataDateRawValue = getMetadataDate(document.metadata);
+    const metadataDateValue = metadataDateRawValue ? formatDate(metadataDateRawValue) || metadataDateRawValue : null;
+    const contentWidthValue = Math.max(0, width - spacing.md * 2);
+    const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
+    const { fontSize, lineHeight } = getReadingBodyMetrics(clampedTextZoom);
+    const headingFontSizeValue =
+      Math.round(Math.max(fontSize + 1.5, readingTypography.sectionLabelSize * clampedTextZoom + 2) * 10) / 10;
+    const headingLineHeightValue = Math.max(22, Math.round(headingFontSizeValue * 1.34));
+    const readingBodyColorValue = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
+    const readingSecondaryColorValue = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
+    const readingLabelColorValue = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
+    const isComfortableDetailValue =
+      document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
+    const comfortableBodyFontSizeValue = fontSize;
+    const comfortableBodyLineHeightValue = isComfortableDetailValue
+      ? Math.max(lineHeight + 3, Math.round(comfortableBodyFontSizeValue * 1.66))
+      : lineHeight;
+    const comfortableTitleFontSizeValue = readingTypography.lawTitleSize;
+    const comfortableTitleLineHeightValue = isComfortableDetailValue
+      ? readingTypography.lawTitleLineHeight + 2
+      : readingTypography.lawTitleLineHeight;
+    const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
+    const stickyViewportOffsetValue = Math.max(26, headerAwareOffset + spacing.xs);
+    const jumpTopOffsetValue = Math.max(spacing.md, headerAwareOffset + spacing.sm);
+    const subtitleTextValue = getSubtitleText(document.subtitle);
+    const cleanHeaderTitle = cleanText(document.title || "").replace(/\r/g, "\n");
+    const headerTitleTextValue =
+      cleanHeaderTitle
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) || cleanHeaderTitle;
+    const cleanedContentTextValue = cleanContentText(document.contentText);
+    const extractedRelatedValue =
+      document.contentType === "sumario"
+        ? extractRelatedContentBlock(cleanedContentTextValue)
+        : { mainText: cleanedContentTextValue, relatedItems: [] as string[] };
+    const relatedContentItemsValue: RelatedContentItem[] =
+      relatedContentsFromApi.length > 0
+        ? relatedContentsFromApi
+        : extractedRelatedValue.relatedItems.map((item) => ({
+            title: item,
+            subtitle: null,
+            contentTypeHint: "legislacion",
+            guid: null,
+            sourceUrl: null,
+            url: null,
+          }));
+    const leadTextValue =
+      cleanContentText(document.headerText) || extractLeadTextBeforeFirstArticle(extractedRelatedValue.mainText);
+    const baseTypeLabelValue = getContentTypeLabel(document.contentType);
+    const subtypeRaw =
+      (typeof document.documentSubtype === "string" ? document.documentSubtype : null) ||
+      getSubtypeFromSubtitle(subtitleTextValue);
+    const subtypeLabel = simplifySubtype(subtypeRaw);
+    const typeLabelRaw =
+      subtypeLabel && subtypeLabel !== baseTypeLabelValue && !baseTypeLabelValue.includes(subtypeLabel)
+        ? `${baseTypeLabelValue}/${subtypeLabel}`
+        : baseTypeLabelValue;
+    const typeLabelValue = typeLabelRaw
+      .split("/")
+      .map((part) => toSentenceCaseLabel(part))
+      .filter(Boolean)
+      .join("/ ");
+    const falloParsedValue =
+      baseTypeLabelValue === "fallo"
+        ? parseFalloContent(extractedRelatedValue.mainText)
+        : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
+    const falloFechaFromHeader = (() => {
+      const index = falloParsedValue.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
+      if (index >= 0 && falloParsedValue.headerLines[index + 1]) return falloParsedValue.headerLines[index + 1];
+      return null;
+    })();
+    const falloTribunalFromHeader =
+      falloParsedValue.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
+    const falloFechaDisplayValue =
+      (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
+      (metadataDateRawValue ? formatDate(metadataDateRawValue) || metadataDateRawValue : null) ||
+      falloFechaFromHeader;
+    const falloTribunalDisplayValue =
+      (typeof document.tribunal === "string" && document.tribunal.trim()) || falloTribunalFromHeader || null;
+    const doctrinaAuthorFromSubtitle = (() => {
+      const subtitle = String(subtitleTextValue || "").trim();
+      if (!subtitle) return null;
+      const parts = subtitle.split(".").map((part) => part.trim()).filter(Boolean);
+      if (parts.length >= 2 && /^doctrina$/i.test(parts[0])) return parts[1];
+      return null;
+    })();
+    const autorDoctrinaValue =
+      (typeof document.autor === "string" && document.autor.trim()) || doctrinaAuthorFromSubtitle || null;
+    const estadoVigenciaValue = normalizeVigencia(
+      (typeof document.estadoVigencia === "string" ? document.estadoVigencia : null) || null
+    );
+    const secondaryMetaValue =
+      baseTypeLabelValue === "fallo"
         ? {
-            label: "Autor",
-            value: autorDoctrina || "No informado",
+            label: "Sentencia / Tribunal",
+            value: [falloFechaDisplayValue, falloTribunalDisplayValue].filter(Boolean).join(" / ") || "No informado",
             color: appColors.text,
           }
-        : baseTypeLabel === "dictamen"
+        : baseTypeLabelValue === "doctrina"
           ? {
-              label: "Organismo",
-              value: (typeof document.organismo === "string" && document.organismo.trim()) || "No informado",
+              label: "Autor",
+              value: autorDoctrinaValue || "No informado",
               color: appColors.text,
             }
-          : baseTypeLabel === "sumario"
+          : baseTypeLabelValue === "dictamen"
             ? {
-                label: "Fecha",
-                value: metadataDate || "No informado",
+                label: "Organismo",
+                value: (typeof document.organismo === "string" && document.organismo.trim()) || "No informado",
                 color: appColors.text,
               }
-            : {
-                label: "Estado de vigencia",
-                value: estadoVigencia || "No informado",
-                color: estadoVigencia ? getVigenciaColor(estadoVigencia) : appColors.muted,
-              };
+            : baseTypeLabelValue === "sumario"
+              ? {
+                  label: "Fecha",
+                  value: metadataDateValue || "No informado",
+                  color: appColors.text,
+                }
+              : {
+                  label: "Estado de vigencia",
+                  value: estadoVigenciaValue || "No informado",
+                  color: estadoVigenciaValue ? getVigenciaColor(estadoVigenciaValue) : appColors.muted,
+                };
+    const html = typeof document.contentHtml === "string" ? document.contentHtml.trim() : "";
+
+    return {
+      attachmentUrl: attachmentUrlValue,
+      attachmentLabel: attachmentLabelValue,
+      normasQueModifica: dedupeRelatedByTitle(normasQueModificaRaw as RelatedContentItem[]),
+      normasComplementarias: dedupeRelatedByTitle(normasComplementariasRaw as RelatedContentItem[]),
+      observacionesItems: dedupeRelatedByTitle(observacionesRaw as RelatedContentItem[]),
+      relatedFallos: relatedFallosValue,
+      relatedContentItems: relatedContentItemsValue,
+      metadataDateRaw: metadataDateRawValue,
+      metadataDate: metadataDateValue,
+      contentWidth: contentWidthValue,
+      bodyFontSize: fontSize,
+      bodyLineHeight: lineHeight,
+      headingFontSize: headingFontSizeValue,
+      headingLineHeight: headingLineHeightValue,
+      readingBodyColor: readingBodyColorValue,
+      readingSecondaryColor: readingSecondaryColorValue,
+      readingLabelColor: readingLabelColorValue,
+      isComfortableDetail: isComfortableDetailValue,
+      comfortableBodyFontSize: comfortableBodyFontSizeValue,
+      comfortableBodyLineHeight: comfortableBodyLineHeightValue,
+      comfortableTitleFontSize: comfortableTitleFontSizeValue,
+      comfortableTitleLineHeight: comfortableTitleLineHeightValue,
+      stickyViewportOffset: stickyViewportOffsetValue,
+      jumpTopOffset: jumpTopOffsetValue,
+      subtitleText: subtitleTextValue,
+      headerTitleText: headerTitleTextValue,
+      extractedRelated: extractedRelatedValue,
+      leadText: leadTextValue,
+      baseTypeLabel: baseTypeLabelValue,
+      typeLabel: typeLabelValue,
+      falloParsed: falloParsedValue,
+      falloFechaDisplay: falloFechaDisplayValue,
+      falloTribunalDisplay: falloTribunalDisplayValue,
+      autorDoctrina: autorDoctrinaValue,
+      estadoVigencia: estadoVigenciaValue,
+      secondaryMeta: secondaryMetaValue,
+      sanitizedHtml: html && html.length > 200 ? sanitizeHtml(html) : null,
+    };
+  })();
 
   const sectionItems =
     document.contentType === "legislacion"
@@ -1758,9 +1847,11 @@ export const DetailScreen = () => {
         ].filter((item) => item.visible);
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
+  const visualSelectedSection = visibleSectionKeys.has(sectionVisualKey) ? sectionVisualKey : selectedSection;
+  const documentArticles = Array.isArray(document.articles) ? document.articles : [];
   const shouldPrepareArticleCaches =
     document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
-  const searchableArticles = shouldPrepareArticleCaches && Array.isArray(document.articles) ? document.articles : [];
+  const searchableArticles = shouldPrepareArticleCaches ? documentArticles : [];
   const hasScrollableTextRail =
     selectedSection === "texto" &&
     (baseTypeLabel === "fallo" || baseTypeLabel === "sumario" || baseTypeLabel === "doctrina") &&
@@ -1769,9 +1860,9 @@ export const DetailScreen = () => {
       : !!extractedRelated.mainText);
   const scrubberMode = searchableArticles.length > 0 ? "articles" : hasScrollableTextRail ? "scroll" : "none";
   const isContinuousTextRail = scrubberMode === "scroll";
-  const rightRailContentInset = isContinuousTextRail ? 16 : 0;
-  if (articleShareCacheRef.current.source !== searchableArticles) {
-    const nextItems = searchableArticles.map((article, index) => {
+  const rightRailContentInset = isContinuousTextRail ? (isComfortableDetail ? 0 : 16) : 0;
+  if (articleShareCacheRef.current.source !== documentArticles) {
+    const nextItems = documentArticles.map((article, index) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
       const parsedTitle = parseArticleTitleContext(article.title);
       const articleBodyRaw = stripRepeatedArticleLead(
@@ -1794,7 +1885,7 @@ export const DetailScreen = () => {
       };
     });
     articleShareCacheRef.current = {
-      source: searchableArticles,
+      source: documentArticles,
       items: nextItems,
       keySet: new Set(nextItems.map((item) => item.key)),
     };
@@ -1805,21 +1896,21 @@ export const DetailScreen = () => {
     (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
     0
   );
-  const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
+  const normalizedSearchQuery = deferredDocSearchQuery.trim().toLowerCase();
   if (
-    articleSearchCacheRef.current.source !== searchableArticles ||
+    articleSearchCacheRef.current.source !== documentArticles ||
     articleSearchCacheRef.current.query !== normalizedSearchQuery
   ) {
     let nextMatches: number[] = [];
-    if (normalizedSearchQuery && searchableArticles.length) {
+    if (normalizedSearchQuery && documentArticles.length) {
       nextMatches = [];
-      searchableArticles.forEach((article, index) => {
+      documentArticles.forEach((article, index) => {
         const haystack = `${article.number || ""} ${article.title || ""} ${article.text || ""}`.toLowerCase();
         if (haystack.includes(normalizedSearchQuery)) nextMatches.push(index);
       });
     }
     articleSearchCacheRef.current = {
-      source: searchableArticles,
+      source: documentArticles,
       query: normalizedSearchQuery,
       matches: nextMatches,
       matchSet: new Set(nextMatches),
@@ -1828,11 +1919,11 @@ export const DetailScreen = () => {
   const articleSearchMatches = articleSearchCacheRef.current.matches;
   const articleSearchMatchSet = articleSearchCacheRef.current.matchSet;
   const plainTextSearchMatches =
-    !normalizedSearchQuery || searchableArticles.length > 0
+    !normalizedSearchQuery || documentArticles.length > 0
       ? 0
       : countMatchesInText(`${leadText || ""}\n${extractedRelated.mainText || ""}`, normalizedSearchQuery);
   const totalSearchMatches =
-    searchableArticles.length > 0 ? articleSearchMatches.length : plainTextSearchMatches;
+    documentArticles.length > 0 ? articleSearchMatches.length : plainTextSearchMatches;
   const normalizedSearchPointer =
     articleSearchMatches.length > 0
       ? Math.min(searchMatchPointer, articleSearchMatches.length - 1)
@@ -2109,15 +2200,32 @@ export const DetailScreen = () => {
     if (selectedSection !== "texto") return;
     const entries = getSortedStickyEntries();
     if (!entries.length) return;
+
+    if (!articleStickyDirtyRef.current && stickyIndexTree.length > 0) {
+      const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
+      const autoExpanded: Record<string, boolean> = {};
+      stickyIndexTree.forEach((node) => {
+        if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
+          autoExpanded[node.key] = true;
+        }
+      });
+      setExpandedStickyNodeKeys(autoExpanded);
+      setIsStickyIndexOpen(true);
+      return;
+    }
+
     const tree = buildStickyIndexTree(entries);
     if (!tree.length) return;
     const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
     const autoExpanded: Record<string, boolean> = {};
-    tree.forEach((node, index) => {
-      const shouldExpand =
-        (!!currentNormalized && currentNormalized.includes(normalizeHeadingToken(node.label))) || index === 0;
-      if (shouldExpand) autoExpanded[node.key] = true;
+
+    // Simple one-level match: expand only the root nodes that match current section
+    tree.forEach((node) => {
+      if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
+        autoExpanded[node.key] = true;
+      }
     });
+
     setExpandedStickyNodeKeys(autoExpanded);
     setStickyIndexTree(tree);
     setIsStickyIndexOpen(true);
@@ -2142,7 +2250,7 @@ export const DetailScreen = () => {
           style={({ pressed }) => [
             styles.stickyIndexItem,
             styles.stickyIndexNodeItem,
-            depth > 0 ? styles.stickyIndexNodeItemNested : null,
+            depth > 1 ? styles.stickyIndexNodeItemNested : null,
             { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
             pressed ? styles.stickyIndexItemPressed : null,
           ]}
@@ -2156,39 +2264,25 @@ export const DetailScreen = () => {
           <Text
             style={[
               styles.stickyIndexItemText,
-              depth > 0 ? styles.stickyIndexItemTextNested : null,
+              depth === 1 ? styles.stickyIndexItemTextTitle : null,
+              depth > 1 ? styles.stickyIndexItemTextNested : null,
               { color: appColors.primaryStrong },
             ]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
           >
             {node.label}
           </Text>
           {hasChildren ? (
             isExpanded ? (
-              <ChevronUp size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+              <ChevronUp size={14} color={appColors.primaryStrong} strokeWidth={2.2} />
             ) : (
-              <ChevronDown size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+              <ChevronDown size={14} color={appColors.primaryStrong} strokeWidth={2.2} />
             )
           ) : null}
         </Pressable>
         {hasChildren && isExpanded ? (
           <View style={styles.stickyIndexChildren}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.stickyIndexItem,
-                styles.stickyIndexNodeItem,
-                styles.stickyIndexNodeItemNested,
-                styles.stickyIndexNodeJumpItem,
-                { borderColor: appColors.border, backgroundColor: isDarkMode ? "#0E172B" : "#FFFFFF" },
-                pressed ? styles.stickyIndexItemPressed : null,
-              ]}
-              onPress={() => jumpToStickyEntry(node)}
-              unstable_pressDelay={0}
-              hitSlop={TOUCH_HIT_SLOP}
-            >
-              <Text style={[styles.stickyIndexItemText, styles.stickyIndexItemTextNested, { color: appColors.primaryStrong }]}>
-                {node.label}
-              </Text>
-            </Pressable>
             {node.children.map((child) => renderStickyIndexNode(child, depth + 1))}
           </View>
         ) : null}
@@ -2253,6 +2347,26 @@ export const DetailScreen = () => {
   const renderHighlightedBlock = (value: string, style: any, keyPrefix: string, selectable = false) => (
     <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>
   );
+
+  const renderHighlightedBlockWithParagraphs = (value: string, style: any, keyPrefix: string, selectable = false) => {
+    const paragraphs = value.split(/\n\n+/).filter((p) => p.trim().length > 0);
+    if (paragraphs.length <= 1) {
+      return <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>;
+    }
+    return (
+      <View>
+        {paragraphs.map((para, idx) => (
+          <Text
+            key={`${keyPrefix}-para-${idx}`}
+            style={[style, idx > 0 ? { marginTop: spacing.md } : null]}
+            selectable={selectable}
+          >
+            {renderHighlightedInline(para, `${keyPrefix}-para-${idx}`)}
+          </Text>
+        ))}
+      </View>
+    );
+  };
 
   const handleDetailScroll = (y: number) => {
     scrollOffsetRef.current = y;
@@ -2894,12 +3008,11 @@ export const DetailScreen = () => {
       return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
     }
 
-    const html = typeof document.contentHtml === "string" ? document.contentHtml.trim() : "";
-    if (html && html.length > 200) {
+    if (sanitizedHtml) {
       return (
         <RenderHTML
           contentWidth={contentWidth}
-          source={{ html: sanitizeHtml(html) }}
+          source={{ html: sanitizedHtml }}
           baseStyle={{ color: colors.text, fontSize: bodyFontSize, lineHeight: bodyLineHeight }}
         />
       );
@@ -3104,7 +3217,7 @@ export const DetailScreen = () => {
       if (document.contentType === "fallo") {
         const parsed = parseFalloContent(extractedRelated.mainText);
         return (
-          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 14 } : null]}>
+          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 0 } : null]}>
             <View style={styles.inlineContentShareRow}>
               <Pressable
                 style={styles.articleShareBtn}
@@ -3138,7 +3251,7 @@ export const DetailScreen = () => {
             {parsed.summaryText ? (
               <View style={styles.falloSummarySection}>
                 <Text style={styles.falloSummaryTitle}>Sumario</Text>
-                {renderHighlightedBlock(
+                {renderHighlightedBlockWithParagraphs(
                   parsed.summaryText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-summary",
@@ -3149,7 +3262,7 @@ export const DetailScreen = () => {
             {parsed.bodyText ? (
               <View style={styles.falloSummarySection}>
                 <Text style={styles.falloSummaryTitle}>Texto completo</Text>
-                {renderHighlightedBlock(
+                {renderHighlightedBlockWithParagraphs(
                   parsed.bodyText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-body",
@@ -3166,7 +3279,15 @@ export const DetailScreen = () => {
             .replace(/\r\n?/g, "\n")
             .replace(/\n{3,}/g, "\n\n")
         : extractedRelated.mainText;
-      const mainTextBlock = renderHighlightedBlock(
+      const mainTextBlock = isComfortableDetail ? renderHighlightedBlockWithParagraphs(
+        comfortableMainText,
+        [
+          styles.contentText,
+          { fontSize: comfortableBodyFontSize, lineHeight: comfortableBodyLineHeight, color: readingBodyColor },
+        ],
+        "main-text",
+        isComfortableDetail || document.contentType === "fallo" || document.contentType === "dictamen"
+      ) : renderHighlightedBlock(
         comfortableMainText,
         [
           styles.contentText,
@@ -3187,7 +3308,7 @@ export const DetailScreen = () => {
                 paddingHorizontal: spacing.md + 1,
                 paddingVertical: spacing.md + 2,
                 borderRadius: radius.lg,
-                marginRight: isContinuousTextRail ? 14 : 0,
+                marginRight: isContinuousTextRail ? 0 : 0,
               },
             ]}
           >
@@ -3305,6 +3426,7 @@ export const DetailScreen = () => {
     .join("|");
   const contentRenderKey = [
     document.guid,
+    document.fetchedAt || "",
     selectedSection,
     bodyFontSize,
     bodyLineHeight,
@@ -3665,7 +3787,7 @@ export const DetailScreen = () => {
                   borderColor: appColors.border,
                   backgroundColor: appColors.card,
                 },
-                selectedSection === item.key ? styles.sectionTabActive : null,
+                visualSelectedSection === item.key ? styles.sectionTabActive : null,
                 pressed ? styles.sectionTabPressed : null,
               ]}
               onPress={() => setActiveSectionSafe(item.key)}
@@ -3677,7 +3799,7 @@ export const DetailScreen = () => {
                 style={[
                   styles.sectionTabText,
                   { color: appColors.muted },
-                  selectedSection === item.key ? [styles.sectionTabTextActive, { color: appColors.primaryStrong }] : null,
+                  visualSelectedSection === item.key ? [styles.sectionTabTextActive, { color: appColors.primaryStrong }] : null,
                 ]}
               >
                 {item.label}
@@ -3836,7 +3958,7 @@ export const DetailScreen = () => {
             {
               top: fixedHeaderHeight + 10,
               bottom: Math.max(spacing.xl + 12, insets.bottom + 34),
-              right: isContinuousTextRail ? 0 : 2,
+              right: isContinuousTextRail ? (isComfortableDetail ? 8 : 0) : 2,
               width: isContinuousTextRail ? 12 : 14,
             },
             isScrubbingArticles ? styles.articleScrubberTrackActive : null,
@@ -4588,7 +4710,7 @@ const styles = StyleSheet.create({
   stickyIndexBackdrop: {
     flex: 1,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.lg + 8,
     justifyContent: "center",
   },
   stickyIndexCard: {
@@ -4658,10 +4780,29 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   stickyIndexNodeItemNested: {
-    marginLeft: spacing.sm,
+    marginLeft: spacing.xs + 2,
   },
   stickyIndexNodeJumpItem: {
     marginTop: 0,
+  },
+  stickyIndexExpander: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  stickyIndexExpanderPressed: {
+    backgroundColor: "rgba(27, 55, 94, 0.1)",
+  },
+  stickyIndexNameButton: {
+    flex: 1,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  stickyIndexNameButtonWithChevron: {
+    paddingRight: 0,
   },
   stickyIndexItemPressed: {
     borderColor: colors.primaryStrong,
@@ -4672,10 +4813,17 @@ const styles = StyleSheet.create({
     fontSize: typography.small + 1,
     fontWeight: "700",
     lineHeight: 18,
+    flex: 1,
+    minWidth: 0,
+  },
+  stickyIndexItemTextTitle: {
+    fontWeight: "500",
   },
   stickyIndexItemTextNested: {
     flex: 1,
     fontSize: typography.small,
+    fontWeight: "500",
+    color: "#000",
   },
 });
 

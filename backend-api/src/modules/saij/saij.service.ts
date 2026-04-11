@@ -18,6 +18,7 @@ import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
+const inFlightDocumentRequests = new Map<string, Promise<SaijDocumentResponse>>();
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =
@@ -1265,78 +1266,133 @@ export const SaijService = {
       }
     }
 
-    let strategyUsed: 'view-document' | 'friendly-url-fallback' | 'view-document+friendly-url-fallback' = 'view-document';
-    let hadEmptyPrimaryContent = false;
-    let fallbackAttempted = false;
-    let fallbackSucceeded = false;
-    let externalContentType: string | undefined;
-    let externalUrl: string | undefined;
+    const loadDocument = async (): Promise<SaijDocumentResponse> => {
+      let strategyUsed: 'view-document' | 'friendly-url-fallback' | 'view-document+friendly-url-fallback' = 'view-document';
+      let hadEmptyPrimaryContent = false;
+      let fallbackAttempted = false;
+      let fallbackSucceeded = false;
+      let externalContentType: string | undefined;
+      let externalUrl: string | undefined;
 
-    try {
-      const { raw, debug: debugInfo } = await client.fetchSaijDocumentByGuid(guid);
-      externalContentType = debugInfo.contentType;
-      externalUrl = debugInfo.url;
-      let mapped = mapSaijDocument(raw, { guid });
-      mapped = await resolveRelatedFallos(mapped);
-      if (hasGenericNormativeRefs(mapped)) {
-        mapped = await enrichNormativeReferenceTitles(mapped);
-      }
-      mapped = await enrichDocumentNormCitation(mapped);
-      mapped = await enrichFalloWithRelatedSummary(mapped, raw);
-      if (isDocumentContentEmpty(mapped)) {
-        const relatedSumario = await resolveRelatedSumarioFallback(raw);
-        if (relatedSumario) {
-          mapped = {
-            ...mapped,
-            contentType: mapped.contentType === 'legislacion' ? relatedSumario.contentType : mapped.contentType,
-            subtitle: mapped.subtitle || relatedSumario.subtitle || null,
-            contentHtml: null,
-            contentText: relatedSumario.contentText,
-            articles: [],
-            _contentSource: 'view-document.sumarios-relacionados',
-          };
+      try {
+        const { raw, debug: debugInfo } = await client.fetchSaijDocumentByGuid(guid);
+        externalContentType = debugInfo.contentType;
+        externalUrl = debugInfo.url;
+        let mapped = mapSaijDocument(raw, { guid });
+        mapped = await resolveRelatedFallos(mapped);
+        if (hasGenericNormativeRefs(mapped)) {
+          mapped = await enrichNormativeReferenceTitles(mapped);
         }
-      }
-      const primaryRenderable = !isDocumentContentEmpty(mapped);
-
-      if (primaryRenderable) {
-        return await finalizeDocument(guid, mapped, raw, {
-          debug,
-          strategyUsed,
-          externalContentType,
-          externalUrl,
-          hadEmptyPrimaryContent: false,
-          fallbackAttempted: false,
-          fallbackSucceeded: false,
-          viewDocumentHadRenderableContent: true,
-          viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
-          friendlyFallbackSkippedBecausePrimaryWasEnough: true,
-        });
-      }
-
-      if (isDocumentContentEmpty(mapped) && (mapped.friendlyUrl || mapped.sourceUrl)) {
-        hadEmptyPrimaryContent = true;
-        fallbackAttempted = true;
-        try {
-          const fallbackUrl = mapped.friendlyUrl || mapped.sourceUrl!;
-          const { html, debug: dbg } = await client.fetchFriendlyUrl(fallbackUrl);
-          externalContentType = dbg.contentType;
-          externalUrl = dbg.finalUrl ?? dbg.url;
-          const fallbackDoc = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl: fallbackUrl });
-          mapped = mergeDocumentContent(mapped, fallbackDoc);
-          mapped = await resolveRelatedFallos(mapped);
-          if (hasGenericNormativeRefs(mapped)) {
-            mapped = await enrichNormativeReferenceTitles(mapped);
+        mapped = await enrichDocumentNormCitation(mapped);
+        mapped = await enrichFalloWithRelatedSummary(mapped, raw);
+        if (isDocumentContentEmpty(mapped)) {
+          const relatedSumario = await resolveRelatedSumarioFallback(raw);
+          if (relatedSumario) {
+            mapped = {
+              ...mapped,
+              contentType: mapped.contentType === 'legislacion' ? relatedSumario.contentType : mapped.contentType,
+              subtitle: mapped.subtitle || relatedSumario.subtitle || null,
+              contentHtml: null,
+              contentText: relatedSumario.contentText,
+              articles: [],
+              _contentSource: 'view-document.sumarios-relacionados',
+            };
           }
-          mapped = await enrichDocumentNormCitation(mapped);
-          mapped = await enrichFalloWithRelatedSummary(mapped, raw);
-          fallbackSucceeded = !isDocumentContentEmpty(mapped);
-          strategyUsed = 'view-document+friendly-url-fallback';
-          const fallbackReason: string | undefined =
-            fallbackSucceeded ? undefined : detectBlockReason(dbg.htmlPreview) ?? 'html_without_extractable_main_content';
-          if (fallbackReason) {
-            logger.warn({ guid, fallbackReason }, 'Fallback HTML sin contenido Ãºtil');
+        }
+        const primaryRenderable = !isDocumentContentEmpty(mapped);
+
+        if (primaryRenderable) {
+          return await finalizeDocument(guid, mapped, raw, {
+            debug,
+            strategyUsed,
+            externalContentType,
+            externalUrl,
+            hadEmptyPrimaryContent: false,
+            fallbackAttempted: false,
+            fallbackSucceeded: false,
+            viewDocumentHadRenderableContent: true,
+            viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
+            friendlyFallbackSkippedBecausePrimaryWasEnough: true,
+          });
+        }
+
+        if (isDocumentContentEmpty(mapped) && (mapped.friendlyUrl || mapped.sourceUrl)) {
+          hadEmptyPrimaryContent = true;
+          fallbackAttempted = true;
+          try {
+            const fallbackUrl = mapped.friendlyUrl || mapped.sourceUrl!;
+            const { html, debug: dbg } = await client.fetchFriendlyUrl(fallbackUrl);
+            externalContentType = dbg.contentType;
+            externalUrl = dbg.finalUrl ?? dbg.url;
+            const fallbackDoc = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl: fallbackUrl });
+            mapped = mergeDocumentContent(mapped, fallbackDoc);
+            mapped = await resolveRelatedFallos(mapped);
+            if (hasGenericNormativeRefs(mapped)) {
+              mapped = await enrichNormativeReferenceTitles(mapped);
+            }
+            mapped = await enrichDocumentNormCitation(mapped);
+            mapped = await enrichFalloWithRelatedSummary(mapped, raw);
+            fallbackSucceeded = !isDocumentContentEmpty(mapped);
+            strategyUsed = 'view-document+friendly-url-fallback';
+            const fallbackReason: string | undefined =
+              fallbackSucceeded ? undefined : detectBlockReason(dbg.htmlPreview) ?? 'html_without_extractable_main_content';
+            if (fallbackReason) {
+              logger.warn({ guid, fallbackReason }, 'Fallback HTML sin contenido Ãºtil');
+            }
+            return await finalizeDocument(guid, mapped, raw, {
+              debug,
+              strategyUsed,
+              externalContentType,
+              externalUrl,
+              hadEmptyPrimaryContent,
+              fallbackAttempted,
+              fallbackSucceeded,
+              fallbackHttpStatus: dbg.status,
+              fallbackContentType: dbg.contentType,
+              fallbackFinalUrl: dbg.finalUrl ?? dbg.url,
+              fallbackHtmlPreview: dbg.htmlPreview,
+              fallbackReason,
+              fallbackErrorName: undefined,
+              fallbackErrorMessage: undefined,
+              primaryHasMetadataOnly: true,
+              contentUnavailableReason: fallbackSucceeded
+                ? null
+                : fallbackReason === 'fallback_fetch_failed' && dbg.status === 500
+                  ? 'saij_friendly_500'
+                  : fallbackReason ?? null,
+              viewDocumentHadRenderableContent: false,
+              viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
+              friendlyFallbackSkippedBecausePrimaryWasEnough: false,
+            });
+          } catch (err) {
+            logger.warn({ guid, err }, 'Fallback after empty content failed');
+            const errStatus = (err as any)?.response?.status || (err as any)?.status;
+            const reason =
+              errStatus === 500
+                ? 'saij_friendly_500'
+                : errStatus === 504
+                  ? 'saij_timeout'
+                  : 'fallback_fetch_failed';
+            return await finalizeDocument(guid, mapped, raw, {
+              debug,
+              strategyUsed,
+              externalContentType,
+              externalUrl,
+              hadEmptyPrimaryContent,
+              fallbackAttempted,
+              fallbackSucceeded: false,
+              fallbackReason: reason,
+              fallbackErrorName: (err as any)?.name,
+              fallbackErrorMessage: (err as any)?.message,
+              primaryHasMetadataOnly: true,
+              contentUnavailableReason: reason,
+              viewDocumentHadRenderableContent: false,
+              viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
+              friendlyFallbackSkippedBecausePrimaryWasEnough: false,
+            });
           }
+        }
+
         return await finalizeDocument(guid, mapped, raw, {
           debug,
           strategyUsed,
@@ -1345,149 +1401,115 @@ export const SaijService = {
           hadEmptyPrimaryContent,
           fallbackAttempted,
           fallbackSucceeded,
-          fallbackHttpStatus: dbg.status,
-          fallbackContentType: dbg.contentType,
-          fallbackFinalUrl: dbg.finalUrl ?? dbg.url,
-          fallbackHtmlPreview: dbg.htmlPreview,
-          fallbackReason,
-          fallbackErrorName: undefined,
-          fallbackErrorMessage: undefined,
-          primaryHasMetadataOnly: true,
-          contentUnavailableReason: fallbackSucceeded
-            ? null
-            : fallbackReason === 'fallback_fetch_failed' && dbg.status === 500
-              ? 'saij_friendly_500'
-                : fallbackReason ?? null,
-          viewDocumentHadRenderableContent: false,
-          viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
-          friendlyFallbackSkippedBecausePrimaryWasEnough: false,
         });
-      } catch (err) {
-          logger.warn({ guid, err }, 'Fallback after empty content failed');
-          const errStatus = (err as any)?.response?.status || (err as any)?.status;
-          const reason =
-          errStatus === 500
-            ? 'saij_friendly_500'
-            : errStatus === 504
-              ? 'saij_timeout'
-              : 'fallback_fetch_failed';
-        return await finalizeDocument(guid, mapped, raw, {
-          debug,
-          strategyUsed,
-          externalContentType,
-          externalUrl,
-          hadEmptyPrimaryContent,
-          fallbackAttempted,
-            fallbackSucceeded: false,
-            fallbackReason: reason,
-            fallbackErrorName: (err as any)?.name,
-            fallbackErrorMessage: (err as any)?.message,
-            primaryHasMetadataOnly: true,
-            contentUnavailableReason: reason,
-          viewDocumentHadRenderableContent: false,
-          viewDocumentContentSource: (mapped as any)?._contentSource ?? null,
-          friendlyFallbackSkippedBecausePrimaryWasEnough: false,
-        });
-      }
-      }
+      } catch (error) {
+        logger.warn({ guid, error }, 'view-document failed, trying friendly-url');
+        strategyUsed = 'friendly-url-fallback';
+        const fallbackReasonFromError = resolveUnavailableReason(error);
 
-      return await finalizeDocument(guid, mapped, raw, {
-        debug,
-        strategyUsed,
-        externalContentType,
-        externalUrl,
-        hadEmptyPrimaryContent,
-        fallbackAttempted,
-        fallbackSucceeded,
-      });
-    } catch (error) {
-      logger.warn({ guid, error }, 'view-document failed, trying friendly-url');
-      strategyUsed = 'friendly-url-fallback';
-      const fallbackReasonFromError = resolveUnavailableReason(error);
-
-      // try fallback using friendly URL from cache (mongo)
-      const mongo = await NormService.getCached(guid);
-      const friendlyUrl = (mongo as any)?.friendlyUrl;
-      if (!friendlyUrl) {
-        if (mongo) {
-          const doc = buildDocumentFromMongo(mongo, { fromCache: true, contentUnavailableReason: fallbackReasonFromError });
-          return {
-            ok: true,
-            document: doc,
-            debugInfo: debug
-              ? {
-                  strategyUsed: 'cache',
-                  hadEmptyPrimaryContent: true,
-                  contentUnavailableReason: doc.contentUnavailableReason,
-                }
-              : undefined,
-          };
+        const mongo = await NormService.getCached(guid);
+        const friendlyUrl = (mongo as any)?.friendlyUrl;
+        if (!friendlyUrl) {
+          if (mongo) {
+            const doc = buildDocumentFromMongo(mongo, { fromCache: true, contentUnavailableReason: fallbackReasonFromError });
+            return {
+              ok: true,
+              document: doc,
+              debugInfo: debug
+                ? {
+                    strategyUsed: 'cache',
+                    hadEmptyPrimaryContent: true,
+                    contentUnavailableReason: doc.contentUnavailableReason,
+                  }
+                : undefined,
+            };
+          }
+          throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
         }
-        throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
-      }
 
-      try {
-        const { html, debug: dbg } = await client.fetchFriendlyUrl(friendlyUrl);
-        externalContentType = dbg.contentType;
-        externalUrl = dbg.finalUrl ?? dbg.url;
-        let mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
-        mapped = await resolveRelatedFallos(mapped);
-        if (hasGenericNormativeRefs(mapped)) {
-          mapped = await enrichNormativeReferenceTitles(mapped);
-        }
-        mapped = await enrichDocumentNormCitation(mapped);
-        mapped = await enrichFalloWithRelatedSummary(mapped, null);
-        const mergedDoc = mapped;
-        const fbSucceeded = !isDocumentContentEmpty(mergedDoc);
-        const fbReason: string | undefined = fbSucceeded
-          ? undefined
-          : detectBlockReason(dbg.htmlPreview) ?? 'html_without_extractable_main_content';
-        return await finalizeDocument(guid, mergedDoc, {}, {
-          debug,
-          strategyUsed,
-          externalContentType,
-          externalUrl,
-          hadEmptyPrimaryContent: true,
-          fallbackAttempted: true,
-          fallbackSucceeded: fbSucceeded,
-          fallbackHttpStatus: dbg.status,
-          fallbackContentType: dbg.contentType,
-          fallbackFinalUrl: dbg.finalUrl ?? dbg.url,
-          fallbackHtmlPreview: dbg.htmlPreview,
-          fallbackReason: fbReason,
-          fallbackErrorName: undefined,
-          fallbackErrorMessage: undefined,
-          primaryHasMetadataOnly: false,
-          contentUnavailableReason:
-            fbSucceeded || !fbReason
-              ? null
-              : fbReason === 'fallback_fetch_failed' && dbg.status === 500
-                ? 'saij_friendly_500'
-                : fbReason,
-          viewDocumentHadRenderableContent: false,
-          viewDocumentContentSource: null,
-          friendlyFallbackSkippedBecausePrimaryWasEnough: false,
-        });
-      } catch (fallbackError) {
-        logger.error({ guid, fallbackError }, 'friendly-url fallback failed');
-        if (mongo) {
-          const doc = buildDocumentFromMongo(mongo, {
-            fromCache: true,
-            contentUnavailableReason: resolveUnavailableReason(fallbackError),
+        try {
+          const { html, debug: dbg } = await client.fetchFriendlyUrl(friendlyUrl);
+          externalContentType = dbg.contentType;
+          externalUrl = dbg.finalUrl ?? dbg.url;
+          let mapped = mapSaijDocument({}, { guid, fallbackHtml: html, friendlyUrl });
+          mapped = await resolveRelatedFallos(mapped);
+          if (hasGenericNormativeRefs(mapped)) {
+            mapped = await enrichNormativeReferenceTitles(mapped);
+          }
+          mapped = await enrichDocumentNormCitation(mapped);
+          mapped = await enrichFalloWithRelatedSummary(mapped, null);
+          const mergedDoc = mapped;
+          const fbSucceeded = !isDocumentContentEmpty(mergedDoc);
+          const fbReason: string | undefined = fbSucceeded
+            ? undefined
+            : detectBlockReason(dbg.htmlPreview) ?? 'html_without_extractable_main_content';
+          return await finalizeDocument(guid, mergedDoc, {}, {
+            debug,
+            strategyUsed,
+            externalContentType,
+            externalUrl,
+            hadEmptyPrimaryContent: true,
+            fallbackAttempted: true,
+            fallbackSucceeded: fbSucceeded,
+            fallbackHttpStatus: dbg.status,
+            fallbackContentType: dbg.contentType,
+            fallbackFinalUrl: dbg.finalUrl ?? dbg.url,
+            fallbackHtmlPreview: dbg.htmlPreview,
+            fallbackReason: fbReason,
+            fallbackErrorName: undefined,
+            fallbackErrorMessage: undefined,
+            primaryHasMetadataOnly: false,
+            contentUnavailableReason:
+              fbSucceeded || !fbReason
+                ? null
+                : fbReason === 'fallback_fetch_failed' && dbg.status === 500
+                  ? 'saij_friendly_500'
+                  : fbReason,
+            viewDocumentHadRenderableContent: false,
+            viewDocumentContentSource: null,
+            friendlyFallbackSkippedBecausePrimaryWasEnough: false,
           });
-          return {
-            ok: true,
-            document: doc,
-            debugInfo: debug
-              ? {
-                  strategyUsed: 'cache',
-                  hadEmptyPrimaryContent: true,
-                  contentUnavailableReason: doc.contentUnavailableReason,
-                }
-              : undefined,
-          };
+        } catch (fallbackError) {
+          logger.error({ guid, fallbackError }, 'friendly-url fallback failed');
+          if (mongo) {
+            const doc = buildDocumentFromMongo(mongo, {
+              fromCache: true,
+              contentUnavailableReason: resolveUnavailableReason(fallbackError),
+            });
+            return {
+              ok: true,
+              document: doc,
+              debugInfo: debug
+                ? {
+                    strategyUsed: 'cache',
+                    hadEmptyPrimaryContent: true,
+                    contentUnavailableReason: doc.contentUnavailableReason,
+                  }
+                : undefined,
+            };
+          }
+          throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
         }
-        throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
+      }
+    };
+
+    if (debug) {
+      return await loadDocument();
+    }
+
+    const inFlightRequest = inFlightDocumentRequests.get(guid);
+    if (inFlightRequest) {
+      logger.info({ guid }, 'Reusing in-flight document extraction');
+      return await inFlightRequest;
+    }
+
+    const loadPromise = loadDocument();
+    inFlightDocumentRequests.set(guid, loadPromise);
+    try {
+      return await loadPromise;
+    } finally {
+      if (inFlightDocumentRequests.get(guid) === loadPromise) {
+        inFlightDocumentRequests.delete(guid);
       }
     }
   },
