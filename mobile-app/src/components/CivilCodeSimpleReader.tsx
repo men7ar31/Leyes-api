@@ -1,6 +1,7 @@
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
+  Keyboard,
   LayoutChangeEvent,
   PanResponder,
   Pressable,
@@ -815,6 +816,8 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
                 autoCapitalize="none"
                 autoCorrect={false}
                 returnKeyType="search"
+                blurOnSubmit
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
               {query ? (
                 <Pressable

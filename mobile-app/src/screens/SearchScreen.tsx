@@ -1,5 +1,5 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, FlatList, Keyboard, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { ChevronDown, ChevronUp, CircleHelp, Eraser, Globe, Mail, Moon, Sun, X } from "lucide-react-native";
@@ -973,6 +973,7 @@ export const SearchScreen = () => {
               placeholder="Buscar leyes, articulos o palabras clave"
               onFilterPress={() => setIsFiltersOpen((prev) => !prev)}
               filterActive={isFiltersOpen}
+              onSubmitEditing={() => Keyboard.dismiss()}
             />
 
             <View style={[styles.inlineFieldCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
@@ -987,6 +988,8 @@ export const SearchScreen = () => {
                 autoCorrect={false}
                 keyboardType="default"
                 returnKeyType="search"
+                blurOnSubmit
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
             </View>
 

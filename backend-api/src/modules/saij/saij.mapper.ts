@@ -138,16 +138,132 @@ const normalizeRelatedHint = (value: any, fallback: RelatedContentHint = 'unknow
   return fallback;
 };
 
+const normalizeInlineComparableText = (value?: string | null) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const stripBracketMarkup = (value: string) =>
+  value
+    .replace(/\[{1,2}\s*\/?\s*(?:p|br)\b[^\]]*\]{1,2}/gi, '\n')
+    .replace(/\[{1,2}\s*\/?\s*r\b[^\]]*\]{1,2}/gi, ' ')
+    .replace(/\[{1,2}\s*\/?\s*[a-z][\w-]*\b[^\]]*\]{1,2}/gi, ' ');
+
+const stripDocumentNoiseLines = (value: string) =>
+  value
+    .split('\n')
+    .filter((line) => {
+      const normalized = normalizeInlineComparableText(line);
+      if (!normalized) return true;
+      if ((normalized.includes('uuid:') || normalized.includes('name:')) && normalized.includes('.html')) return false;
+      if (/^(?:uuid|name)\s*:/.test(normalized)) return false;
+      if (/^(?:ver\s+texto\s+conforme|texto\s+conforme)\b/.test(normalized)) return false;
+      return true;
+    })
+    .join('\n');
+
+const isListLikeLine = (line: string) =>
+  /^(?:\d+[)\.]|[a-z]\)|[ivxlcdm]+[)\.]|[-•·])\s+/i.test(line.trim());
+
+const isAllCapsishLine = (line: string) => {
+  const letters = line.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) ?? [];
+  const upper = line.match(/[A-ZÁÉÍÓÚÜÑ]/g) ?? [];
+  if (!letters.length || line.trim().length > 96) return false;
+  return upper.length / letters.length >= 0.78;
+};
+
+const isStructuralHeadingLine = (line: string) => {
+  const normalized = normalizeInlineComparableText(line);
+  if (!normalized) return true;
+  if (
+    /^(?:art(?:i|iculo)?\.?\s*\d+|anexo|titulo|capitulo|seccion|libro|parte|paragrafo|visto|considerando|resuelve|decreta)\b/i.test(normalized)
+  ) {
+    return true;
+  }
+  return isAllCapsishLine(line);
+};
+
+const isHardBreakCurrentLine = (line: string) => {
+  if (isStructuralHeadingLine(line)) return true;
+  return isListLikeLine(line);
+};
+
+const isSoftContinuationLine = (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^[,.;:)\]]+$/.test(trimmed)) return true;
+  if (/^\d+(?:\s*,\s*\d+)+(?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\.?$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\d+(?:\s+(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s+(?:del|de|y|e|o|u|primer|primero|segundo|tercer|tercero|cuarto|quinto)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(?:y|e|o|u|primer|primero|segundo|tercer|tercero|cuarto|quinto|sexto|septimo|octavo|noveno)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/^[a-záéíóúüñ(]/i.test(trimmed)) return true;
+  return false;
+};
+
+const reflowStructuredText = (value: string) => {
+  const lines = value
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim());
+  const merged: string[] = [];
+
+  lines.forEach((line) => {
+    if (!line) {
+      if (merged[merged.length - 1] !== '') merged.push('');
+      return;
+    }
+    if (!merged.length || merged[merged.length - 1] === '') {
+      merged.push(line);
+      return;
+    }
+
+    const previous = merged[merged.length - 1];
+    const shouldMerge =
+      !isStructuralHeadingLine(previous) &&
+      !isHardBreakCurrentLine(line) &&
+      (/[,\-–—]$/.test(previous) ||
+        /\b(?:y|e|o|u)$/i.test(previous) ||
+        isSoftContinuationLine(line) ||
+        !/[.!?:]$/.test(previous));
+
+    if (!shouldMerge) {
+      merged.push(line);
+      return;
+    }
+
+    merged[merged.length - 1] = `${previous} ${line}`;
+  });
+
+  return merged
+    .join('\n')
+    .replace(/\s+([,.;:)\]])/g, '$1')
+    .replace(/([(\[])\s+/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const normalizeTagText = (value?: string | null) => {
   if (!value || typeof value !== 'string') return null;
-  return value
-    .replace(/\[\[\/?p\]\]|\[\/?p\]/gi, '\n')
-    .replace(/\[\[\/?r[^\]]*\]\]|\[\/?r[^\]]*\]/gi, ' ')
-    .replace(/\[\[\/?[a-z]+[^\]]*\]\]|\[\/?[a-z]+[^\]]*\]/gi, ' ')
+  return reflowStructuredText(
+    stripDocumentNoiseLines(
+      stripBracketMarkup(
+        value
+          .replace(/\r\n/g, '\n')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\u00A0/g, ' ')
+      )
+    )
+  )
     .replace(/\s+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+    .trim() || null;
 };
 
 const normalizeLooseString = (value: any): string | null => {
@@ -1533,14 +1649,14 @@ export type ExtractedRenderable = {
 };
 
 const cleanStructuredText = (text: string) => {
-  let value = text.replace(/\r\n/g, '\n');
-  value = value.replace(/\[\[\/?p\]\]|\[\/?p\]/gi, '\n');
-  value = value.replace(/\[\[\/?r[^\]]*\]\]/gi, '\n');
-  value = value.replace(/\[\[\/?[a-z]+\]\]|\[\/?[a-z]+\]/gi, '\n');
+  let value = text.replace(/\r\n/g, '\n').replace(/\u00A0/g, ' ');
+  value = stripBracketMarkup(value);
+  value = stripDocumentNoiseLines(value);
+  value = value.replace(/<[^>]+>/g, ' ');
   value = value.replace(/[ \t]+\n/g, '\n');
   value = value.replace(/\n{3,}/g, '\n\n');
   value = value.replace(/[ \t]{2,}/g, ' ');
-  return value.trim();
+  return reflowStructuredText(value);
 };
 
 const getStructuredArticleSources = (raw: any) => {
@@ -1598,21 +1714,46 @@ const appendUniqueHeading = (headings: string[], value: string | null) => {
   return [...headings, value];
 };
 
+const ARTICLE_INLINE_TITLE_VERB_PATTERN =
+  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren)\b/i;
+
+const isLikelyArticleInlineTitle = (value?: string | null) => {
+  const clean = normalizeHeadingText(value);
+  if (!clean) return false;
+
+  const normalized = normalizeInlineComparableText(clean);
+  const words = normalized.split(' ').filter(Boolean);
+  if (!words.length || words.length > 12) return false;
+  if (clean.length > 96) return false;
+  if (/[,:;]/.test(clean)) return false;
+  if (/\d/.test(clean)) return false;
+  if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalized)) return false;
+
+  return true;
+};
+
 const buildArticleHeaderLine = (articleNumber?: string | null) => {
   const normalizedNumber = normalizeArticleNumberToken(String(articleNumber || ''));
   if (!normalizedNumber) return 'ARTICULO.';
   return `ARTICULO ${normalizedNumber}.`;
 };
 
+const stripLeadingArticleBodyDecoration = (value?: string | null) =>
+  String(value || '')
+    .replace(/^[\sº°]*[-.:;–—•·]+\s*/, '')
+    .trimStart();
+
 const stripArticleLeadFromText = (value?: string | null) => {
   const cleaned = cleanStructuredText(String(value || ''));
   if (!cleaned) return '';
-  return cleaned
+  return stripLeadingArticleBodyDecoration(
+    cleaned
     .replace(
       /^\s*(?:art[íi]culo|art\.?)\s*(?:[a-z]\s*)?\d+[a-z]?(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?\s*(?:º|°)?\s*[\.\-:;]*\s*/i,
       ''
     )
-    .trimStart();
+    .trimStart()
+  );
 };
 
 const isCivilCommercialCodeTitle = (title?: string | null) =>
@@ -1644,7 +1785,7 @@ const buildStructuredArticleTitle = (item: any, headings: string[]) => {
     normalizeHeadingText(item?.tituloArticulo) ??
     normalizeHeadingText(item?.titulo);
   let parts = headings;
-  if (ownTitle) parts = appendUniqueHeading(parts, ownTitle);
+  if (isLikelyArticleInlineTitle(ownTitle)) parts = appendUniqueHeading(parts, ownTitle);
   return parts.length ? parts.join(' · ') : null;
 };
 

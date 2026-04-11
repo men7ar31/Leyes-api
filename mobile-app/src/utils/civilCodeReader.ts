@@ -60,6 +60,13 @@ const normalizeLoose = (value?: unknown) =>
     .trim();
 
 const collapseText = (value?: string | null) => String(value || "").replace(/\s+/g, " ").trim();
+const stripLeadingArticleBodyDecoration = (value?: string | null) =>
+  String(value || "")
+    .replace(/^[\s\u00BA\u00B0]*[-.:;–—•·]+\s*/, "")
+    .trimStart();
+
+const ARTICLE_INLINE_TITLE_VERB_PATTERN =
+  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren)\b/i;
 
 const matchesCivilCodeText = (value?: unknown) => {
   const normalized = normalizeLoose(value);
@@ -252,8 +259,8 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
   const clean = collapseText(cleanCivilCodeReaderText(label));
   if (!clean) return null;
 
-  const normalized = normalizeHeadingToken(clean);
-  const normalizedCompact = normalized.replace(/\s+/g, "");
+  const normalizedHeading = normalizeHeadingToken(clean);
+  const normalizedCompact = normalizedHeading.replace(/\s+/g, "");
 
   if (/(anexo|titulo|capitulo|seccion|libro|parte|paragrafo)/i.test(normalizedCompact)) return null;
   if (/(codigo)/i.test(normalizedCompact) && /(nacion|argentina|civil|comercial|penal|justicia)/i.test(normalizedCompact)) {
@@ -266,6 +273,13 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
     .replace(/[^A-Za-z]/g, "");
 
   if (lettersOnly.length >= 20 && lettersOnly === lettersOnly.toUpperCase()) return null;
+  const normalized = normalizeLoose(clean);
+  const words = normalized.split(" ").filter(Boolean);
+  if (!words.length || words.length > 12) return null;
+  if (clean.length > 96) return null;
+  if (/[,:;]/.test(clean)) return null;
+  if (/\d/.test(clean)) return null;
+  if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalized)) return null;
 
   return clean;
 };
@@ -369,7 +383,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
   const inlineLabel = inlineFromTitle || openingSentence || detached || inferred || null;
 
   if (!inlineLabel) {
-    return { inlineLabel: null as string | null, body: bodyBase };
+    return { inlineLabel: null as string | null, body: stripLeadingArticleBodyDecoration(bodyBase) };
   }
 
   const labelsToClean = Array.from(
@@ -384,7 +398,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
     if (!detached && inferredLeading) body = removeLeadingSentenceArticleLabel(body, inferredLeading);
   }
 
-  return { inlineLabel, body };
+  return { inlineLabel, body: stripLeadingArticleBodyDecoration(body) };
 };
 
 const stripRepeatedArticleLead = (body: string, articleNumber: string, inlineLabel?: string | null) => {
@@ -410,7 +424,7 @@ const stripRepeatedArticleLead = (body: string, articleNumber: string, inlineLab
 
   next = next.replace(/^[\u00ba\u00b0.\-\s]+/, "").trimStart();
 
-  return next.trim();
+  return stripLeadingArticleBodyDecoration(next.trim());
 };
 
 const buildArticleLabel = (articleNumber?: string | null, fallbackIndex?: number) =>

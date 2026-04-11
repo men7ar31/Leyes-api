@@ -11,13 +11,13 @@ import {
   SEARCH_CODES_NATIONAL_CACHE_TTL_MS,
   SEARCH_CODES_PROVINCIAL_CACHE_TTL_MS,
   DOCUMENT_CACHE_TTL_MS,
+  DOCUMENT_EXTRACTOR_VERSION,
 } from './saij.constants';
 import { HttpError } from '../../utils/httpError';
 import { NormService } from '../norms/norm.service';
 
 const cache = new SaijCache();
 const client = new SaijClient();
-const DOCUMENT_EXTRACTOR_VERSION = 28;
 const JURIS_SUMARIO_FACET =
   'Total|Tipo de Documento/Jurisprudencia/Sumario|Fecha|Organismo|Publicación|Tema|Estado de Vigencia|Autor|Jurisdicción';
 const JURIS_FALLO_FACET =

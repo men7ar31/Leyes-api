@@ -1,6 +1,7 @@
 import {
   Animated,
   Alert,
+  Keyboard,
   Linking,
   Modal,
   PanResponder,
@@ -18,7 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { router, useLocalSearchParams } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { Ellipsis, Heart } from "lucide-react-native";
+import { ChevronDown, ChevronUp, Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
@@ -405,6 +406,22 @@ const getSubtitleText = (subtitle: unknown) => {
   return null;
 };
 
+const normalizeContentComparableText = (value?: string | null) =>
+  String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripLeadingArticleBodyDecoration = (value?: string | null) =>
+  String(value || "")
+    .replace(/^[\s\u00BA\u00B0]*[-.:;–—•·]+\s*/, "")
+    .trimStart();
+
+const ARTICLE_INLINE_TITLE_VERB_PATTERN =
+  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren)\b/i;
+
 const cleanContentText = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
   let value = text;
@@ -597,6 +614,119 @@ const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo
 const isParagraphHeadingLine = (value?: string | null) => /^par(a|Ã¡)grafo\b/i.test(normalizeHeadingToken(value));
 const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
 const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
+const isBookHeadingLine = (value?: string | null) => /^libro\b/i.test(normalizeHeadingToken(value));
+
+type StickyIndexNode = {
+  key: string;
+  label: string;
+  y: number;
+  children: StickyIndexNode[];
+};
+
+const getStickyHeadingContext = (headings: string[]) => {
+  const book = headings.filter((line) => isBookHeadingLine(line)).at(-1) || null;
+  const title = headings.filter((line) => isTitleHeadingLine(line)).at(-1) || null;
+  const chapter = headings.filter((line) => isChapterHeadingLine(line)).at(-1) || null;
+  const fallback = cleanText(headings[headings.length - 1] || "") || null;
+  return { book, title, chapter, fallback };
+};
+
+const buildStickyIndexTree = (entries: Array<{ y: number; label: string; headings: string[] }>) => {
+  const compact: Array<{ y: number; context: ReturnType<typeof getStickyHeadingContext> }> = [];
+
+  entries.forEach((entry) => {
+    const context = getStickyHeadingContext(entry.headings);
+    const signature = [context.book, context.title, context.chapter, context.fallback]
+      .map((part) => normalizeHeadingToken(part))
+      .filter(Boolean)
+      .join("|");
+    const prev = compact[compact.length - 1];
+    const prevSignature = prev
+      ? [prev.context.book, prev.context.title, prev.context.chapter, prev.context.fallback]
+          .map((part) => normalizeHeadingToken(part))
+          .filter(Boolean)
+          .join("|")
+      : "";
+    if (!signature || signature === prevSignature) return;
+    compact.push({ y: entry.y, context });
+  });
+
+  const hasBooks = compact.some((entry) => !!entry.context.book);
+  const roots: StickyIndexNode[] = [];
+  const rootMap = new Map<string, StickyIndexNode>();
+
+  const ensureNode = (
+    collection: StickyIndexNode[],
+    map: Map<string, StickyIndexNode>,
+    key: string,
+    label: string,
+    y: number
+  ) => {
+    const existing = map.get(key);
+    if (existing) {
+      existing.y = Math.min(existing.y, y);
+      return existing;
+    }
+    const next: StickyIndexNode = { key, label, y, children: [] };
+    collection.push(next);
+    map.set(key, next);
+    return next;
+  };
+
+  compact.forEach(({ y, context }) => {
+    const { book, title, chapter, fallback } = context;
+    const bookKey = book ? `book:${normalizeHeadingToken(book)}` : "";
+    const titleLabel = title || (!book ? fallback : null);
+    const chapterLabel = chapter && normalizeHeadingToken(chapter) !== normalizeHeadingToken(title || "") ? chapter : null;
+
+    if (hasBooks && book) {
+      const bookNode = ensureNode(roots, rootMap, bookKey, book, y);
+      const titleMap = new Map(bookNode.children.map((node) => [node.key, node]));
+      if (titleLabel) {
+        const titleKey = `title:${bookKey}:${normalizeHeadingToken(titleLabel)}`;
+        const titleNode = ensureNode(bookNode.children, titleMap, titleKey, titleLabel, y);
+        if (chapterLabel) {
+          const chapterMap = new Map(titleNode.children.map((node) => [node.key, node]));
+          ensureNode(
+            titleNode.children,
+            chapterMap,
+            `chapter:${titleKey}:${normalizeHeadingToken(chapterLabel)}`,
+            chapterLabel,
+            y
+          );
+        }
+        return;
+      }
+      if (chapterLabel) {
+        ensureNode(
+          bookNode.children,
+          titleMap,
+          `chapter:${bookKey}:${normalizeHeadingToken(chapterLabel)}`,
+          chapterLabel,
+          y
+        );
+      }
+      return;
+    }
+
+    const rootLabel = titleLabel || chapterLabel || fallback;
+    if (!rootLabel) return;
+    const rootKey = `${titleLabel ? "title" : chapterLabel ? "chapter" : "section"}:${normalizeHeadingToken(rootLabel)}`;
+    const rootNode = ensureNode(roots, rootMap, rootKey, rootLabel, y);
+    if (titleLabel && chapterLabel) {
+      const childMap = new Map(rootNode.children.map((node) => [node.key, node]));
+      ensureNode(
+        rootNode.children,
+        childMap,
+        `chapter:${rootKey}:${normalizeHeadingToken(chapterLabel)}`,
+        chapterLabel,
+        y
+      );
+    }
+  });
+
+  return roots.sort((a, b) => a.y - b.y);
+};
 
 const parseArticleTitleContext = (title?: string | null) => {
   if (!title || typeof title !== "string") {
@@ -631,8 +761,8 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
     (chunk) => chunk.replace(/\s+/g, "")
   );
 
-  const normalizedCollapsed = normalizeHeadingToken(collapsed);
-  const normalizedNoSpace = normalizedCollapsed.replace(/\s+/g, "");
+  const normalizedHeadingCollapsed = normalizeHeadingToken(collapsed);
+  const normalizedNoSpace = normalizedHeadingCollapsed.replace(/\s+/g, "");
 
   if (/(anexo|titulo|capitulo|seccion|libro|parte|paragrafo|parrafo)/i.test(normalizedNoSpace)) return null;
 
@@ -647,6 +777,14 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
   if (upperNoDiacritics.length >= 20 && upperNoDiacritics === upperNoDiacritics.toUpperCase()) {
     return null;
   }
+
+  const normalizedCollapsed = normalizeContentComparableText(collapsed);
+  const words = normalizedCollapsed.split(" ").filter(Boolean);
+  if (!words.length || words.length > 12) return null;
+  if (collapsed.length > 96) return null;
+  if (/[,:;]/.test(collapsed)) return null;
+  if (/\d/.test(collapsed)) return null;
+  if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalizedCollapsed)) return null;
 
   return collapsed.trim() || null;
 };
@@ -759,7 +897,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
   const inlineLabel = inlineFromTitle || safeDetached || safeInferred || null;
 
   if (!inlineLabel) {
-    return { inlineLabel: null as string | null, body: bodyBase };
+    return { inlineLabel: null as string | null, body: stripLeadingArticleBodyDecoration(bodyBase) };
   }
 
   const labelsToClean = Array.from(new Set([inlineLabel, safeDetached, safeInferred].filter(Boolean) as string[]));
@@ -770,7 +908,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
 
   return {
     inlineLabel,
-    body,
+    body: stripLeadingArticleBodyDecoration(body),
   };
 };
 
@@ -1007,7 +1145,7 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
     tryDropLeading(numericOnlyPattern);
   }
 
-  return working.trim();
+  return stripLeadingArticleBodyDecoration(working.trim());
 };
 
 const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
@@ -1105,7 +1243,8 @@ export const DetailScreen = () => {
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
   const [isStickyIndexOpen, setIsStickyIndexOpen] = useState(false);
-  const [stickyIndexEntries, setStickyIndexEntries] = useState<Array<{ y: number; label: string }>>([]);
+  const [stickyIndexTree, setStickyIndexTree] = useState<StickyIndexNode[]>([]);
+  const [expandedStickyNodeKeys, setExpandedStickyNodeKeys] = useState<Record<string, boolean>>({});
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrubberTrackRef = useRef<View | null>(null);
@@ -1123,8 +1262,8 @@ export const DetailScreen = () => {
   const articleOffsetDirtyRef = useRef(true);
   const geometryTableRef = useRef<Array<{ index: number; offset: number }>>([]);
   const geometryTableDirtyRef = useRef(true);
-  const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null }>>({});
-  const articleStickySortedRef = useRef<Array<{ y: number; label: string }>>([]);
+  const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null; headings: string[] }>>({});
+  const articleStickySortedRef = useRef<Array<{ y: number; label: string; headings: string[] }>>([]);
   const articleStickyDirtyRef = useRef(true);
   const scrollViewportHeightRef = useRef(0);
   const scrollContentHeightRef = useRef(0);
@@ -1212,6 +1351,8 @@ export const DetailScreen = () => {
     setStickySectionLabel(null);
     setIsHeaderMenuOpen(false);
     setIsStickyIndexOpen(false);
+    setStickyIndexTree([]);
+    setExpandedStickyNodeKeys({});
     if (nextSection !== "texto") setIsDocSearchOpen(false);
     setActiveSection(nextSection);
   };
@@ -1245,7 +1386,8 @@ export const DetailScreen = () => {
     setMultiShareArticleInput("");
     setSelectedArticleShareKeys({});
     setIsStickyIndexOpen(false);
-    setStickyIndexEntries([]);
+    setStickyIndexTree([]);
+    setExpandedStickyNodeKeys({});
     geometryTableRef.current = [];
     geometryTableDirtyRef.current = true;
     contentRenderCacheRef.current = { key: "", node: null };
@@ -1949,11 +2091,14 @@ export const DetailScreen = () => {
     if (!articleStickyDirtyRef.current) return articleStickySortedRef.current;
     const raw = Object.values(articleStickyMetaRef.current)
       .filter((item) => item && Number.isFinite(item.y) && item.label)
-      .sort((a, b) => a.y - b.y) as Array<{ y: number; label: string }>;
-    const compact: Array<{ y: number; label: string }> = [];
+      .sort((a, b) => a.y - b.y) as Array<{ y: number; label: string; headings: string[] }>;
+    const compact: Array<{ y: number; label: string; headings: string[] }> = [];
     for (const entry of raw) {
       const prev = compact[compact.length - 1];
-      if (!prev || prev.label !== entry.label) compact.push(entry);
+      const signature = entry.headings.map((line) => normalizeHeadingToken(line)).filter(Boolean).join("|") || entry.label;
+      const prevSignature =
+        prev?.headings.map((line) => normalizeHeadingToken(line)).filter(Boolean).join("|") || prev?.label || "";
+      if (!prev || prevSignature !== signature) compact.push(entry);
     }
     articleStickySortedRef.current = compact;
     articleStickyDirtyRef.current = false;
@@ -1964,13 +2109,91 @@ export const DetailScreen = () => {
     if (selectedSection !== "texto") return;
     const entries = getSortedStickyEntries();
     if (!entries.length) return;
-    setStickyIndexEntries(entries);
+    const tree = buildStickyIndexTree(entries);
+    if (!tree.length) return;
+    const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
+    const autoExpanded: Record<string, boolean> = {};
+    tree.forEach((node, index) => {
+      const shouldExpand =
+        (!!currentNormalized && currentNormalized.includes(normalizeHeadingToken(node.label))) || index === 0;
+      if (shouldExpand) autoExpanded[node.key] = true;
+    });
+    setExpandedStickyNodeKeys(autoExpanded);
+    setStickyIndexTree(tree);
     setIsStickyIndexOpen(true);
+  };
+
+  const toggleStickyNode = (key: string) => {
+    setExpandedStickyNodeKeys((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const jumpToStickyEntry = (entry: { y: number; label: string }) => {
     setIsStickyIndexOpen(false);
     jumpToY(entry.y, true, jumpTopOffset);
+  };
+
+  const renderStickyIndexNode = (node: StickyIndexNode, depth = 0): ReactNode => {
+    const hasChildren = node.children.length > 0;
+    const isExpanded = !!expandedStickyNodeKeys[node.key];
+
+    return (
+      <View key={node.key} style={depth > 0 ? styles.stickyIndexChildGroup : null}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.stickyIndexItem,
+            styles.stickyIndexNodeItem,
+            depth > 0 ? styles.stickyIndexNodeItemNested : null,
+            { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
+            pressed ? styles.stickyIndexItemPressed : null,
+          ]}
+          onPress={() => {
+            if (hasChildren) toggleStickyNode(node.key);
+            else jumpToStickyEntry(node);
+          }}
+          unstable_pressDelay={0}
+          hitSlop={TOUCH_HIT_SLOP}
+        >
+          <Text
+            style={[
+              styles.stickyIndexItemText,
+              depth > 0 ? styles.stickyIndexItemTextNested : null,
+              { color: appColors.primaryStrong },
+            ]}
+          >
+            {node.label}
+          </Text>
+          {hasChildren ? (
+            isExpanded ? (
+              <ChevronUp size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+            ) : (
+              <ChevronDown size={16} color={appColors.primaryStrong} strokeWidth={2.2} />
+            )
+          ) : null}
+        </Pressable>
+        {hasChildren && isExpanded ? (
+          <View style={styles.stickyIndexChildren}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.stickyIndexItem,
+                styles.stickyIndexNodeItem,
+                styles.stickyIndexNodeItemNested,
+                styles.stickyIndexNodeJumpItem,
+                { borderColor: appColors.border, backgroundColor: isDarkMode ? "#0E172B" : "#FFFFFF" },
+                pressed ? styles.stickyIndexItemPressed : null,
+              ]}
+              onPress={() => jumpToStickyEntry(node)}
+              unstable_pressDelay={0}
+              hitSlop={TOUCH_HIT_SLOP}
+            >
+              <Text style={[styles.stickyIndexItemText, styles.stickyIndexItemTextNested, { color: appColors.primaryStrong }]}>
+                {node.label}
+              </Text>
+            </Pressable>
+            {node.children.map((child) => renderStickyIndexNode(child, depth + 1))}
+          </View>
+        ) : null}
+      </View>
+    );
   };
 
   const updateStickySectionByScroll = (scrollY: number) => {
@@ -2740,7 +2963,7 @@ export const DetailScreen = () => {
                   articleOffsetsRef.current[index] = y;
                   articleOffsetDirtyRef.current = true;
                   geometryTableDirtyRef.current = true;
-                  articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle };
+                  articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle, headings: parsedTitle.headings };
                   articleStickyDirtyRef.current = true;
                   scheduleLayoutDerivedRefresh();
                 }}
@@ -2942,7 +3165,6 @@ export const DetailScreen = () => {
         ? extractedRelated.mainText
             .replace(/\r\n?/g, "\n")
             .replace(/\n{3,}/g, "\n\n")
-            .replace(/([^\n])\n([^\n])/g, "$1\n\n$2")
         : extractedRelated.mainText;
       const mainTextBlock = renderHighlightedBlock(
         comfortableMainText,
@@ -3022,11 +3244,14 @@ export const DetailScreen = () => {
           setDocSearchQuery(value);
           setSearchMatchPointer(0);
         }}
+        onSubmitEditing={() => Keyboard.dismiss()}
         placeholder="Buscar texto dentro del documento"
         placeholderTextColor={colors.muted}
         style={styles.docSearchInput}
         autoCapitalize="none"
         autoCorrect={false}
+        blurOnSubmit
+        returnKeyType="search"
       />
       {normalizedSearchQuery ? <Text style={styles.docSearchCount}>{totalSearchMatches}</Text> : null}
       {normalizedSearchQuery ? (
@@ -3685,7 +3910,8 @@ export const DetailScreen = () => {
           style={[
             styles.stickyIndexBackdrop,
             {
-              paddingTop: fixedHeaderHeight > 0 ? fixedHeaderHeight + spacing.md : spacing.xl,
+              paddingTop: Math.max(insets.top + spacing.md, fixedHeaderHeight > 0 ? Math.round(fixedHeaderHeight * 0.38) : spacing.lg),
+              paddingBottom: Math.max(insets.bottom + spacing.md, spacing.xl),
             },
           ]}
           onPress={() => setIsStickyIndexOpen(false)}
@@ -3710,21 +3936,7 @@ export const DetailScreen = () => {
               </Pressable>
             </View>
             <ScrollView contentContainerStyle={styles.stickyIndexList} keyboardShouldPersistTaps="handled">
-              {stickyIndexEntries.map((entry, index) => (
-                <Pressable
-                  key={`${entry.label}-${entry.y}-${index}`}
-                  style={({ pressed }) => [
-                    styles.stickyIndexItem,
-                    { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
-                    pressed ? styles.stickyIndexItemPressed : null,
-                  ]}
-                  onPress={() => jumpToStickyEntry(entry)}
-                  unstable_pressDelay={0}
-              hitSlop={TOUCH_HIT_SLOP}
-                >
-                  <Text style={[styles.stickyIndexItemText, { color: appColors.primaryStrong }]}>{entry.label}</Text>
-                </Pressable>
-              ))}
+              {stickyIndexTree.map((node) => renderStickyIndexNode(node))}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -4377,7 +4589,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
     paddingHorizontal: spacing.md,
-    justifyContent: "flex-start",
+    justifyContent: "center",
   },
   stickyIndexCard: {
     maxHeight: "72%",
@@ -4424,6 +4636,13 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     gap: spacing.xs,
   },
+  stickyIndexChildren: {
+    paddingTop: spacing.xs,
+    gap: spacing.xs,
+  },
+  stickyIndexChildGroup: {
+    gap: spacing.xs,
+  },
   stickyIndexItem: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -4431,6 +4650,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
+  },
+  stickyIndexNodeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  stickyIndexNodeItemNested: {
+    marginLeft: spacing.sm,
+  },
+  stickyIndexNodeJumpItem: {
+    marginTop: 0,
   },
   stickyIndexItemPressed: {
     borderColor: colors.primaryStrong,
@@ -4441,6 +4672,10 @@ const styles = StyleSheet.create({
     fontSize: typography.small + 1,
     fontWeight: "700",
     lineHeight: 18,
+  },
+  stickyIndexItemTextNested: {
+    flex: 1,
+    fontSize: typography.small,
   },
 });
 
