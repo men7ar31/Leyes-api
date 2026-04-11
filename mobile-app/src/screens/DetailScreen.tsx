@@ -4032,8 +4032,8 @@ export const DetailScreen = () => {
           style={[
             styles.stickyIndexBackdrop,
             {
-              paddingTop: Math.max(insets.top + spacing.md, fixedHeaderHeight > 0 ? Math.round(fixedHeaderHeight * 0.38) : spacing.lg),
-              paddingBottom: Math.max(insets.bottom + spacing.md, spacing.xl),
+              paddingTop: Math.max(insets.top + spacing.lg, spacing.xl),
+              paddingBottom: Math.max(insets.bottom + spacing.lg, spacing.xl),
             },
           ]}
           onPress={() => setIsStickyIndexOpen(false)}
