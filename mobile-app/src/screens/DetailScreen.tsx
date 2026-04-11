@@ -1,6 +1,7 @@
 import {
   Animated,
   Alert,
+  Keyboard,
   Linking,
   Modal,
   PanResponder,
@@ -13,12 +14,12 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { Ellipsis, Heart } from "lucide-react-native";
+import { ChevronDown, ChevronUp, Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
@@ -405,6 +406,22 @@ const getSubtitleText = (subtitle: unknown) => {
   return null;
 };
 
+const normalizeContentComparableText = (value?: string | null) =>
+  String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripLeadingArticleBodyDecoration = (value?: string | null) =>
+  String(value || "")
+    .replace(/^[\s\u00BA\u00B0]*[-.:;–—•·]+\s*/, "")
+    .trimStart();
+
+const ARTICLE_INLINE_TITLE_VERB_PATTERN =
+  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren)\b/i;
+
 const cleanContentText = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
   let value = text;
@@ -597,6 +614,121 @@ const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo
 const isParagraphHeadingLine = (value?: string | null) => /^par(a|Ã¡)grafo\b/i.test(normalizeHeadingToken(value));
 const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
 const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
+const isBookHeadingLine = (value?: string | null) => /^libro\b/i.test(normalizeHeadingToken(value));
+
+type StickyIndexNode = {
+  key: string;
+  label: string;
+  normalizedLabel: string;
+  y: number;
+  children: StickyIndexNode[];
+};
+
+const getStickyHeadingContext = (headings: string[]) => {
+  const book = headings.filter((line) => isBookHeadingLine(line)).at(-1) || null;
+  const title = headings.filter((line) => isTitleHeadingLine(line)).at(-1) || null;
+  const chapter = headings.filter((line) => isChapterHeadingLine(line)).at(-1) || null;
+  const fallback = cleanText(headings[headings.length - 1] || "") || null;
+  return { book, title, chapter, fallback };
+};
+
+const buildStickyIndexTree = (entries: Array<{ y: number; label: string; headings: string[] }>) => {
+  const compact: Array<{ y: number; context: ReturnType<typeof getStickyHeadingContext> }> = [];
+
+  entries.forEach((entry) => {
+    const context = getStickyHeadingContext(entry.headings);
+    const signature = [context.book, context.title, context.chapter, context.fallback]
+      .map((part) => normalizeHeadingToken(part))
+      .filter(Boolean)
+      .join("|");
+    const prev = compact[compact.length - 1];
+    const prevSignature = prev
+      ? [prev.context.book, prev.context.title, prev.context.chapter, prev.context.fallback]
+          .map((part) => normalizeHeadingToken(part))
+          .filter(Boolean)
+          .join("|")
+      : "";
+    if (!signature || signature === prevSignature) return;
+    compact.push({ y: entry.y, context });
+  });
+
+  const hasBooks = compact.some((entry) => !!entry.context.book);
+  const roots: StickyIndexNode[] = [];
+  const rootMap = new Map<string, StickyIndexNode>();
+
+  const ensureNode = (
+    collection: StickyIndexNode[],
+    map: Map<string, StickyIndexNode>,
+    key: string,
+    label: string,
+    y: number
+  ) => {
+    const existing = map.get(key);
+    const normalizedLabel = normalizeHeadingToken(label);
+    if (existing) {
+      existing.y = Math.min(existing.y, y);
+      return existing;
+    }
+    const next: StickyIndexNode = { key, label, normalizedLabel, y, children: [] };
+    collection.push(next);
+    map.set(key, next);
+    return next;
+  };
+
+  compact.forEach(({ y, context }) => {
+    const { book, title, chapter, fallback } = context;
+    const bookKey = book ? `book:${normalizeHeadingToken(book)}` : "";
+    const titleLabel = title || (!book ? fallback : null);
+    const chapterLabel = chapter && normalizeHeadingToken(chapter) !== normalizeHeadingToken(title || "") ? chapter : null;
+
+    if (hasBooks && book) {
+      const bookNode = ensureNode(roots, rootMap, bookKey, book, y);
+      const titleMap = new Map(bookNode.children.map((node) => [node.key, node]));
+      if (titleLabel) {
+        const titleKey = `title:${bookKey}:${normalizeHeadingToken(titleLabel)}`;
+        const titleNode = ensureNode(bookNode.children, titleMap, titleKey, titleLabel, y);
+        if (chapterLabel) {
+          const chapterMap = new Map(titleNode.children.map((node) => [node.key, node]));
+          ensureNode(
+            titleNode.children,
+            chapterMap,
+            `chapter:${titleKey}:${normalizeHeadingToken(chapterLabel)}`,
+            chapterLabel,
+            y
+          );
+        }
+        return;
+      }
+      if (chapterLabel) {
+        ensureNode(
+          bookNode.children,
+          titleMap,
+          `chapter:${bookKey}:${normalizeHeadingToken(chapterLabel)}`,
+          chapterLabel,
+          y
+        );
+      }
+      return;
+    }
+
+    const rootLabel = titleLabel || chapterLabel || fallback;
+    if (!rootLabel) return;
+    const rootKey = `${titleLabel ? "title" : chapterLabel ? "chapter" : "section"}:${normalizeHeadingToken(rootLabel)}`;
+    const rootNode = ensureNode(roots, rootMap, rootKey, rootLabel, y);
+    if (titleLabel && chapterLabel) {
+      const childMap = new Map(rootNode.children.map((node) => [node.key, node]));
+      ensureNode(
+        rootNode.children,
+        childMap,
+        `chapter:${rootKey}:${normalizeHeadingToken(chapterLabel)}`,
+        chapterLabel,
+        y
+      );
+    }
+  });
+
+  return roots.sort((a, b) => a.y - b.y);
+};
 
 const parseArticleTitleContext = (title?: string | null) => {
   if (!title || typeof title !== "string") {
@@ -631,8 +763,8 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
     (chunk) => chunk.replace(/\s+/g, "")
   );
 
-  const normalizedCollapsed = normalizeHeadingToken(collapsed);
-  const normalizedNoSpace = normalizedCollapsed.replace(/\s+/g, "");
+  const normalizedHeadingCollapsed = normalizeHeadingToken(collapsed);
+  const normalizedNoSpace = normalizedHeadingCollapsed.replace(/\s+/g, "");
 
   if (/(anexo|titulo|capitulo|seccion|libro|parte|paragrafo|parrafo)/i.test(normalizedNoSpace)) return null;
 
@@ -647,6 +779,14 @@ const getSafeArticleInlineLabel = (label?: string | null) => {
   if (upperNoDiacritics.length >= 20 && upperNoDiacritics === upperNoDiacritics.toUpperCase()) {
     return null;
   }
+
+  const normalizedCollapsed = normalizeContentComparableText(collapsed);
+  const words = normalizedCollapsed.split(" ").filter(Boolean);
+  if (!words.length || words.length > 12) return null;
+  if (collapsed.length > 96) return null;
+  if (/[,:;]/.test(collapsed)) return null;
+  if (/\d/.test(collapsed)) return null;
+  if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalizedCollapsed)) return null;
 
   return collapsed.trim() || null;
 };
@@ -759,7 +899,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
   const inlineLabel = inlineFromTitle || safeDetached || safeInferred || null;
 
   if (!inlineLabel) {
-    return { inlineLabel: null as string | null, body: bodyBase };
+    return { inlineLabel: null as string | null, body: stripLeadingArticleBodyDecoration(bodyBase) };
   }
 
   const labelsToClean = Array.from(new Set([inlineLabel, safeDetached, safeInferred].filter(Boolean) as string[]));
@@ -770,7 +910,7 @@ const resolveArticleInlineLabelAndBody = (text: string, articleLabel?: string | 
 
   return {
     inlineLabel,
-    body,
+    body: stripLeadingArticleBodyDecoration(body),
   };
 };
 
@@ -1007,7 +1147,7 @@ const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) =
     tryDropLeading(numericOnlyPattern);
   }
 
-  return working.trim();
+  return stripLeadingArticleBodyDecoration(working.trim());
 };
 
 const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
@@ -1089,6 +1229,7 @@ export const DetailScreen = () => {
   const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
   const { width } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
+  const [sectionVisualKey, setSectionVisualKey] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
   const [docSearchQuery, setDocSearchQuery] = useState("");
   const [searchMatchPointer, setSearchMatchPointer] = useState(0);
@@ -1105,8 +1246,10 @@ export const DetailScreen = () => {
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
   const [isStickyIndexOpen, setIsStickyIndexOpen] = useState(false);
-  const [stickyIndexEntries, setStickyIndexEntries] = useState<Array<{ y: number; label: string }>>([]);
+  const [stickyIndexTree, setStickyIndexTree] = useState<StickyIndexNode[]>([]);
+  const [expandedStickyNodeKeys, setExpandedStickyNodeKeys] = useState<Record<string, boolean>>({});
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
+  const deferredDocSearchQuery = useDeferredValue(docSearchQuery);
   const [scrubberHeight, setScrubberHeight] = useState(0);
   const scrubberTrackRef = useRef<View | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
@@ -1123,8 +1266,8 @@ export const DetailScreen = () => {
   const articleOffsetDirtyRef = useRef(true);
   const geometryTableRef = useRef<Array<{ index: number; offset: number }>>([]);
   const geometryTableDirtyRef = useRef(true);
-  const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null }>>({});
-  const articleStickySortedRef = useRef<Array<{ y: number; label: string }>>([]);
+  const articleStickyMetaRef = useRef<Record<number, { y: number; label: string | null; headings: string[] }>>({});
+  const articleStickySortedRef = useRef<Array<{ y: number; label: string; headings: string[] }>>([]);
   const articleStickyDirtyRef = useRef(true);
   const scrollViewportHeightRef = useRef(0);
   const scrollContentHeightRef = useRef(0);
@@ -1205,6 +1348,8 @@ export const DetailScreen = () => {
   };
 
   const setActiveSectionSafe = (nextSection: string) => {
+    if (nextSection === sectionVisualKey && nextSection === activeSection) return;
+    setSectionVisualKey(nextSection);
     setArticleScrubbing(false);
     setPreviewBubbleVisible(false);
     setActiveArticlePreviewIndex(-1);
@@ -1212,8 +1357,12 @@ export const DetailScreen = () => {
     setStickySectionLabel(null);
     setIsHeaderMenuOpen(false);
     setIsStickyIndexOpen(false);
+    setStickyIndexTree([]);
+    setExpandedStickyNodeKeys({});
     if (nextSection !== "texto") setIsDocSearchOpen(false);
-    setActiveSection(nextSection);
+    startTransition(() => {
+      setActiveSection(nextSection);
+    });
   };
 
   const zoomOut = () => setTextZoom((prev) => Math.max(0.82, Math.round((prev - 0.06) * 100) / 100));
@@ -1245,7 +1394,8 @@ export const DetailScreen = () => {
     setMultiShareArticleInput("");
     setSelectedArticleShareKeys({});
     setIsStickyIndexOpen(false);
-    setStickyIndexEntries([]);
+    setStickyIndexTree([]);
+    setExpandedStickyNodeKeys({});
     geometryTableRef.current = [];
     geometryTableDirtyRef.current = true;
     contentRenderCacheRef.current = { key: "", node: null };
@@ -1264,6 +1414,7 @@ export const DetailScreen = () => {
     scrubberBubbleTailTopAnimRef.current.setValue((SCRUBBER_BUBBLE_HEIGHT - SCRUBBER_TAIL_SIZE) / 2);
     scrubberThumbTopAnimRef.current.setValue(0);
     scrubberThumbTopRef.current = 0;
+    setSectionVisualKey("texto");
     requestAnimationFrame(() => {
       if (scrollRef.current) {
         scrollRef.current.scrollTo({ y: 0, animated: false });
@@ -1457,138 +1608,218 @@ export const DetailScreen = () => {
     return <CivilCodeSimpleReader document={document} />;
   }
 
-  const attachmentUrl = document.attachment?.url || document.attachment?.fallbackUrl || null;
-  const attachmentLabel = document.attachment?.fileName
-    ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
-    : "Ver archivo adjunto";
-  const normasQueModificaRaw = Array.isArray(document.normasQueModifica) ? document.normasQueModifica : [];
-  const normasComplementariasRaw = Array.isArray(document.normasComplementarias) ? document.normasComplementarias : [];
-  const observaciones = Array.isArray(document.observaciones) ? document.observaciones : [];
-  const normasQueModifica = dedupeRelatedByTitle(normasQueModificaRaw as RelatedContentItem[]);
-  const normasComplementarias = dedupeRelatedByTitle(normasComplementariasRaw as RelatedContentItem[]);
-  const observacionesItems = dedupeRelatedByTitle(observaciones as RelatedContentItem[]);
-  const relatedFallos = Array.isArray(document.relatedFallos) ? document.relatedFallos : [];
-  const relatedContentsFromApi = Array.isArray(document.relatedContents) ? document.relatedContents : [];
-  const metadataDateRaw = getMetadataDate(document.metadata);
-  const metadataDate = metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null;
-
-  const contentWidth = Math.max(0, width - spacing.md * 2);
-  const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
-  const { fontSize: bodyFontSize, lineHeight: bodyLineHeight } = getReadingBodyMetrics(clampedTextZoom);
-  const headingFontSize =
-    Math.round(Math.max(bodyFontSize + 1.5, readingTypography.sectionLabelSize * clampedTextZoom + 2) * 10) / 10;
-  const headingLineHeight = Math.max(22, Math.round(headingFontSize * 1.34));
-  const readingBodyColor = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
-  const readingSecondaryColor = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
-  const readingLabelColor = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
-  const isComfortableDetail = document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
-  const comfortableBodyFontSize = isComfortableDetail ? bodyFontSize : bodyFontSize;
-  const comfortableBodyLineHeight = isComfortableDetail ? Math.max(bodyLineHeight + 3, Math.round(comfortableBodyFontSize * 1.66)) : bodyLineHeight;
-  const comfortableTitleFontSize = isComfortableDetail ? readingTypography.lawTitleSize : readingTypography.lawTitleSize;
-  const comfortableTitleLineHeight = isComfortableDetail ? readingTypography.lawTitleLineHeight + 2 : readingTypography.lawTitleLineHeight;
-  const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
-  const stickyViewportOffset = Math.max(26, headerAwareOffset + spacing.xs);
-  const jumpTopOffset = Math.max(spacing.md, headerAwareOffset + spacing.sm);
-  const subtitleText = getSubtitleText(document.subtitle);
-  const headerTitleText = (() => {
-    const clean = cleanText(document.title || "").replace(/\r/g, "\n");
-    const firstLine = clean
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    return firstLine || clean;
-  })();
-  const cleanedContentText = cleanContentText(document.contentText);
-  const extractedRelated =
-    document.contentType === "sumario"
-      ? extractRelatedContentBlock(cleanedContentText)
-      : { mainText: cleanedContentText, relatedItems: [] as string[] };
-  const relatedContentItems: RelatedContentItem[] =
-    relatedContentsFromApi.length > 0
-      ? relatedContentsFromApi
-      : extractedRelated.relatedItems.map((item) => ({
-          title: item,
-          subtitle: null,
-          contentTypeHint: "legislacion",
-          guid: null,
-          sourceUrl: null,
-          url: null,
-        }));
-  const leadText = cleanContentText(document.headerText) || extractLeadTextBeforeFirstArticle(extractedRelated.mainText);
-  const baseTypeLabel = getContentTypeLabel(document.contentType);
-  const subtypeRaw =
-    (typeof document.documentSubtype === "string" ? document.documentSubtype : null) || getSubtypeFromSubtitle(subtitleText);
-  const subtypeLabel = simplifySubtype(subtypeRaw);
-  const typeLabelRaw =
-    subtypeLabel && subtypeLabel !== baseTypeLabel && !baseTypeLabel.includes(subtypeLabel)
-      ? `${baseTypeLabel}/${subtypeLabel}`
-      : baseTypeLabel;
-  const typeLabel = typeLabelRaw
-    .split("/")
-    .map((part) => toSentenceCaseLabel(part))
-    .filter(Boolean)
-    .join("/ ");
-
-  const falloParsed =
-    baseTypeLabel === "fallo"
-      ? parseFalloContent(extractedRelated.mainText)
-      : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
-  const falloFechaFromHeader = (() => {
-    const index = falloParsed.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
-    if (index >= 0 && falloParsed.headerLines[index + 1]) return falloParsed.headerLines[index + 1];
-    return null;
-  })();
-  const falloTribunalFromHeader =
-    falloParsed.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
-  const falloFechaDisplay =
-    (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
-    (metadataDateRaw ? formatDate(metadataDateRaw) || metadataDateRaw : null) ||
-    falloFechaFromHeader;
-  const falloTribunalDisplay = (typeof document.tribunal === "string" && document.tribunal.trim()) || falloTribunalFromHeader || null;
-
-  const doctrinaAuthorFromSubtitle = (() => {
-    const subtitle = String(subtitleText || "").trim();
-    if (!subtitle) return null;
-    const parts = subtitle.split(".").map((part) => part.trim()).filter(Boolean);
-    if (parts.length >= 2 && /^doctrina$/i.test(parts[0])) return parts[1];
-    return null;
-  })();
-  const autorDoctrina =
-    (typeof document.autor === "string" && document.autor.trim()) || doctrinaAuthorFromSubtitle || null;
-  const estadoVigencia = normalizeVigencia(
-    (typeof document.estadoVigencia === "string" ? document.estadoVigencia : null) || null
-  );
-
-  const secondaryMeta =
-    baseTypeLabel === "fallo"
-      ? {
-          label: "Sentencia / Tribunal",
-          value: [falloFechaDisplay, falloTribunalDisplay].filter(Boolean).join(" / ") || "No informado",
-          color: appColors.text,
-        }
-      : baseTypeLabel === "doctrina"
+  const {
+    attachmentUrl,
+    attachmentLabel,
+    normasQueModifica,
+    normasComplementarias,
+    observacionesItems,
+    relatedFallos,
+    relatedContentItems,
+    metadataDateRaw,
+    metadataDate,
+    contentWidth,
+    bodyFontSize,
+    bodyLineHeight,
+    headingFontSize,
+    headingLineHeight,
+    readingBodyColor,
+    readingSecondaryColor,
+    readingLabelColor,
+    isComfortableDetail,
+    comfortableBodyFontSize,
+    comfortableBodyLineHeight,
+    comfortableTitleFontSize,
+    comfortableTitleLineHeight,
+    stickyViewportOffset,
+    jumpTopOffset,
+    subtitleText,
+    headerTitleText,
+    extractedRelated,
+    leadText,
+    baseTypeLabel,
+    typeLabel,
+    falloParsed,
+    falloFechaDisplay,
+    falloTribunalDisplay,
+    autorDoctrina,
+    estadoVigencia,
+    secondaryMeta,
+    sanitizedHtml,
+  } = (() => {
+    const attachmentUrlValue = document.attachment?.url || document.attachment?.fallbackUrl || null;
+    const attachmentLabelValue = document.attachment?.fileName
+      ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
+      : "Ver archivo adjunto";
+    const normasQueModificaRaw = Array.isArray(document.normasQueModifica) ? document.normasQueModifica : [];
+    const normasComplementariasRaw = Array.isArray(document.normasComplementarias) ? document.normasComplementarias : [];
+    const observacionesRaw = Array.isArray(document.observaciones) ? document.observaciones : [];
+    const relatedFallosValue = Array.isArray(document.relatedFallos) ? document.relatedFallos : [];
+    const relatedContentsFromApi = Array.isArray(document.relatedContents) ? document.relatedContents : [];
+    const metadataDateRawValue = getMetadataDate(document.metadata);
+    const metadataDateValue = metadataDateRawValue ? formatDate(metadataDateRawValue) || metadataDateRawValue : null;
+    const contentWidthValue = Math.max(0, width - spacing.md * 2);
+    const clampedTextZoom = Math.max(0.82, Math.min(1.34, textZoom));
+    const { fontSize, lineHeight } = getReadingBodyMetrics(clampedTextZoom);
+    const headingFontSizeValue =
+      Math.round(Math.max(fontSize + 1.5, readingTypography.sectionLabelSize * clampedTextZoom + 2) * 10) / 10;
+    const headingLineHeightValue = Math.max(22, Math.round(headingFontSizeValue * 1.34));
+    const readingBodyColorValue = isDarkMode ? appColors.text : readingTypography.bodyTextColor;
+    const readingSecondaryColorValue = isDarkMode ? appColors.muted : readingTypography.secondaryTextColor;
+    const readingLabelColorValue = isDarkMode ? appColors.primaryStrong : readingTypography.labelTextColor;
+    const isComfortableDetailValue =
+      document.contentType === "doctrina" || document.contentType === "sumario" || document.contentType === "fallo";
+    const comfortableBodyFontSizeValue = fontSize;
+    const comfortableBodyLineHeightValue = isComfortableDetailValue
+      ? Math.max(lineHeight + 3, Math.round(comfortableBodyFontSizeValue * 1.66))
+      : lineHeight;
+    const comfortableTitleFontSizeValue = readingTypography.lawTitleSize;
+    const comfortableTitleLineHeightValue = isComfortableDetailValue
+      ? readingTypography.lawTitleLineHeight + 2
+      : readingTypography.lawTitleLineHeight;
+    const headerAwareOffset = fixedHeaderHeight > 0 ? fixedHeaderHeight : 26;
+    const stickyViewportOffsetValue = Math.max(26, headerAwareOffset + spacing.xs);
+    const jumpTopOffsetValue = Math.max(spacing.md, headerAwareOffset + spacing.sm);
+    const subtitleTextValue = getSubtitleText(document.subtitle);
+    const cleanHeaderTitle = cleanText(document.title || "").replace(/\r/g, "\n");
+    const headerTitleTextValue =
+      cleanHeaderTitle
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) || cleanHeaderTitle;
+    const cleanedContentTextValue = cleanContentText(document.contentText);
+    const extractedRelatedValue =
+      document.contentType === "sumario"
+        ? extractRelatedContentBlock(cleanedContentTextValue)
+        : { mainText: cleanedContentTextValue, relatedItems: [] as string[] };
+    const relatedContentItemsValue: RelatedContentItem[] =
+      relatedContentsFromApi.length > 0
+        ? relatedContentsFromApi
+        : extractedRelatedValue.relatedItems.map((item) => ({
+            title: item,
+            subtitle: null,
+            contentTypeHint: "legislacion",
+            guid: null,
+            sourceUrl: null,
+            url: null,
+          }));
+    const leadTextValue =
+      cleanContentText(document.headerText) || extractLeadTextBeforeFirstArticle(extractedRelatedValue.mainText);
+    const baseTypeLabelValue = getContentTypeLabel(document.contentType);
+    const subtypeRaw =
+      (typeof document.documentSubtype === "string" ? document.documentSubtype : null) ||
+      getSubtypeFromSubtitle(subtitleTextValue);
+    const subtypeLabel = simplifySubtype(subtypeRaw);
+    const typeLabelRaw =
+      subtypeLabel && subtypeLabel !== baseTypeLabelValue && !baseTypeLabelValue.includes(subtypeLabel)
+        ? `${baseTypeLabelValue}/${subtypeLabel}`
+        : baseTypeLabelValue;
+    const typeLabelValue = typeLabelRaw
+      .split("/")
+      .map((part) => toSentenceCaseLabel(part))
+      .filter(Boolean)
+      .join("/ ");
+    const falloParsedValue =
+      baseTypeLabelValue === "fallo"
+        ? parseFalloContent(extractedRelatedValue.mainText)
+        : { headerLines: [] as string[], summaryText: null as string | null, bodyText: null as string | null };
+    const falloFechaFromHeader = (() => {
+      const index = falloParsedValue.headerLines.findIndex((line) => /^SENTENCIA$/i.test(line));
+      if (index >= 0 && falloParsedValue.headerLines[index + 1]) return falloParsedValue.headerLines[index + 1];
+      return null;
+    })();
+    const falloTribunalFromHeader =
+      falloParsedValue.headerLines.find((line) => /CORTE|CAMARA|C.MARA|TRIBUNAL|JUZGADO/i.test(line)) || null;
+    const falloFechaDisplayValue =
+      (document.fechaSentencia ? formatDate(document.fechaSentencia) || document.fechaSentencia : null) ||
+      (metadataDateRawValue ? formatDate(metadataDateRawValue) || metadataDateRawValue : null) ||
+      falloFechaFromHeader;
+    const falloTribunalDisplayValue =
+      (typeof document.tribunal === "string" && document.tribunal.trim()) || falloTribunalFromHeader || null;
+    const doctrinaAuthorFromSubtitle = (() => {
+      const subtitle = String(subtitleTextValue || "").trim();
+      if (!subtitle) return null;
+      const parts = subtitle.split(".").map((part) => part.trim()).filter(Boolean);
+      if (parts.length >= 2 && /^doctrina$/i.test(parts[0])) return parts[1];
+      return null;
+    })();
+    const autorDoctrinaValue =
+      (typeof document.autor === "string" && document.autor.trim()) || doctrinaAuthorFromSubtitle || null;
+    const estadoVigenciaValue = normalizeVigencia(
+      (typeof document.estadoVigencia === "string" ? document.estadoVigencia : null) || null
+    );
+    const secondaryMetaValue =
+      baseTypeLabelValue === "fallo"
         ? {
-            label: "Autor",
-            value: autorDoctrina || "No informado",
+            label: "Sentencia / Tribunal",
+            value: [falloFechaDisplayValue, falloTribunalDisplayValue].filter(Boolean).join(" / ") || "No informado",
             color: appColors.text,
           }
-        : baseTypeLabel === "dictamen"
+        : baseTypeLabelValue === "doctrina"
           ? {
-              label: "Organismo",
-              value: (typeof document.organismo === "string" && document.organismo.trim()) || "No informado",
+              label: "Autor",
+              value: autorDoctrinaValue || "No informado",
               color: appColors.text,
             }
-          : baseTypeLabel === "sumario"
+          : baseTypeLabelValue === "dictamen"
             ? {
-                label: "Fecha",
-                value: metadataDate || "No informado",
+                label: "Organismo",
+                value: (typeof document.organismo === "string" && document.organismo.trim()) || "No informado",
                 color: appColors.text,
               }
-            : {
-                label: "Estado de vigencia",
-                value: estadoVigencia || "No informado",
-                color: estadoVigencia ? getVigenciaColor(estadoVigencia) : appColors.muted,
-              };
+            : baseTypeLabelValue === "sumario"
+              ? {
+                  label: "Fecha",
+                  value: metadataDateValue || "No informado",
+                  color: appColors.text,
+                }
+              : {
+                  label: "Estado de vigencia",
+                  value: estadoVigenciaValue || "No informado",
+                  color: estadoVigenciaValue ? getVigenciaColor(estadoVigenciaValue) : appColors.muted,
+                };
+    const html = typeof document.contentHtml === "string" ? document.contentHtml.trim() : "";
+
+    return {
+      attachmentUrl: attachmentUrlValue,
+      attachmentLabel: attachmentLabelValue,
+      normasQueModifica: dedupeRelatedByTitle(normasQueModificaRaw as RelatedContentItem[]),
+      normasComplementarias: dedupeRelatedByTitle(normasComplementariasRaw as RelatedContentItem[]),
+      observacionesItems: dedupeRelatedByTitle(observacionesRaw as RelatedContentItem[]),
+      relatedFallos: relatedFallosValue,
+      relatedContentItems: relatedContentItemsValue,
+      metadataDateRaw: metadataDateRawValue,
+      metadataDate: metadataDateValue,
+      contentWidth: contentWidthValue,
+      bodyFontSize: fontSize,
+      bodyLineHeight: lineHeight,
+      headingFontSize: headingFontSizeValue,
+      headingLineHeight: headingLineHeightValue,
+      readingBodyColor: readingBodyColorValue,
+      readingSecondaryColor: readingSecondaryColorValue,
+      readingLabelColor: readingLabelColorValue,
+      isComfortableDetail: isComfortableDetailValue,
+      comfortableBodyFontSize: comfortableBodyFontSizeValue,
+      comfortableBodyLineHeight: comfortableBodyLineHeightValue,
+      comfortableTitleFontSize: comfortableTitleFontSizeValue,
+      comfortableTitleLineHeight: comfortableTitleLineHeightValue,
+      stickyViewportOffset: stickyViewportOffsetValue,
+      jumpTopOffset: jumpTopOffsetValue,
+      subtitleText: subtitleTextValue,
+      headerTitleText: headerTitleTextValue,
+      extractedRelated: extractedRelatedValue,
+      leadText: leadTextValue,
+      baseTypeLabel: baseTypeLabelValue,
+      typeLabel: typeLabelValue,
+      falloParsed: falloParsedValue,
+      falloFechaDisplay: falloFechaDisplayValue,
+      falloTribunalDisplay: falloTribunalDisplayValue,
+      autorDoctrina: autorDoctrinaValue,
+      estadoVigencia: estadoVigenciaValue,
+      secondaryMeta: secondaryMetaValue,
+      sanitizedHtml: html && html.length > 200 ? sanitizeHtml(html) : null,
+    };
+  })();
 
   const sectionItems =
     document.contentType === "legislacion"
@@ -1616,9 +1847,11 @@ export const DetailScreen = () => {
         ].filter((item) => item.visible);
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
+  const visualSelectedSection = visibleSectionKeys.has(sectionVisualKey) ? sectionVisualKey : selectedSection;
+  const documentArticles = Array.isArray(document.articles) ? document.articles : [];
   const shouldPrepareArticleCaches =
     document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
-  const searchableArticles = shouldPrepareArticleCaches && Array.isArray(document.articles) ? document.articles : [];
+  const searchableArticles = shouldPrepareArticleCaches ? documentArticles : [];
   const hasScrollableTextRail =
     selectedSection === "texto" &&
     (baseTypeLabel === "fallo" || baseTypeLabel === "sumario" || baseTypeLabel === "doctrina") &&
@@ -1627,9 +1860,9 @@ export const DetailScreen = () => {
       : !!extractedRelated.mainText);
   const scrubberMode = searchableArticles.length > 0 ? "articles" : hasScrollableTextRail ? "scroll" : "none";
   const isContinuousTextRail = scrubberMode === "scroll";
-  const rightRailContentInset = isContinuousTextRail ? 16 : 0;
-  if (articleShareCacheRef.current.source !== searchableArticles) {
-    const nextItems = searchableArticles.map((article, index) => {
+  const rightRailContentInset = isContinuousTextRail ? (isComfortableDetail ? 0 : 16) : 0;
+  if (articleShareCacheRef.current.source !== documentArticles) {
+    const nextItems = documentArticles.map((article, index) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
       const parsedTitle = parseArticleTitleContext(article.title);
       const articleBodyRaw = stripRepeatedArticleLead(
@@ -1652,7 +1885,7 @@ export const DetailScreen = () => {
       };
     });
     articleShareCacheRef.current = {
-      source: searchableArticles,
+      source: documentArticles,
       items: nextItems,
       keySet: new Set(nextItems.map((item) => item.key)),
     };
@@ -1663,21 +1896,21 @@ export const DetailScreen = () => {
     (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
     0
   );
-  const normalizedSearchQuery = docSearchQuery.trim().toLowerCase();
+  const normalizedSearchQuery = deferredDocSearchQuery.trim().toLowerCase();
   if (
-    articleSearchCacheRef.current.source !== searchableArticles ||
+    articleSearchCacheRef.current.source !== documentArticles ||
     articleSearchCacheRef.current.query !== normalizedSearchQuery
   ) {
     let nextMatches: number[] = [];
-    if (normalizedSearchQuery && searchableArticles.length) {
+    if (normalizedSearchQuery && documentArticles.length) {
       nextMatches = [];
-      searchableArticles.forEach((article, index) => {
+      documentArticles.forEach((article, index) => {
         const haystack = `${article.number || ""} ${article.title || ""} ${article.text || ""}`.toLowerCase();
         if (haystack.includes(normalizedSearchQuery)) nextMatches.push(index);
       });
     }
     articleSearchCacheRef.current = {
-      source: searchableArticles,
+      source: documentArticles,
       query: normalizedSearchQuery,
       matches: nextMatches,
       matchSet: new Set(nextMatches),
@@ -1686,11 +1919,11 @@ export const DetailScreen = () => {
   const articleSearchMatches = articleSearchCacheRef.current.matches;
   const articleSearchMatchSet = articleSearchCacheRef.current.matchSet;
   const plainTextSearchMatches =
-    !normalizedSearchQuery || searchableArticles.length > 0
+    !normalizedSearchQuery || documentArticles.length > 0
       ? 0
       : countMatchesInText(`${leadText || ""}\n${extractedRelated.mainText || ""}`, normalizedSearchQuery);
   const totalSearchMatches =
-    searchableArticles.length > 0 ? articleSearchMatches.length : plainTextSearchMatches;
+    documentArticles.length > 0 ? articleSearchMatches.length : plainTextSearchMatches;
   const normalizedSearchPointer =
     articleSearchMatches.length > 0
       ? Math.min(searchMatchPointer, articleSearchMatches.length - 1)
@@ -1949,11 +2182,14 @@ export const DetailScreen = () => {
     if (!articleStickyDirtyRef.current) return articleStickySortedRef.current;
     const raw = Object.values(articleStickyMetaRef.current)
       .filter((item) => item && Number.isFinite(item.y) && item.label)
-      .sort((a, b) => a.y - b.y) as Array<{ y: number; label: string }>;
-    const compact: Array<{ y: number; label: string }> = [];
+      .sort((a, b) => a.y - b.y) as Array<{ y: number; label: string; headings: string[] }>;
+    const compact: Array<{ y: number; label: string; headings: string[] }> = [];
     for (const entry of raw) {
       const prev = compact[compact.length - 1];
-      if (!prev || prev.label !== entry.label) compact.push(entry);
+      const signature = entry.headings.map((line) => normalizeHeadingToken(line)).filter(Boolean).join("|") || entry.label;
+      const prevSignature =
+        prev?.headings.map((line) => normalizeHeadingToken(line)).filter(Boolean).join("|") || prev?.label || "";
+      if (!prev || prevSignature !== signature) compact.push(entry);
     }
     articleStickySortedRef.current = compact;
     articleStickyDirtyRef.current = false;
@@ -1964,13 +2200,94 @@ export const DetailScreen = () => {
     if (selectedSection !== "texto") return;
     const entries = getSortedStickyEntries();
     if (!entries.length) return;
-    setStickyIndexEntries(entries);
+
+    if (!articleStickyDirtyRef.current && stickyIndexTree.length > 0) {
+      const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
+      const autoExpanded: Record<string, boolean> = {};
+      stickyIndexTree.forEach((node) => {
+        if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
+          autoExpanded[node.key] = true;
+        }
+      });
+      setExpandedStickyNodeKeys(autoExpanded);
+      setIsStickyIndexOpen(true);
+      return;
+    }
+
+    const tree = buildStickyIndexTree(entries);
+    if (!tree.length) return;
+    const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
+    const autoExpanded: Record<string, boolean> = {};
+
+    // Simple one-level match: expand only the root nodes that match current section
+    tree.forEach((node) => {
+      if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
+        autoExpanded[node.key] = true;
+      }
+    });
+
+    setExpandedStickyNodeKeys(autoExpanded);
+    setStickyIndexTree(tree);
     setIsStickyIndexOpen(true);
+  };
+
+  const toggleStickyNode = (key: string) => {
+    setExpandedStickyNodeKeys((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const jumpToStickyEntry = (entry: { y: number; label: string }) => {
     setIsStickyIndexOpen(false);
     jumpToY(entry.y, true, jumpTopOffset);
+  };
+
+  const renderStickyIndexNode = (node: StickyIndexNode, depth = 0): ReactNode => {
+    const hasChildren = node.children.length > 0;
+    const isExpanded = !!expandedStickyNodeKeys[node.key];
+
+    return (
+      <View key={node.key} style={depth > 0 ? styles.stickyIndexChildGroup : null}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.stickyIndexItem,
+            styles.stickyIndexNodeItem,
+            depth > 1 ? styles.stickyIndexNodeItemNested : null,
+            { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
+            pressed ? styles.stickyIndexItemPressed : null,
+          ]}
+          onPress={() => {
+            if (hasChildren) toggleStickyNode(node.key);
+            else jumpToStickyEntry(node);
+          }}
+          unstable_pressDelay={0}
+          hitSlop={TOUCH_HIT_SLOP}
+        >
+          <Text
+            style={[
+              styles.stickyIndexItemText,
+              depth === 1 ? styles.stickyIndexItemTextTitle : null,
+              depth > 1 ? styles.stickyIndexItemTextNested : null,
+              { color: appColors.primaryStrong },
+            ]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
+            {node.label}
+          </Text>
+          {hasChildren ? (
+            isExpanded ? (
+              <ChevronUp size={14} color={appColors.primaryStrong} strokeWidth={2.2} />
+            ) : (
+              <ChevronDown size={14} color={appColors.primaryStrong} strokeWidth={2.2} />
+            )
+          ) : null}
+        </Pressable>
+        {hasChildren && isExpanded ? (
+          <View style={styles.stickyIndexChildren}>
+            {node.children.map((child) => renderStickyIndexNode(child, depth + 1))}
+          </View>
+        ) : null}
+      </View>
+    );
   };
 
   const updateStickySectionByScroll = (scrollY: number) => {
@@ -2030,6 +2347,26 @@ export const DetailScreen = () => {
   const renderHighlightedBlock = (value: string, style: any, keyPrefix: string, selectable = false) => (
     <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>
   );
+
+  const renderHighlightedBlockWithParagraphs = (value: string, style: any, keyPrefix: string, selectable = false) => {
+    const paragraphs = value.split(/\n\n+/).filter((p) => p.trim().length > 0);
+    if (paragraphs.length <= 1) {
+      return <Text style={style} selectable={selectable}>{renderHighlightedInline(value, keyPrefix)}</Text>;
+    }
+    return (
+      <View>
+        {paragraphs.map((para, idx) => (
+          <Text
+            key={`${keyPrefix}-para-${idx}`}
+            style={[style, idx > 0 ? { marginTop: spacing.md } : null]}
+            selectable={selectable}
+          >
+            {renderHighlightedInline(para, `${keyPrefix}-para-${idx}`)}
+          </Text>
+        ))}
+      </View>
+    );
+  };
 
   const handleDetailScroll = (y: number) => {
     scrollOffsetRef.current = y;
@@ -2671,12 +3008,11 @@ export const DetailScreen = () => {
       return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
     }
 
-    const html = typeof document.contentHtml === "string" ? document.contentHtml.trim() : "";
-    if (html && html.length > 200) {
+    if (sanitizedHtml) {
       return (
         <RenderHTML
           contentWidth={contentWidth}
-          source={{ html: sanitizeHtml(html) }}
+          source={{ html: sanitizedHtml }}
           baseStyle={{ color: colors.text, fontSize: bodyFontSize, lineHeight: bodyLineHeight }}
         />
       );
@@ -2740,7 +3076,7 @@ export const DetailScreen = () => {
                   articleOffsetsRef.current[index] = y;
                   articleOffsetDirtyRef.current = true;
                   geometryTableDirtyRef.current = true;
-                  articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle };
+                  articleStickyMetaRef.current[index] = { y, label: stickyLabelForArticle, headings: parsedTitle.headings };
                   articleStickyDirtyRef.current = true;
                   scheduleLayoutDerivedRefresh();
                 }}
@@ -2881,7 +3217,7 @@ export const DetailScreen = () => {
       if (document.contentType === "fallo") {
         const parsed = parseFalloContent(extractedRelated.mainText);
         return (
-          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 14 } : null]}>
+          <View style={[styles.falloContentCard, isContinuousTextRail ? { marginRight: 0 } : null]}>
             <View style={styles.inlineContentShareRow}>
               <Pressable
                 style={styles.articleShareBtn}
@@ -2915,7 +3251,7 @@ export const DetailScreen = () => {
             {parsed.summaryText ? (
               <View style={styles.falloSummarySection}>
                 <Text style={styles.falloSummaryTitle}>Sumario</Text>
-                {renderHighlightedBlock(
+                {renderHighlightedBlockWithParagraphs(
                   parsed.summaryText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-summary",
@@ -2926,7 +3262,7 @@ export const DetailScreen = () => {
             {parsed.bodyText ? (
               <View style={styles.falloSummarySection}>
                 <Text style={styles.falloSummaryTitle}>Texto completo</Text>
-                {renderHighlightedBlock(
+                {renderHighlightedBlockWithParagraphs(
                   parsed.bodyText,
                   [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
                   "fallo-body",
@@ -2942,9 +3278,16 @@ export const DetailScreen = () => {
         ? extractedRelated.mainText
             .replace(/\r\n?/g, "\n")
             .replace(/\n{3,}/g, "\n\n")
-            .replace(/([^\n])\n([^\n])/g, "$1\n\n$2")
         : extractedRelated.mainText;
-      const mainTextBlock = renderHighlightedBlock(
+      const mainTextBlock = isComfortableDetail ? renderHighlightedBlockWithParagraphs(
+        comfortableMainText,
+        [
+          styles.contentText,
+          { fontSize: comfortableBodyFontSize, lineHeight: comfortableBodyLineHeight, color: readingBodyColor },
+        ],
+        "main-text",
+        isComfortableDetail || document.contentType === "fallo" || document.contentType === "dictamen"
+      ) : renderHighlightedBlock(
         comfortableMainText,
         [
           styles.contentText,
@@ -2965,7 +3308,7 @@ export const DetailScreen = () => {
                 paddingHorizontal: spacing.md + 1,
                 paddingVertical: spacing.md + 2,
                 borderRadius: radius.lg,
-                marginRight: isContinuousTextRail ? 14 : 0,
+                marginRight: isContinuousTextRail ? 0 : 0,
               },
             ]}
           >
@@ -3022,11 +3365,14 @@ export const DetailScreen = () => {
           setDocSearchQuery(value);
           setSearchMatchPointer(0);
         }}
+        onSubmitEditing={() => Keyboard.dismiss()}
         placeholder="Buscar texto dentro del documento"
         placeholderTextColor={colors.muted}
         style={styles.docSearchInput}
         autoCapitalize="none"
         autoCorrect={false}
+        blurOnSubmit
+        returnKeyType="search"
       />
       {normalizedSearchQuery ? <Text style={styles.docSearchCount}>{totalSearchMatches}</Text> : null}
       {normalizedSearchQuery ? (
@@ -3080,6 +3426,7 @@ export const DetailScreen = () => {
     .join("|");
   const contentRenderKey = [
     document.guid,
+    document.fetchedAt || "",
     selectedSection,
     bodyFontSize,
     bodyLineHeight,
@@ -3440,7 +3787,7 @@ export const DetailScreen = () => {
                   borderColor: appColors.border,
                   backgroundColor: appColors.card,
                 },
-                selectedSection === item.key ? styles.sectionTabActive : null,
+                visualSelectedSection === item.key ? styles.sectionTabActive : null,
                 pressed ? styles.sectionTabPressed : null,
               ]}
               onPress={() => setActiveSectionSafe(item.key)}
@@ -3452,7 +3799,7 @@ export const DetailScreen = () => {
                 style={[
                   styles.sectionTabText,
                   { color: appColors.muted },
-                  selectedSection === item.key ? [styles.sectionTabTextActive, { color: appColors.primaryStrong }] : null,
+                  visualSelectedSection === item.key ? [styles.sectionTabTextActive, { color: appColors.primaryStrong }] : null,
                 ]}
               >
                 {item.label}
@@ -3611,7 +3958,7 @@ export const DetailScreen = () => {
             {
               top: fixedHeaderHeight + 10,
               bottom: Math.max(spacing.xl + 12, insets.bottom + 34),
-              right: isContinuousTextRail ? 0 : 2,
+              right: isContinuousTextRail ? (isComfortableDetail ? 8 : 0) : 2,
               width: isContinuousTextRail ? 12 : 14,
             },
             isScrubbingArticles ? styles.articleScrubberTrackActive : null,
@@ -3685,7 +4032,8 @@ export const DetailScreen = () => {
           style={[
             styles.stickyIndexBackdrop,
             {
-              paddingTop: fixedHeaderHeight > 0 ? fixedHeaderHeight + spacing.md : spacing.xl,
+              paddingTop: Math.max(insets.top + spacing.md, fixedHeaderHeight > 0 ? Math.round(fixedHeaderHeight * 0.38) : spacing.lg),
+              paddingBottom: Math.max(insets.bottom + spacing.md, spacing.xl),
             },
           ]}
           onPress={() => setIsStickyIndexOpen(false)}
@@ -3710,21 +4058,7 @@ export const DetailScreen = () => {
               </Pressable>
             </View>
             <ScrollView contentContainerStyle={styles.stickyIndexList} keyboardShouldPersistTaps="handled">
-              {stickyIndexEntries.map((entry, index) => (
-                <Pressable
-                  key={`${entry.label}-${entry.y}-${index}`}
-                  style={({ pressed }) => [
-                    styles.stickyIndexItem,
-                    { borderColor: appColors.border, backgroundColor: isDarkMode ? "#111B33" : "#F8FAFC" },
-                    pressed ? styles.stickyIndexItemPressed : null,
-                  ]}
-                  onPress={() => jumpToStickyEntry(entry)}
-                  unstable_pressDelay={0}
-              hitSlop={TOUCH_HIT_SLOP}
-                >
-                  <Text style={[styles.stickyIndexItemText, { color: appColors.primaryStrong }]}>{entry.label}</Text>
-                </Pressable>
-              ))}
+              {stickyIndexTree.map((node) => renderStickyIndexNode(node))}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -4376,8 +4710,8 @@ const styles = StyleSheet.create({
   stickyIndexBackdrop: {
     flex: 1,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
-    paddingHorizontal: spacing.md,
-    justifyContent: "flex-start",
+    paddingHorizontal: spacing.lg + 8,
+    justifyContent: "center",
   },
   stickyIndexCard: {
     maxHeight: "72%",
@@ -4424,6 +4758,13 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     gap: spacing.xs,
   },
+  stickyIndexChildren: {
+    paddingTop: spacing.xs,
+    gap: spacing.xs,
+  },
+  stickyIndexChildGroup: {
+    gap: spacing.xs,
+  },
   stickyIndexItem: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -4431,6 +4772,37 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
+  },
+  stickyIndexNodeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  stickyIndexNodeItemNested: {
+    marginLeft: spacing.xs + 2,
+  },
+  stickyIndexNodeJumpItem: {
+    marginTop: 0,
+  },
+  stickyIndexExpander: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  stickyIndexExpanderPressed: {
+    backgroundColor: "rgba(27, 55, 94, 0.1)",
+  },
+  stickyIndexNameButton: {
+    flex: 1,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  stickyIndexNameButtonWithChevron: {
+    paddingRight: 0,
   },
   stickyIndexItemPressed: {
     borderColor: colors.primaryStrong,
@@ -4441,6 +4813,17 @@ const styles = StyleSheet.create({
     fontSize: typography.small + 1,
     fontWeight: "700",
     lineHeight: 18,
+    flex: 1,
+    minWidth: 0,
+  },
+  stickyIndexItemTextTitle: {
+    fontWeight: "500",
+  },
+  stickyIndexItemTextNested: {
+    flex: 1,
+    fontSize: typography.small,
+    fontWeight: "500",
+    color: "#000",
   },
 });
 

@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Keyboard, Pressable, StyleSheet, TextInput, View } from "react-native";
 import { Search, SlidersHorizontal } from "lucide-react-native";
 import { radius, spacing, typography } from "../constants/theme";
 import { useAppTheme } from "../theme/appTheme";
@@ -9,6 +9,7 @@ type Props = {
   placeholder?: string;
   onFilterPress?: () => void;
   filterActive?: boolean;
+  onSubmitEditing?: () => void;
 };
 
 export const SearchBar = ({
@@ -17,6 +18,7 @@ export const SearchBar = ({
   placeholder,
   onFilterPress,
   filterActive = false,
+  onSubmitEditing,
 }: Props) => {
   const { colors } = useAppTheme();
   return (
@@ -28,6 +30,12 @@ export const SearchBar = ({
         placeholderTextColor={colors.muted}
         value={value}
         onChangeText={onChangeText}
+        returnKeyType="search"
+        blurOnSubmit
+        onSubmitEditing={() => {
+          Keyboard.dismiss();
+          onSubmitEditing?.();
+        }}
       />
       {onFilterPress ? (
         <Pressable

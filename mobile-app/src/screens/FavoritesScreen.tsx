@@ -15,6 +15,8 @@ import { FullScreenLoader } from "../components/FullScreenLoader";
 import { OfflineBanner } from "../components/OfflineBanner";
 import { resolveJurisdictionLabel } from "../utils/jurisdiction";
 
+const DOCUMENT_OPEN_GUARD_MS = 900;
+
 export const FavoritesScreen = () => {
   const { colors } = useAppTheme();
   const queryClient = useQueryClient();
@@ -40,12 +42,14 @@ export const FavoritesScreen = () => {
     (guid?: string | null) => {
       const normalizedGuid = String(guid || "").trim();
       if (!normalizedGuid) return;
+      const queryState = queryClient.getQueryState(["saij-document", normalizedGuid]);
+      if (queryState?.data || queryState?.fetchStatus === "fetching") return;
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
-          queryFn: () => getSaijDocument(normalizedGuid),
-          staleTime: 1000 * 60 * 20,
-          gcTime: 1000 * 60 * 60,
+          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 15000 }),
+          staleTime: 1000 * 60 * 60,
+          gcTime: 1000 * 60 * 60 * 4,
         })
         .catch(() => {
           // best effort warmup
@@ -58,7 +62,6 @@ export const FavoritesScreen = () => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
-    setPendingGuid(normalizedGuid);
     openingGuidRef.current = normalizedGuid;
     prefetchDocument(normalizedGuid);
     router.push({
@@ -67,7 +70,7 @@ export const FavoritesScreen = () => {
     });
     setTimeout(() => {
       if (openingGuidRef.current === normalizedGuid) openingGuidRef.current = null;
-    }, 60);
+    }, DOCUMENT_OPEN_GUARD_MS);
   };
 
   const removeItem = async (guid: string) => {

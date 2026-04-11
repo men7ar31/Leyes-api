@@ -1,6 +1,7 @@
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
+  Keyboard,
   LayoutChangeEvent,
   PanResponder,
   Pressable,
@@ -275,7 +276,7 @@ const ReaderRow = memo(
 
 ReaderRow.displayName = "ReaderRow";
 
-export const CivilCodeSimpleReader = ({ document }: Props) => {
+export const CivilCodeSimpleReader = memo(({ document }: Props) => {
   const { colors, isDarkMode } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [isFavorite, setIsFavorite] = useState(false);
@@ -815,6 +816,8 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
                 autoCapitalize="none"
                 autoCorrect={false}
                 returnKeyType="search"
+                blurOnSubmit
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
               {query ? (
                 <Pressable
@@ -1108,7 +1111,7 @@ export const CivilCodeSimpleReader = ({ document }: Props) => {
       </View>
     </SafeAreaView>
   );
-};
+});
 
 const styles = StyleSheet.create({
   safeArea: {

@@ -1,5 +1,5 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { RefreshCw } from "lucide-react-native";
@@ -23,6 +23,8 @@ type ProvinceOption = {
   name: string;
   abbr: string;
 };
+
+const DOCUMENT_OPEN_GUARD_MS = 900;
 
 const PROVINCES: ProvinceOption[] = [
   { name: "Buenos Aires", abbr: "BA" },
@@ -167,9 +169,9 @@ export const CodesScreen = () => {
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
-          queryFn: () => getSaijDocument(normalizedGuid),
-          staleTime: 1000 * 60 * 20,
-          gcTime: 1000 * 60 * 60,
+          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 15000 }),
+          staleTime: 1000 * 60 * 60,
+          gcTime: 1000 * 60 * 60 * 4,
         })
         .catch(() => {
           // warm cache best effort
@@ -182,15 +184,15 @@ export const CodesScreen = () => {
     const normalizedGuid = String(guid || "").trim();
     if (!normalizedGuid) return;
     if (openingGuidRef.current === normalizedGuid) return;
-    setPendingCodeKey(normalizedGuid);
     openingGuidRef.current = normalizedGuid;
+    prefetchCode(normalizedGuid);
     router.push({
       pathname: "/detail/[guid]",
       params: { guid: normalizedGuid, fromCodes: "1" },
     });
-    setTimeout(() => {
-      prefetchCode(normalizedGuid);
-    }, 0);
+    startTransition(() => {
+      setPendingCodeKey(normalizedGuid);
+    });
     setTimeout(() => {
       setPendingCodeKey((current) => (current === normalizedGuid ? null : current));
     }, 220);
@@ -198,7 +200,7 @@ export const CodesScreen = () => {
       if (openingGuidRef.current === normalizedGuid) {
         openingGuidRef.current = null;
       }
-    }, 60);
+    }, DOCUMENT_OPEN_GUARD_MS);
   }, [prefetchCode]);
 
   const invalidatePendingProvincialOpen = useCallback(() => {
@@ -300,7 +302,7 @@ export const CodesScreen = () => {
                 android_ripple={{ color: colors.primarySoft, borderless: true }}
                 hitSlop={8}
               >
-                <Text style={[styles.changeText, { color: colors.primaryStrong }]}>{isProvinceListOpen ? "Ocultar" : "Cambiar"}</Text>
+                <Text style={[styles.changeText, { color: colors.primaryStrong }]}>{isProvinceListOpen ? "Volver" : "Cambiar"}</Text>
               </Pressable>
             </View>
 
@@ -343,7 +345,7 @@ export const CodesScreen = () => {
                         active={pendingCodeKey === rowKey}
                         onPressIn={() => setPendingCodeKey(rowKey)}
                         onPress={() => {
-                          setPendingCodeKey(rowKey);
+                          if (resolvedGuid) prefetchCode(resolvedGuid);
                           router.push({
                             pathname: "/detail/[guid]",
                             params: {
@@ -357,11 +359,9 @@ export const CodesScreen = () => {
                               fromCodes: "1",
                             },
                           });
-                          if (resolvedGuid) {
-                            setTimeout(() => {
-                              prefetchCode(resolvedGuid);
-                            }, 0);
-                          }
+                          startTransition(() => {
+                            setPendingCodeKey(rowKey);
+                          });
                           setTimeout(() => {
                             setPendingCodeKey((current) => (current === rowKey ? null : current));
                           }, 220);
