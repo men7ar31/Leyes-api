@@ -1,9 +1,9 @@
 import {
   Animated,
   Alert,
+  BackHandler,
   Keyboard,
   Linking,
-  Modal,
   PanResponder,
   Pressable,
   ScrollView,
@@ -1227,7 +1227,7 @@ export const DetailScreen = () => {
     ? String(resolvedGuidParam || resolveProvincialQuery.data?.guid || "").trim()
     : String(guidParam || "").trim();
   const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [sectionVisualKey, setSectionVisualKey] = useState<string>("texto");
   const [expandedArticlePanels, setExpandedArticlePanels] = useState<Record<string, boolean>>({});
@@ -1246,6 +1246,10 @@ export const DetailScreen = () => {
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(0);
   const [stickySectionLabel, setStickySectionLabel] = useState<string | null>(null);
   const [isStickyIndexOpen, setIsStickyIndexOpen] = useState(false);
+  const stickyIndexTopOffset = Math.max(insets.top + 88, fixedHeaderHeight + spacing.lg + 6);
+  const stickyIndexBottomPadding = Math.max(insets.bottom + spacing.lg, spacing.xl);
+  const stickyIndexMaxHeight = Math.max(320, height - stickyIndexTopOffset - stickyIndexBottomPadding);
+  const stickyIndexMaxWidth = Math.min(420, Math.max(280, width - (spacing.lg + 8) * 2));
   const [stickyIndexTree, setStickyIndexTree] = useState<StickyIndexNode[]>([]);
   const [expandedStickyNodeKeys, setExpandedStickyNodeKeys] = useState<Record<string, boolean>>({});
   const [isScrubbingArticles, setIsScrubbingArticles] = useState(false);
@@ -1260,6 +1264,15 @@ export const DetailScreen = () => {
   const scrubMoveRafRef = useRef<number | null>(null);
   const layoutRefreshRafRef = useRef<number | null>(null);
   const pendingScrollYRef = useRef(0);
+
+  useEffect(() => {
+    if (!isStickyIndexOpen) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      setIsStickyIndexOpen(false);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [isStickyIndexOpen]);
   const pendingScrubLocationYRef = useRef<number | null>(null);
   const articleOffsetsRef = useRef<Record<number, number>>({});
   const articleOffsetSortedRef = useRef<Array<{ index: number; y: number }>>([]);
@@ -4022,47 +4035,52 @@ export const DetailScreen = () => {
           ) : null}
         </View>
       ) : null}
-      <Modal
-        visible={isStickyIndexOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsStickyIndexOpen(false)}
-      >
-        <Pressable
+      {isStickyIndexOpen ? (
+        <View
           style={[
-            styles.stickyIndexBackdrop,
+            styles.stickyIndexOverlay,
             {
-              paddingTop: Math.max(insets.top + spacing.lg, spacing.xl),
-              paddingBottom: Math.max(insets.bottom + spacing.lg, spacing.xl),
+              paddingTop: stickyIndexTopOffset,
+              paddingBottom: stickyIndexBottomPadding,
             },
           ]}
-          onPress={() => setIsStickyIndexOpen(false)}
         >
-          <Pressable
-            style={[styles.stickyIndexCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}
-            onPress={() => {}}
-          >
-            <View style={[styles.stickyIndexHeader, { borderBottomColor: appColors.border, backgroundColor: appColors.card }]}>
-              <Text style={[styles.stickyIndexTitle, { color: appColors.text }]}>Indice rapido</Text>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.stickyIndexCloseBtn,
-                  { borderColor: appColors.border, backgroundColor: appColors.card },
-                  pressed ? styles.stickyIndexCloseBtnPressed : null,
-                ]}
-                onPress={() => setIsStickyIndexOpen(false)}
-                unstable_pressDelay={0}
-              hitSlop={TOUCH_HIT_SLOP}
-              >
-                <Text style={[styles.stickyIndexCloseText, { color: appColors.muted }]}>Cerrar</Text>
-              </Pressable>
-            </View>
-            <ScrollView contentContainerStyle={styles.stickyIndexList} keyboardShouldPersistTaps="handled">
-              {stickyIndexTree.map((node) => renderStickyIndexNode(node))}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
+          <Pressable style={styles.stickyIndexBackdrop} onPress={() => setIsStickyIndexOpen(false)} />
+          <View style={styles.stickyIndexViewport} pointerEvents="box-none">
+            <Pressable
+              style={[
+                styles.stickyIndexCard,
+                {
+                  backgroundColor: appColors.card,
+                  borderColor: appColors.border,
+                  maxWidth: stickyIndexMaxWidth,
+                  maxHeight: stickyIndexMaxHeight,
+                },
+              ]}
+              onPress={() => {}}
+            >
+              <View style={[styles.stickyIndexHeader, { borderBottomColor: appColors.border, backgroundColor: appColors.card }]}>
+                <Text style={[styles.stickyIndexTitle, { color: appColors.text }]}>Indice rapido</Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.stickyIndexCloseBtn,
+                    { borderColor: appColors.border, backgroundColor: appColors.card },
+                    pressed ? styles.stickyIndexCloseBtnPressed : null,
+                  ]}
+                  onPress={() => setIsStickyIndexOpen(false)}
+                  unstable_pressDelay={0}
+                hitSlop={TOUCH_HIT_SLOP}
+                >
+                  <Text style={[styles.stickyIndexCloseText, { color: appColors.muted }]}>Cerrar</Text>
+                </Pressable>
+              </View>
+              <ScrollView contentContainerStyle={styles.stickyIndexList} keyboardShouldPersistTaps="handled">
+                {stickyIndexTree.map((node) => renderStickyIndexNode(node))}
+              </ScrollView>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -4707,14 +4725,23 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     maxWidth: 132,
   },
+  stickyIndexOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 140,
+    elevation: 140,
+  },
   stickyIndexBackdrop: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(6, 13, 30, 0.5)",
+  },
+  stickyIndexViewport: {
+    flex: 1,
     paddingHorizontal: spacing.lg + 8,
-    justifyContent: "center",
+    alignItems: "center",
+    justifyContent: "flex-start",
   },
   stickyIndexCard: {
-    maxHeight: "72%",
+    width: "100%",
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,

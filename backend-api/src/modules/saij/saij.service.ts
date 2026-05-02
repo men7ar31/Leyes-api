@@ -1424,7 +1424,10 @@ export const SaijService = {
                 : undefined,
             };
           }
-          throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
+          throw new HttpError(502, 'saij_document_blocked', 'No se pudo resolver el documento desde SAIJ', {
+            guid,
+            reason: fallbackReasonFromError,
+          });
         }
 
         try {
@@ -1488,7 +1491,10 @@ export const SaijService = {
                 : undefined,
             };
           }
-          throw new HttpError(502, 'saij_document_unavailable', 'No se pudo resolver el documento desde SAIJ');
+          throw new HttpError(502, 'saij_document_blocked', 'No se pudo resolver el documento desde SAIJ', {
+            guid,
+            reason: resolveUnavailableReason(fallbackError),
+          });
         }
       }
     };

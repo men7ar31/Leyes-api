@@ -1,11 +1,11 @@
-import axios, { AxiosInstance, AxiosError } from 'axios';
-import { env } from '../../config/env';
-import { logger } from '../../utils/logger';
 import { HttpError } from '../../utils/httpError';
-import { SaijQuery, SaijSearchResponseRaw, SaijDocumentRaw } from './saij.types';
+import { logger } from '../../utils/logger';
+import { SaijDocumentRaw, SaijQuery, SaijSearchResponseRaw } from './saij.types';
+import { saijHttpClient } from './saijHttpClient';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const withJitter = (ms: number) => ms + Math.floor(Math.random() * 180);
+const HTML_ERROR_PREVIEW_LIMIT = 300;
 
 export type SaijClientSearchResult = {
   raw: SaijSearchResponseRaw;
@@ -24,26 +24,31 @@ export type SaijClientDocumentResult = {
     status: number;
     contentType: string;
     jsonPreview?: string;
+    retryUsed?: boolean;
   };
 };
 
-export class SaijClient {
-  private http: AxiosInstance;
-
-  constructor() {
-    this.http = axios.create({
-      baseURL: env.saijBaseUrl,
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'backend-api/0.1 (+github.com/)',
-        'X-Requested-With': 'XMLHttpRequest',
-        Accept: 'application/json, text/plain, */*',
-        Referer: 'https://www.saij.gob.ar/',
-        'Cache-Control': 'no-cache',
-      },
-    });
+const parseJsonPayload = (payload: unknown, invalidMessage: string) => {
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      throw new HttpError(502, 'saij_invalid_json', invalidMessage);
+    }
   }
+  return payload;
+};
 
+const previewHtml = (payload: unknown): string | undefined => {
+  if (typeof payload !== 'string') return undefined;
+  const compact = payload.replace(/\s+/g, ' ').trim();
+  if (!compact) return undefined;
+  return compact.slice(0, HTML_ERROR_PREVIEW_LIMIT);
+};
+
+const isServerRetryableStatus = (status: number) => status >= 500 || status === 429;
+
+export class SaijClient {
   async search(query: SaijQuery): Promise<SaijClientSearchResult> {
     const params = new URLSearchParams();
     params.set('r', query.r ?? '');
@@ -53,48 +58,43 @@ export class SaijClient {
     params.set('s', '');
     params.set('v', 'colapsada');
 
+    const urlPath = `/busqueda?${params.toString()}`;
     const attempts = 4;
-    for (let i = 1; i <= attempts; i++) {
+
+    for (let i = 1; i <= attempts; i += 1) {
       try {
-        const urlPath = `/busqueda?${params.toString()}`;
-        logger.info({ url: `${env.saijBaseUrl}${urlPath}` }, 'Calling SAIJ');
+        logger.info({ url: urlPath, attempt: i }, 'Calling SAIJ search');
 
-        const res = await this.http.get(urlPath, { validateStatus: () => true });
+        const { response } = await saijHttpClient.get(urlPath, {
+          requestName: 'search',
+          accept: 'application/json, text/plain, */*',
+          timeoutMs: 15000,
+        });
 
-        const contentType = res.headers['content-type'] ?? '';
-        const url = res.request?.path || urlPath;
-        logger.info({ url, status: res.status, contentType }, 'SAIJ search response');
+        const contentType = String(response.headers['content-type'] ?? '');
 
-        if (res.status >= 500 || res.status === 429) {
-          throw new HttpError(502, 'saij_error_status', `SAIJ respondió ${res.status}`, {
-            status: res.status,
+        if (isServerRetryableStatus(response.status)) {
+          throw new HttpError(502, 'saij_error_status', `SAIJ respondio ${response.status}`, {
+            status: response.status,
           });
         }
 
         if (contentType.includes('text/html')) {
-          const preview = typeof res.data === 'string' ? res.data.slice(0, 200) : '';
-          throw new HttpError(
-            502,
-            'saij_html_response',
-            'SAIJ devolvió HTML inesperado en lugar de JSON',
-            { status: res.status, contentType, preview, url }
-          );
+          throw new HttpError(502, 'saij_html_response', 'SAIJ devolvio HTML inesperado en lugar de JSON', {
+            status: response.status,
+            contentType,
+            preview: previewHtml(response.data),
+            url: urlPath,
+          });
         }
 
-        let data: any = res.data;
-        let jsonPreview: string | undefined;
-        if (typeof data === 'string') {
-          try {
-            data = JSON.parse(data);
-          } catch (_parseErr) {
-            throw new HttpError(502, 'saij_invalid_json', 'Respuesta no es JSON parseable desde SAIJ');
-          }
-        }
+        const data = parseJsonPayload(response.data, 'Respuesta no es JSON parseable desde SAIJ');
 
         if (!data || typeof data !== 'object') {
-          throw new HttpError(502, 'saij_invalid_response', 'Respuesta vacía o inválida desde SAIJ');
+          throw new HttpError(502, 'saij_invalid_response', 'Respuesta vacia o invalida desde SAIJ');
         }
 
+        let jsonPreview: string | undefined;
         try {
           jsonPreview = JSON.stringify(data).slice(0, 1500);
         } catch {
@@ -104,27 +104,30 @@ export class SaijClient {
         return {
           raw: data as SaijSearchResponseRaw,
           debug: {
-            url: `${env.saijBaseUrl}${urlPath}`,
-            status: res.status,
+            url: urlPath,
+            status: response.status,
             contentType,
             jsonPreview,
           },
         };
       } catch (error) {
-        const isAxiosTimeout = error instanceof AxiosError && error.code === 'ECONNABORTED';
-        if (isAxiosTimeout) {
-          if (i === attempts) throw new HttpError(504, 'saij_timeout', 'SAIJ no respondió a tiempo');
+        const isTimeout = error instanceof HttpError && error.code === 'saij_timeout';
+        if (isTimeout && i === attempts) {
+          throw error;
         }
+
         logger.warn({ attempt: i, error }, 'SAIJ search failed');
+
         if (i === attempts) {
           if (error instanceof HttpError) throw error;
           throw new HttpError(502, 'saij_error', 'Fallo al consultar SAIJ', { message: String(error) });
         }
+
         await sleep(withJitter(350 * i));
       }
     }
 
-    throw new HttpError(502, 'saij_error', 'SAIJ search agotó reintentos');
+    throw new HttpError(502, 'saij_error', 'SAIJ search agoto reintentos');
   }
 
   async fetchDocument(_guid: string) {
@@ -138,63 +141,94 @@ export class SaijClient {
     const urlPath = `/view-document?${params.toString()}`;
 
     const attempts = 3;
-    for (let i = 1; i <= attempts; i++) {
+
+    for (let i = 1; i <= attempts; i += 1) {
       try {
-        logger.info({ url: `${env.saijBaseUrl}${urlPath}` }, 'Calling SAIJ view-document');
-        const res = await this.http.get(urlPath, { validateStatus: () => true, timeout: 8000 });
-        const contentType = res.headers['content-type'] ?? '';
-        const url = res.request?.path || urlPath;
-        if (res.status >= 500 || res.status === 429) {
-          throw new HttpError(502, 'saij_error_status', `SAIJ respondió ${res.status}`, { status: res.status });
+        logger.info({ url: urlPath, attempt: i }, 'Calling SAIJ view-document');
+
+        const { response, retryUsed } = await saijHttpClient.get(urlPath, {
+          requestName: 'view-document',
+          accept: 'application/json, text/plain, */*',
+          retry403: true,
+          timeoutMs: 15000,
+        });
+
+        const contentType = String(response.headers['content-type'] ?? '');
+
+        if (response.status === 403) {
+          throw new HttpError(502, 'saij_document_blocked', 'No se pudo resolver el documento desde SAIJ', {
+            status: response.status,
+            contentType,
+            retryUsed,
+          });
         }
+
+        if (isServerRetryableStatus(response.status)) {
+          throw new HttpError(502, 'saij_error_status', `SAIJ respondio ${response.status}`, {
+            status: response.status,
+          });
+        }
+
         if (contentType.includes('text/html')) {
-          const preview = typeof res.data === 'string' ? res.data.slice(0, 200) : '';
-          throw new HttpError(
-            502,
-            'saij_html_response',
-            'SAIJ devolvió HTML inesperado en view-document',
-            { status: res.status, contentType, preview, url }
+          const preview = previewHtml(response.data);
+          logger.warn(
+            {
+              url: urlPath,
+              status: response.status,
+              contentType,
+              retryUsed,
+              htmlPreview: preview,
+            },
+            'SAIJ view-document returned HTML'
           );
+          throw new HttpError(502, 'saij_html_response', 'SAIJ devolvio HTML inesperado en view-document', {
+            status: response.status,
+            contentType,
+            preview,
+            retryUsed,
+            url: urlPath,
+          });
         }
-        let data: any = res.data;
-        let jsonPreview: string | undefined;
-        if (typeof data === 'string') {
-          try {
-            data = JSON.parse(data);
-          } catch {
-            throw new HttpError(502, 'saij_invalid_json', 'view-document no es JSON parseable');
-          }
-        }
+
+        const data = parseJsonPayload(response.data, 'view-document no es JSON parseable');
+
         if (!data || typeof data !== 'object') {
-          throw new HttpError(502, 'saij_invalid_response', 'view-document vacío o inválido');
+          throw new HttpError(502, 'saij_invalid_response', 'view-document vacio o invalido');
         }
+
+        let jsonPreview: string | undefined;
         try {
           jsonPreview = JSON.stringify(data).slice(0, 1500);
         } catch {
           jsonPreview = undefined;
         }
+
         return {
           raw: data as SaijDocumentRaw,
           debug: {
-            url: `${env.saijBaseUrl}${urlPath}`,
-            status: res.status,
+            url: urlPath,
+            status: response.status,
             contentType,
             jsonPreview,
+            retryUsed,
           },
         };
       } catch (error) {
-        const isTimeout = error instanceof AxiosError && error.code === 'ECONNABORTED';
+        const isTimeout = error instanceof HttpError && error.code === 'saij_timeout';
         if (isTimeout && i === attempts) {
-          throw new HttpError(504, 'saij_timeout', 'SAIJ view-document timeout');
+          throw error;
         }
+
         if (i === attempts) {
           if (error instanceof HttpError) throw error;
           throw new HttpError(502, 'saij_error', 'Fallo view-document', { message: String(error) });
         }
+
         await sleep(300 * i);
       }
     }
-    throw new HttpError(502, 'saij_error', 'view-document agotó reintentos');
+
+    throw new HttpError(502, 'saij_error', 'view-document agoto reintentos');
   }
 
   async fetchFriendlyUrl(url: string): Promise<{
@@ -207,56 +241,62 @@ export class SaijClient {
       htmlPreview?: string;
       errorName?: string;
       errorMessage?: string;
+      retryUsed?: boolean;
     };
   }> {
     logger.info({ url }, 'friendly fallback fetch start');
+
     try {
-      const res = await this.http.get(url, {
+      const { response, retryUsed } = await saijHttpClient.get(url, {
+        requestName: 'friendly-url',
         responseType: 'text',
-        transformResponse: (x) => x,
-        validateStatus: () => true,
-        timeout: 8000,
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-          Referer: 'https://www.saij.gob.ar/',
-          'Cache-Control': 'no-cache',
-          'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
-        },
-        maxRedirects: 5,
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        retry403: true,
+        timeoutMs: 15000,
       });
-      const contentType = res.headers['content-type'] as string | undefined;
-      const finalUrl = res.request?.res?.responseUrl ?? url;
-      const html = res.data as string;
-      const htmlPreview = typeof html === 'string' ? html.slice(0, 1000) : '';
 
-      logger.info({ url, finalUrl, status: res.status, contentType }, 'friendly fallback fetch response');
+      const contentType = response.headers['content-type'] as string | undefined;
+      const finalUrl = response.request?.res?.responseUrl ?? url;
+      const html = response.data as string;
+      const htmlPreview = previewHtml(html);
 
-      if (res.status === 0) {
-        throw new HttpError(502, 'saij_error', 'Friendly URL network error', { status: res.status });
-      }
-      if (res.status >= 500 || res.status === 429) {
-        throw new HttpError(502, 'saij_error_status', `SAIJ friendly-url respondió ${res.status}`, { status: res.status });
-      }
-      if (res.status === 408) {
-        throw new HttpError(504, 'friendly_timeout', 'Friendly URL timeout', { status: res.status });
-      }
-      if (!contentType || !contentType.includes('text/html')) {
-        throw new HttpError(502, 'non_html_friendly_response', 'Friendly URL no devolvió HTML', {
-          status: res.status,
-          contentType,
+      if (response.status >= 500 || response.status === 429) {
+        throw new HttpError(502, 'saij_error_status', `SAIJ friendly-url respondio ${response.status}`, {
+          status: response.status,
+          retryUsed,
         });
       }
+
+      if (response.status === 408) {
+        throw new HttpError(504, 'friendly_timeout', 'Friendly URL timeout', { status: response.status });
+      }
+
+      if (!contentType || !contentType.includes('text/html')) {
+        throw new HttpError(502, 'non_html_friendly_response', 'Friendly URL no devolvio HTML', {
+          status: response.status,
+          contentType,
+          retryUsed,
+        });
+      }
+
       if (!html || html.length === 0) {
         throw new HttpError(502, 'saij_invalid_content_type', 'Friendly URL sin cuerpo HTML', {
-          status: res.status,
+          status: response.status,
           contentType,
+          retryUsed,
         });
       }
+
       return {
         html,
-        debug: { url, status: res.status, contentType, finalUrl, htmlPreview },
+        debug: {
+          url,
+          status: response.status,
+          contentType,
+          finalUrl,
+          htmlPreview,
+          retryUsed,
+        },
       };
     } catch (error: any) {
       logger.warn(
@@ -269,7 +309,9 @@ export class SaijClient {
         },
         'friendly fallback fetch error'
       );
+
       if (error instanceof HttpError) throw error;
+
       throw new HttpError(502, 'friendly_network_error', 'Fallo friendly-url', {
         name: error?.name,
         message: error?.message,
