@@ -9,15 +9,15 @@ export const useSaijDocument = (guid?: string) => {
   const query = useQuery<SaijDocumentResponse>({
     queryKey: ["saij-document", normalizedGuid],
     enabled: normalizedGuid.length > 0,
-    staleTime: 1000 * 60 * 60,
+    staleTime: 0,
     gcTime: 1000 * 60 * 60 * 4,
     retry: 0,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    refetchOnReconnect: true,
     queryFn: async ({ signal }) => {
       try {
-        const response = await getSaijDocument(normalizedGuid, { signal, timeoutMs: 15000 });
+        const response = await getSaijDocument(normalizedGuid, { signal, timeoutMs: 30000 });
         hydrateFavoriteOfflineDocument(response?.document).catch(() => {
           // offline warm-up should not block the document view
         });

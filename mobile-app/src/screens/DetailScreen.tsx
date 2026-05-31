@@ -1,4 +1,4 @@
-import {
+﻿import {
   Animated,
   Alert,
   BackHandler,
@@ -22,6 +22,7 @@ import * as Sharing from "expo-sharing";
 import { ChevronDown, ChevronUp, Ellipsis, Heart } from "lucide-react-native";
 import RenderHTML from "react-native-render-html";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
 import { useSaijDocument } from "../hooks/useSaijDocument";
 import { LoadingState } from "../components/LoadingState";
@@ -33,7 +34,8 @@ import { colors, radius, spacing, typography } from "../constants/theme";
 import { cleanText, formatDate } from "../utils/format";
 import { sanitizeHtml } from "../utils/content";
 import { isCivilAndCommercialCodeDocument } from "../utils/civilCodeReader";
-import { resolveProvincialCode, searchSaij } from "../services/saijApi";
+import { searchSaij } from "../services/saijApi";
+import { fetchProvincialCodeDocument } from "../services/provincialCodesApi";
 import { isFavoriteGuid, toggleFavoriteFromDocument } from "../services/favorites";
 import { useAppTheme } from "../theme/appTheme";
 import { getReadingBodyMetrics, readingTypography } from "../theme/readingTypography";
@@ -44,6 +46,8 @@ const SCRUBBER_BUBBLE_HEIGHT = 48;
 const SCRUBBER_TAIL_SIZE = 14;
 const SCRUBBER_DRAG_TOUCH_RADIUS = 30;
 const SCRUBBER_INDEX_HYSTERESIS_PX = 26;
+const RECENT_SEARCHES_KEY = "saij_recent_opened_v1";
+const RECENT_SEARCHES_MAX = 4;
 
 const normalizeLoose = (value: string) =>
   value
@@ -55,22 +59,6 @@ const normalizeLoose = (value: string) =>
 
 const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
   [normalizeLoose(province), normalizeLoose(entry.area), normalizeLoose(entry.reference), normalizeLoose(entry.numeroNorma || "")].join("|");
-
-const getManualLawSearchHint = (entry?: ProvincialCodeCatalogEntry | null, fallbackHint?: string | null) => {
-  const normalizedFallbackHint = String(fallbackHint || "").trim();
-  if (normalizedFallbackHint) return normalizedFallbackHint;
-  if (!entry) return null;
-
-  const fromNumeroNorma = String(entry.numeroNorma || "")
-    .replace(/[^\d]/g, "")
-    .trim();
-  if (fromNumeroNorma) return `Ley ${fromNumeroNorma}`;
-
-  const fromReference = String(entry.reference || "").match(/\d{2,7}/)?.[0] || "";
-  if (fromReference) return `Ley ${fromReference}`;
-
-  return null;
-};
 
 const parseNormNumberToken = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -309,7 +297,7 @@ const normalizeCitationOptionalValue = (raw?: string | null) => {
     "no informada",
     "no informado",
     "sin informacion",
-    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n",
+    "sin informaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n",
     "desconocida",
     "desconocido",
     "s/d",
@@ -366,8 +354,8 @@ const simplifySubtype = (value?: string | null) => {
 const getSubtypeFromSubtitle = (subtitle?: string | null) => {
   const raw = String(subtitle || "").trim();
   if (!raw) return "";
-  if (raw.includes("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
-    return raw.split("ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
+  if (raw.includes("ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")) {
+    return raw.split("ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·")[0]?.trim() || "";
   }
   if (raw.includes(".")) {
     return raw.split(".")[0]?.trim() || "";
@@ -416,11 +404,11 @@ const normalizeContentComparableText = (value?: string | null) =>
 
 const stripLeadingArticleBodyDecoration = (value?: string | null) =>
   String(value || "")
-    .replace(/^[\s\u00BA\u00B0]*[-.:;–—•·]+\s*/, "")
+    .replace(/^[\s\u00BA\u00B0]*[-.:;Ã¢â‚¬â€œÃ¢â‚¬â€Ã¢â‚¬Â¢Ã‚Â·]+\s*/, "")
     .trimStart();
 
 const ARTICLE_INLINE_TITLE_VERB_PATTERN =
-  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren)\b/i;
+  /\b(?:es|son|era|eran|fue|fueron|sera|seran|debe|deben|puede|pueden|podra|podran|tiene|tienen|queda|quedan|resulta|resultan|corresponde|corresponden|rige|rigen|aplica|aplican|dispone|disponen|establece|establecen|considera|consideran|entiende|entienden|sufrira|sufriran|reprimira|reprimiran|cumplira|cumpliran|lleva|llevan|importa|importan|concedera|concederan|causare|causaren|habra|habran|existe|existen)\b/i;
 
 const cleanContentText = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
@@ -513,11 +501,267 @@ type RelatedContentItem = {
   url?: string | null;
 };
 
+type ProvincialParsedArticle = {
+  key: string;
+  number: string;
+  title: string | null;
+  text: string;
+};
+
+const parseProvincialArticlesFromText = (rawText?: string | null): ProvincialParsedArticle[] => {
+  const rawBaseText = String(rawText || "").replace(/\r\n/g, "\n").trim();
+  if (!rawBaseText) return [];
+
+  const embeddedArticleRegex =
+    /\bart(?:[i\u00ED]culo|\.?)\s*[a-z]?\s*\d{1,4}(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?[\u00BA\u00B0]?\s*[-.:)\u2013\u2014]/i;
+  const text = rawBaseText.replace(
+    /((?:^|\n)\s*(?:anexo|libro|t[i\u00ED]tulo|cap[i\u00ED]tulo|secci[o\u00F3]n|parte)\b[^\n]*?)\s+((?:art(?:[i\u00ED]culo|\.?)\s*[a-z]?\s*\d{1,4}(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?[\u00BA\u00B0]?\s*[-.:)\u2013\u2014][^\n]*))/gi,
+    (_full, headingChunk, articleChunk) => `${headingChunk}\n${articleChunk}`
+  );
+
+  const articleStartRegex =
+    /(?:^|\n)\s*art(?:[i\u00ED]culo|\.?)\s*([a-z]?\s*\d{1,4}(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?)[\u00BA\u00B0]?\s*[-.:)\u2013\u2014]?\s*/gi;
+  const headingLineRegex = /^(?:libro|t[i\u00ED]tulo|cap[i\u00ED]tulo|secci[o\u00F3]n|parte|anexo)\b/i;
+
+  type Marker =
+    | { type: "article"; index: number; end: number; number: string }
+    | { type: "heading"; index: number; end: number; line: string };
+
+  const parseDetachedArticleTitleCandidate = (value: string) => {
+    const clean = cleanText(value);
+    if (!clean) return null;
+    if (clean.length < 2 || clean.length > 96) return null;
+    if (/^(?:art(?:[i\u00ED]culo|\.?)\s*[a-z]?\s*\d+)/i.test(clean)) return null;
+    if (headingLineRegex.test(clean)) return null;
+    if (/[;:!?]/.test(clean)) return null;
+    if (!/^[A-Z\u00C1\u00C9\u00CD\u00D3\u00DA\u00D1\u00DC]/.test(clean)) return null;
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length > 12) return null;
+    return clean;
+  };
+
+  const peelTrailingDetachedArticleTitle = (value: string) => {
+    const lines = String(value || "").replace(/\r/g, "").split("\n");
+    let last = lines.length - 1;
+    while (last >= 0 && !cleanText(lines[last])) last -= 1;
+    if (last < 0) return { body: value, title: null as string | null };
+    const candidate = parseDetachedArticleTitleCandidate(lines[last]);
+    if (!candidate) return { body: value, title: null as string | null };
+    return {
+      body: lines.slice(0, last).join("\n"),
+      title: candidate,
+    };
+  };
+
+  const updateHeadingContext = (context: string[], block: string) => {
+    const lines = String(block || "")
+      .split("\n")
+      .map((line) => cleanText(line))
+      .filter(Boolean);
+    let next = [...context];
+    let pendingHeadingIndex = -1;
+    const looksLikeHeadingDescriptor = (value: string) => {
+      const clean = cleanText(value);
+      if (!clean) return false;
+      if (clean.length > 96) return false;
+      if (/^(?:art(?:i|í)culo|art\.)\s*[a-z]?\s*\d+/i.test(clean)) return false;
+      if (/[;:!?]/.test(clean)) return false;
+      return true;
+    };
+
+    const getBucketFromHeadingLine = (value: string): "libro" | "titulo" | "capitulo" | "seccion" | "parte" | "anexo" => {
+      const lower = normalizeLoose(value);
+      if (lower.startsWith("anexo")) return "anexo";
+      if (lower.startsWith("libro")) return "libro";
+      if (lower.startsWith("parte")) return "parte";
+      if (lower.startsWith("titulo")) return "titulo";
+      if (lower.startsWith("capitulo")) return "capitulo";
+      return "seccion";
+    };
+    const bucketRank: Record<"anexo" | "parte" | "libro" | "titulo" | "capitulo" | "seccion", number> = {
+      anexo: 0,
+      parte: 1,
+      libro: 2,
+      titulo: 3,
+      capitulo: 4,
+      seccion: 5,
+    };
+
+    for (const line of lines) {
+      if (!headingLineRegex.test(line)) {
+        if (pendingHeadingIndex >= 0 && looksLikeHeadingDescriptor(line)) {
+          next[pendingHeadingIndex] = cleanText(`${next[pendingHeadingIndex]} ${line}`);
+        }
+        pendingHeadingIndex = -1;
+        continue;
+      }
+
+      const bucket = getBucketFromHeadingLine(line);
+      if (bucket === "anexo" || bucket === "parte" || bucket === "libro") {
+        next = [line];
+        pendingHeadingIndex = 0;
+        continue;
+      }
+
+      const currentRank = bucketRank[bucket];
+      const compactAncestors = next.filter((entry) => {
+        const entryBucket = getBucketFromHeadingLine(entry);
+        const entryRank = bucketRank[entryBucket];
+        return entryRank < currentRank;
+      });
+      next = [...compactAncestors, line];
+      pendingHeadingIndex = next.length - 1;
+    }
+    return next;
+  };
+
+  const markers: Marker[] = [];
+
+  for (const match of text.matchAll(articleStartRegex)) {
+    const baseIndex = match.index ?? 0;
+    const full = match[0] || "";
+    const leading = full.match(/^\s*/)?.[0].length ?? 0;
+    const token = full.slice(leading);
+    const index = baseIndex + leading;
+    const end = index + token.length;
+    const number = cleanText(match[1] || "").replace(/\s+/g, " ").trim();
+    if (!number) continue;
+    markers.push({ type: "article", index, end, number });
+  }
+
+  const headingStartRegex = /(?:^|\n)\s*(?:anexo|libro|t[i\u00ED]tulo|cap[i\u00ED]tulo|secci[o\u00F3]n|parte)\b[^\n]*/gi;
+  for (const match of text.matchAll(headingStartRegex)) {
+    const baseIndex = match.index ?? 0;
+    const full = match[0] || "";
+    const leading = full.match(/^\s*/)?.[0].length ?? 0;
+    const token = full.slice(leading);
+    const index = baseIndex + leading;
+    const end = index + token.length;
+    let line = cleanText(token);
+    const embeddedArticleIndex = line.search(embeddedArticleRegex);
+    if (embeddedArticleIndex > 0) {
+      line = cleanText(line.slice(0, embeddedArticleIndex));
+    }
+    if (!line || !headingLineRegex.test(line)) continue;
+    markers.push({ type: "heading", index, end, line });
+  }
+
+  if (!markers.length) return [];
+
+  markers.sort((a, b) => {
+    if (a.index !== b.index) return a.index - b.index;
+    if (a.type === b.type) return a.end - b.end;
+    return a.type === "heading" ? -1 : 1;
+  });
+
+  const compactMarkers: Marker[] = [];
+  for (const marker of markers) {
+    const prev = compactMarkers[compactMarkers.length - 1];
+    if (!prev) {
+      compactMarkers.push(marker);
+      continue;
+    }
+    if (marker.index === prev.index && marker.end === prev.end && marker.type === prev.type) continue;
+    compactMarkers.push(marker);
+  }
+
+  const parsed: ProvincialParsedArticle[] = [];
+  let headingContext: string[] = [];
+  let cursor = 0;
+  let prefaceBuffer = "";
+  let pendingDetachedTitle: string | null = null;
+  let current: { number: string; headingSnapshot: string[]; bodyParts: string[]; detachedTitle: string | null } | null = null;
+
+  const flushCurrent = () => {
+    if (!current) return;
+
+    let body = cleanText(current.bodyParts.join("\n"));
+    if (!body) {
+      current = null;
+      return;
+    }
+
+    let inlineTitle: string | null = null;
+    const firstLine = body.split("\n")[0]?.trim() || "";
+    const firstLineWords = firstLine.split(/\s+/).filter(Boolean).length;
+    const looksLikeArticleTitle =
+      firstLine.length >= 3 &&
+      firstLine.length <= 96 &&
+      firstLineWords <= 12 &&
+      /^[A-ZÁÉÍÓÚÑÜ][^:;!?]*\.$/.test(firstLine);
+    if (looksLikeArticleTitle) {
+      inlineTitle = cleanText(firstLine.slice(0, -1));
+      body = body.slice(firstLine.length).trim();
+    }
+
+    const resolvedInlineTitle = inlineTitle || current.detachedTitle || null;
+    const contextTitle = current.headingSnapshot.length > 0 ? current.headingSnapshot.join(" | ") : "";
+    const combinedTitle = [contextTitle, resolvedInlineTitle].filter(Boolean).join(" | ").trim() || null;
+
+    parsed.push({
+      key: `${current.number}-${parsed.length}`,
+      number: current.number,
+      title: combinedTitle,
+      text: body,
+    });
+    current = null;
+  };
+
+  for (const marker of compactMarkers) {
+    let between = text.slice(cursor, marker.index);
+    if (current) {
+      if (marker.type === "article" && between) {
+        const peeled = peelTrailingDetachedArticleTitle(between);
+        between = peeled.body;
+        pendingDetachedTitle = peeled.title || null;
+      }
+      if (between) current.bodyParts.push(between);
+    } else if (between) {
+      prefaceBuffer += between;
+    }
+
+    if (marker.type === "heading") {
+      if (current) {
+        flushCurrent();
+      }
+      const headingBlock = prefaceBuffer ? `${prefaceBuffer}\n${marker.line}` : marker.line;
+      headingContext = updateHeadingContext(headingContext, headingBlock);
+      prefaceBuffer = "";
+      cursor = marker.end;
+      continue;
+    }
+
+    headingContext = updateHeadingContext(headingContext, prefaceBuffer);
+    prefaceBuffer = "";
+    flushCurrent();
+    current = {
+      number: marker.number,
+      headingSnapshot: [...headingContext],
+      bodyParts: [],
+      detachedTitle: pendingDetachedTitle,
+    };
+    pendingDetachedTitle = null;
+    cursor = marker.end;
+  }
+
+  const tail = text.slice(cursor);
+  const currentArticle = current;
+  if (currentArticle) {
+    if (tail) currentArticle.bodyParts.push(tail);
+  } else if (tail) {
+    prefaceBuffer += tail;
+  }
+
+  flushCurrent();
+
+  return parsed;
+};
+
 const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
   const parseNormIdentity = (value?: string | null) => {
     if (!value || typeof value !== "string") return "";
     const compact = value
-      .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+      .replace(/[ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
       .replace(/[./-]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
@@ -529,7 +773,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     if (dnu) return `dnu:${Number(dnu[1])}`;
     const decreto = compact.match(/\bdecreto\b[^\d]*(\d{1,7})\b/i);
     if (decreto) return `decreto:${Number(decreto[1])}`;
-    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
+    const resol = compact.match(/\bresoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n\b[^\d]*(\d{1,7})\b/i);
     if (resol) return `resolucion:${Number(resol[1])}`;
     const rawCode = compact.match(/^(ley|dnu|dec|decreto|res|resolucion)\s+c?\s*0*(\d{1,7})\b/i);
     if (rawCode) return `${rawCode[1]}:${Number(rawCode[2])}`;
@@ -540,7 +784,7 @@ const dedupeRelatedByTitle = (items: RelatedContentItem[]) => {
     const title = String(item.title || "").trim();
     const subtitle = String(item.subtitle || "").trim();
     const guid = String(item.guid || "").trim();
-    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
+    const generic = /^(ley|decreto|dnu|resoluci[oÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³]n)\b/i.test(title);
     let value = 0;
     if (guid) value += 100;
     if (!generic) value += 40;
@@ -585,8 +829,8 @@ const prettifyNormLabel = (value?: string | null) => {
   const decreto = clean.match(/^DEC(?:RETO)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
   if (decreto) return `Decreto ${Number(decreto[1])}${decreto[2] ? `/${decreto[2]}` : ""}`;
 
-  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“N)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
-  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
+  const resol = clean.match(/^RES(?:OLUCION|OLUCIÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“N)?\s+C?\s+0*(\d{1,7})(?:\s+(\d{4}))?\b/i);
+  if (resol) return `ResoluciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n ${Number(resol[1])}${resol[2] ? `/${resol[2]}` : ""}`;
 
   return clean;
 };
@@ -611,7 +855,7 @@ const normalizeHeadingToken = (value?: string | null) =>
     .toLowerCase();
 
 const isSectionHeadingLine = (value?: string | null) => /^(anexo|titulo|capitulo|seccion|libro|parte)\b/i.test(normalizeHeadingToken(value));
-const isParagraphHeadingLine = (value?: string | null) => /^par(a|Ã¡)grafo\b/i.test(normalizeHeadingToken(value));
+const isParagraphHeadingLine = (value?: string | null) => /^par(a|ÃƒÆ’Ã‚Â¡)grafo\b/i.test(normalizeHeadingToken(value));
 const isTitleHeadingLine = (value?: string | null) => /^titulo\b/i.test(normalizeHeadingToken(value));
 const isChapterHeadingLine = (value?: string | null) => /^capitulo\b/i.test(normalizeHeadingToken(value));
 const isBookHeadingLine = (value?: string | null) => /^libro\b/i.test(normalizeHeadingToken(value));
@@ -628,8 +872,9 @@ const getStickyHeadingContext = (headings: string[]) => {
   const book = headings.filter((line) => isBookHeadingLine(line)).at(-1) || null;
   const title = headings.filter((line) => isTitleHeadingLine(line)).at(-1) || null;
   const chapter = headings.filter((line) => isChapterHeadingLine(line)).at(-1) || null;
+  const section = headings.filter((line) => /^seccion\b/i.test(normalizeHeadingToken(line))).at(-1) || null;
   const fallback = cleanText(headings[headings.length - 1] || "") || null;
-  return { book, title, chapter, fallback };
+  return { book, title, chapter, section, fallback };
 };
 
 const buildStickyIndexTree = (entries: Array<{ y: number; label: string; headings: string[] }>) => {
@@ -637,13 +882,13 @@ const buildStickyIndexTree = (entries: Array<{ y: number; label: string; heading
 
   entries.forEach((entry) => {
     const context = getStickyHeadingContext(entry.headings);
-    const signature = [context.book, context.title, context.chapter, context.fallback]
+    const signature = [context.book, context.title, context.chapter, context.section, context.fallback]
       .map((part) => normalizeHeadingToken(part))
       .filter(Boolean)
       .join("|");
     const prev = compact[compact.length - 1];
     const prevSignature = prev
-      ? [prev.context.book, prev.context.title, prev.context.chapter, prev.context.fallback]
+      ? [prev.context.book, prev.context.title, prev.context.chapter, prev.context.section, prev.context.fallback]
           .map((part) => normalizeHeadingToken(part))
           .filter(Boolean)
           .join("|")
@@ -676,55 +921,54 @@ const buildStickyIndexTree = (entries: Array<{ y: number; label: string; heading
   };
 
   compact.forEach(({ y, context }) => {
-    const { book, title, chapter, fallback } = context;
-    const bookKey = book ? `book:${normalizeHeadingToken(book)}` : "";
-    const titleLabel = title || (!book ? fallback : null);
-    const chapterLabel = chapter && normalizeHeadingToken(chapter) !== normalizeHeadingToken(title || "") ? chapter : null;
+    const { book, title, chapter, section, fallback } = context;
+    const sectionLabel = section && normalizeHeadingToken(section) !== normalizeHeadingToken(chapter || "") ? section : null;
+    const path: Array<{ key: string; label: string }> = [];
 
     if (hasBooks && book) {
-      const bookNode = ensureNode(roots, rootMap, bookKey, book, y);
-      const titleMap = new Map(bookNode.children.map((node) => [node.key, node]));
-      if (titleLabel) {
-        const titleKey = `title:${bookKey}:${normalizeHeadingToken(titleLabel)}`;
-        const titleNode = ensureNode(bookNode.children, titleMap, titleKey, titleLabel, y);
-        if (chapterLabel) {
-          const chapterMap = new Map(titleNode.children.map((node) => [node.key, node]));
-          ensureNode(
-            titleNode.children,
-            chapterMap,
-            `chapter:${titleKey}:${normalizeHeadingToken(chapterLabel)}`,
-            chapterLabel,
-            y
-          );
-        }
-        return;
+      const bookKey = `book:${normalizeHeadingToken(book)}`;
+      path.push({ key: bookKey, label: book });
+      if (title) path.push({ key: `title:${bookKey}:${normalizeHeadingToken(title)}`, label: title });
+      if (chapter) {
+        const chapterParent = title ? `title:${bookKey}:${normalizeHeadingToken(title)}` : bookKey;
+        path.push({ key: `chapter:${chapterParent}:${normalizeHeadingToken(chapter)}`, label: chapter });
       }
-      if (chapterLabel) {
-        ensureNode(
-          bookNode.children,
-          titleMap,
-          `chapter:${bookKey}:${normalizeHeadingToken(chapterLabel)}`,
-          chapterLabel,
-          y
-        );
+      if (sectionLabel) {
+        const sectionParent = chapter
+          ? `chapter:${title ? `title:${bookKey}:${normalizeHeadingToken(title)}` : bookKey}:${normalizeHeadingToken(chapter)}`
+          : title
+            ? `title:${bookKey}:${normalizeHeadingToken(title)}`
+            : bookKey;
+        path.push({ key: `section:${sectionParent}:${normalizeHeadingToken(sectionLabel)}`, label: sectionLabel });
       }
-      return;
+    } else {
+      if (title) path.push({ key: `title:${normalizeHeadingToken(title)}`, label: title });
+      if (chapter) {
+        const chapterParent = title ? `title:${normalizeHeadingToken(title)}` : "root";
+        path.push({ key: `chapter:${chapterParent}:${normalizeHeadingToken(chapter)}`, label: chapter });
+      }
+      if (sectionLabel) {
+        const sectionParent = chapter
+          ? `chapter:${title ? `title:${normalizeHeadingToken(title)}` : "root"}:${normalizeHeadingToken(chapter)}`
+          : title
+            ? `title:${normalizeHeadingToken(title)}`
+            : "root";
+        path.push({ key: `section:${sectionParent}:${normalizeHeadingToken(sectionLabel)}`, label: sectionLabel });
+      }
+      if (!path.length && fallback) {
+        path.push({ key: `section:${normalizeHeadingToken(fallback)}`, label: fallback });
+      }
     }
 
-    const rootLabel = titleLabel || chapterLabel || fallback;
-    if (!rootLabel) return;
-    const rootKey = `${titleLabel ? "title" : chapterLabel ? "chapter" : "section"}:${normalizeHeadingToken(rootLabel)}`;
-    const rootNode = ensureNode(roots, rootMap, rootKey, rootLabel, y);
-    if (titleLabel && chapterLabel) {
-      const childMap = new Map(rootNode.children.map((node) => [node.key, node]));
-      ensureNode(
-        rootNode.children,
-        childMap,
-        `chapter:${rootKey}:${normalizeHeadingToken(chapterLabel)}`,
-        chapterLabel,
-        y
-      );
-    }
+    if (!path.length) return;
+
+    let collection = roots;
+    let map = rootMap;
+    path.forEach((segment) => {
+      const node = ensureNode(collection, map, segment.key, segment.label, y);
+      collection = node.children;
+      map = new Map(node.children.map((child) => [child.key, child]));
+    });
   });
 
   return roots.sort((a, b) => a.y - b.y);
@@ -736,11 +980,11 @@ const parseArticleTitleContext = (title?: string | null) => {
   }
 
   const canonicalTitle = cleanText(title)
-    .replace(/\u00C2?\u00B7/g, "Ã‚Â·")
-    .replace(/\u2022/g, "Ã‚Â·");
+    .replace(/\u2022/g, "Â·")
+    .replace(/\u00A0/g, " ");
 
   const parts = canonicalTitle
-    .split(/\s*(?:Ã‚Â·|\|)\s*/g)
+    .split(/\s*(?:Â·|\|)\s*/g)
     .map((part) => cleanText(part))
     .filter((part) => part.length > 0);
 
@@ -748,18 +992,55 @@ const parseArticleTitleContext = (title?: string | null) => {
     return { headings: [] as string[], articleLabel: null as string | null };
   }
 
-  const headings = parts.filter((part) => isSectionHeadingLine(part) && !isParagraphHeadingLine(part));
-  const articleParts = parts.filter((part) => !isSectionHeadingLine(part) && !isParagraphHeadingLine(part));
+  const looksLikeHeadingDescriptor = (value: string) => {
+    const clean = cleanText(value);
+    if (!clean) return false;
+    if (clean.length > 72) return false;
+    if (/^(?:art(?:i|Ã­)culo|art\.)\s*\d+/i.test(clean)) return false;
+    if (/[:;!?]/.test(clean)) return false;
+    const normalized = normalizeContentComparableText(clean);
+    if (!normalized) return false;
+    if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalized)) return false;
+    return true;
+  };
+  const hasInlineHeadingDescriptor = (value: string) => {
+    const clean = cleanText(value);
+    const normalized = normalizeHeadingToken(clean);
+    if (!normalized) return false;
+    const match = normalized.match(/^(anexo|titulo|capitulo|seccion|libro|parte)\s+(\S+)(?:\s+(.+))?$/i);
+    if (!match) return false;
+    const trailing = cleanText(match[3] || "");
+    return trailing.length > 0;
+  };
+
+  const headings: string[] = [];
+  const articleParts: string[] = [];
+  let pendingHeadingIndex = -1;
+
+  parts.forEach((part) => {
+    if (isSectionHeadingLine(part) && !isParagraphHeadingLine(part)) {
+      headings.push(part);
+      pendingHeadingIndex = hasInlineHeadingDescriptor(part) ? -1 : headings.length - 1;
+      return;
+    }
+    if (pendingHeadingIndex >= 0 && looksLikeHeadingDescriptor(part)) {
+      headings[pendingHeadingIndex] = cleanText(`${headings[pendingHeadingIndex]} ${part}`);
+      pendingHeadingIndex = -1;
+      return;
+    }
+    pendingHeadingIndex = -1;
+    articleParts.push(part);
+  });
+
   const articleLabel = articleParts.length > 0 ? articleParts[articleParts.length - 1] : null;
   return { headings, articleLabel };
 };
-
 const getSafeArticleInlineLabel = (label?: string | null) => {
   const clean = cleanText(String(label || "")).replace(/\s+/g, " ").trim();
   if (!clean) return null;
 
   const collapsed = clean.replace(
-    /\b(?:[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\s+){2,}[A-Za-zÃÃ‰ÃÃ“ÃšÃœÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]\b/g,
+    /\b(?:[A-Za-zÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Â°ÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Å“ÃƒÆ’Ã…Â¡ÃƒÆ’Ã…â€œÃƒÆ’Ã¢â‚¬ËœÃƒÆ’Ã‚Â¡ÃƒÆ’Ã‚Â©ÃƒÆ’Ã‚Â­ÃƒÆ’Ã‚Â³ÃƒÆ’Ã‚ÂºÃƒÆ’Ã‚Â¼ÃƒÆ’Ã‚Â±]\s+){2,}[A-Za-zÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Â°ÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Å“ÃƒÆ’Ã…Â¡ÃƒÆ’Ã…â€œÃƒÆ’Ã¢â‚¬ËœÃƒÆ’Ã‚Â¡ÃƒÆ’Ã‚Â©ÃƒÆ’Ã‚Â­ÃƒÆ’Ã‚Â³ÃƒÆ’Ã‚ÂºÃƒÆ’Ã‚Â¼ÃƒÆ’Ã‚Â±]\b/g,
     (chunk) => chunk.replace(/\s+/g, "")
   );
 
@@ -956,8 +1237,8 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
 
   const compact = raw
     .replace(/\u00A0/g, " ")
-    .replace(/[º°]/g, "")
-    .replace(/[.:;,\-–—]+$/g, "")
+    .replace(/[Ã‚ÂºÃ‚Â°]/g, "")
+    .replace(/[.:;,\-Ã¢â‚¬â€œÃ¢â‚¬â€]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -972,7 +1253,7 @@ const normalizeArticleNumberDisplay = (value?: string | null, fallbackIndex?: nu
     return suffix ? `${base} ${suffix}` : String(base);
   }
 
-  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-záéíóúüñ]+)$/i);
+  const withLiteralSuffix = compact.match(/^(\d+)\s+([a-zÃƒÂ¡ÃƒÂ©ÃƒÂ­ÃƒÂ³ÃƒÂºÃƒÂ¼ÃƒÂ±]+)$/i);
   if (withLiteralSuffix) {
     return `${Number(withLiteralSuffix[1])} ${withLiteralSuffix[2].toLowerCase()}`;
   }
@@ -1002,7 +1283,7 @@ const normalizeArticleSelectorToken = (value?: string | null) => {
   const normalizedSafe = withAsciiDigits
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
+    .replace(/[ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âº]/g, " ")
     .replace(/[\[\]{}()]/g, " ")
     .replace(/[^\w\s\.\,\;\:\-]/g, " ")
     .replace(/[_]/g, " ")
@@ -1087,16 +1368,18 @@ const parseArticleSelectorInput = (value: string) => {
 };
 
 const countMatchesInText = (text: string, query: string) => {
-  const source = String(text || "");
-  const needle = String(query || "").trim();
-  if (!source || !needle) return 0;
-  try {
-    const re = new RegExp(escapeRegExp(needle), "gi");
-    const matches = source.match(re);
-    return Array.isArray(matches) ? matches.length : 0;
-  } catch {
-    return 0;
+  const source = normalizeContentComparableText(String(text || ""));
+  const needle = normalizeContentComparableText(String(query || ""));
+  if (!source || !needle || needle.length < 2) return 0;
+  let cursor = 0;
+  let count = 0;
+  while (cursor < source.length) {
+    const index = source.indexOf(needle, cursor);
+    if (index < 0) break;
+    count += 1;
+    cursor = index + needle.length;
   }
+  return count;
 };
 
 const stripRepeatedArticleLead = (text: string, articleNumber?: string | null) => {
@@ -1154,7 +1437,7 @@ const extractLeadTextBeforeFirstArticle = (text?: string | null) => {
   if (!text || typeof text !== "string") return null;
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) return null;
-  const match = normalized.match(/(?:^|\n)\s*(?:art(?:i|\u00ED)culo|art\.?)\s*\d+/i);
+  const match = normalized.match(/(?:art(?:[i\u00ED]culo|\.?)\s*[a-z]?\s*\d{1,4}(?:\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|nonies|decies))?[\u00BA\u00B0]?)/i);
   if (!match || typeof match.index !== "number") return normalized;
   const before = normalized.slice(0, match.index).trim();
   return before.length > 0 ? before : null;
@@ -1183,6 +1466,40 @@ const getHighlightedParts = (text: string, query: string) => {
   return parts.length ? parts : [{ text: source, hit: false }];
 };
 
+type RecentOpenedDocumentItem = {
+  key: string;
+  guid: string;
+  title: string;
+  subtitle: string | null;
+  contentType: string;
+};
+
+const persistRecentOpenedDocument = async (payload: {
+  guid: string;
+  title: string;
+  subtitle?: string | null;
+  contentType?: string | null;
+}) => {
+  const guid = String(payload.guid || "").trim();
+  if (!guid) return;
+  const nextItem: RecentOpenedDocumentItem = {
+    key: guid,
+    guid,
+    title: String(payload.title || "").trim() || "Documento",
+    subtitle: payload.subtitle ? String(payload.subtitle).trim() : null,
+    contentType: String(payload.contentType || "legislacion").trim() || "legislacion",
+  };
+  try {
+    const raw = await AsyncStorage.getItem(RECENT_SEARCHES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as RecentOpenedDocumentItem[]) : [];
+    const safeList = Array.isArray(parsed) ? parsed : [];
+    const next = [nextItem, ...safeList.filter((item) => item && item.key !== guid)].slice(0, RECENT_SEARCHES_MAX);
+    await AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next));
+  } catch {
+    // best effort cache for recent opened docs
+  }
+};
+
 export const DetailScreen = () => {
   const { colors: appColors, isDarkMode } = useAppTheme();
   const queryClient = useQueryClient();
@@ -1201,8 +1518,6 @@ export const DetailScreen = () => {
   const pendingCodeKey = Array.isArray(params.codeKey) ? params.codeKey[0] : params.codeKey;
   const pendingTitleParam = Array.isArray(params.pendingTitle) ? params.pendingTitle[0] : params.pendingTitle;
   const pendingReferenceParam = Array.isArray(params.pendingReference) ? params.pendingReference[0] : params.pendingReference;
-  const pendingHintParam = Array.isArray(params.pendingHint) ? params.pendingHint[0] : params.pendingHint;
-  const resolvedGuidParam = Array.isArray(params.resolvedGuid) ? params.resolvedGuid[0] : params.resolvedGuid;
   const isPendingProvincialCode = guidParam === "__provincial_pending__";
   const pendingEntry = useMemo(() => {
     const province = String(pendingProvince || "").trim();
@@ -1211,22 +1526,81 @@ export const DetailScreen = () => {
     const catalog = PROVINCIAL_CODES_CATALOG[province] || [];
     return catalog.find((item) => getCatalogEntryKey(province, item) === codeKey) || null;
   }, [pendingCodeKey, pendingProvince]);
-  const pendingManualHint = getManualLawSearchHint(pendingEntry, pendingHintParam);
   const pendingDisplayTitle = String(pendingTitleParam || pendingEntry?.area || "Codigo provincial").trim() || "Codigo provincial";
   const pendingDisplayReference = String(pendingReferenceParam || pendingEntry?.reference || "").trim();
-
-  const resolveProvincialQuery = useQuery({
-    queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
-    enabled: isPendingProvincialCode && Boolean(pendingProvince && pendingEntry) && !String(resolvedGuidParam || "").trim(),
-    staleTime: 1000 * 60 * 30,
-    retry: 0,
-    queryFn: ({ signal }) => resolveProvincialCode(String(pendingProvince), pendingEntry as ProvincialCodeCatalogEntry, { signal }),
+  const saijGuid = isPendingProvincialCode ? "" : String(guidParam || "").trim();
+  const provincialDocumentGuid = isPendingProvincialCode
+    ? `provincial:${normalizeLoose(String(pendingProvince || ""))}:${String(pendingCodeKey || "").trim()}`
+    : "";
+  const provincialStaticQuery = useQuery({
+    queryKey: [
+      "provincial-static-document",
+      String(pendingProvince || "").trim(),
+      String(pendingCodeKey || "").trim(),
+      String(pendingEntry?.numeroNorma || "").trim(),
+    ],
+    enabled: isPendingProvincialCode && Boolean(pendingProvince && pendingEntry),
+    staleTime: 1000 * 60 * 60 * 6,
+    retry: 1,
+    queryFn: () =>
+      fetchProvincialCodeDocument({
+        province: String(pendingProvince || ""),
+        area: String(pendingEntry?.area || ""),
+        reference: String(pendingEntry?.reference || ""),
+        numeroNorma: String(pendingEntry?.numeroNorma || ""),
+      }),
   });
-
-  const effectiveGuid = isPendingProvincialCode
-    ? String(resolvedGuidParam || resolveProvincialQuery.data?.guid || "").trim()
-    : String(guidParam || "").trim();
-  const { document, isLoading, isError, error, refetch } = useSaijDocument(effectiveGuid);
+  const { document: saijDocument, isLoading: isSaijLoading, isError: isSaijError, error: saijError, refetch: refetchSaij } = useSaijDocument(saijGuid);
+  const provincialVirtualDocument = useMemo(() => {
+    if (!isPendingProvincialCode || !pendingProvince || !pendingEntry) return null;
+    const staticDocText = String(provincialStaticQuery.data?.document?.contentText || "").trim();
+    const parsedArticles = parseProvincialArticlesFromText(staticDocText);
+    const subtitleParts = [pendingProvince, pendingDisplayReference].filter(Boolean);
+    return {
+      guid: provincialDocumentGuid,
+      title: pendingDisplayTitle,
+      subtitle: subtitleParts.join(" Â· "),
+      contentType: "legislacion",
+      documentSubtype: "codigo provincial",
+      sourceUrl: String(provincialStaticQuery.data?.document?.sourceUrl || ""),
+      contentText: staticDocText,
+      headerText: "",
+      articles: parsedArticles.map((article) => ({
+        number: article.number,
+        title: article.title || "",
+        text: article.text,
+        normasQueModifica: [],
+        normasComplementarias: [],
+        observaciones: [],
+      })),
+      metadata: {
+        provincia: pendingProvince,
+        numeroNorma: pendingEntry.numeroNorma || "",
+        referenciaNormativa: pendingDisplayReference,
+        tipo: "legislacion/codigo provincial",
+      },
+      normasQueModifica: [],
+      normasComplementarias: [],
+      observaciones: [],
+      fetchedAt: String(provincialStaticQuery.data?.document?.fetchedAt || ""),
+    } as any;
+  }, [
+    isPendingProvincialCode,
+    pendingProvince,
+    pendingEntry,
+    pendingDisplayReference,
+    pendingDisplayTitle,
+    provincialDocumentGuid,
+    provincialStaticQuery.data?.document?.contentText,
+    provincialStaticQuery.data?.document?.fetchedAt,
+    provincialStaticQuery.data?.document?.sourceUrl,
+  ]);
+  const activeDocument = isPendingProvincialCode ? provincialVirtualDocument : saijDocument;
+  const isDocumentLoading = isPendingProvincialCode ? provincialStaticQuery.isLoading : isSaijLoading;
+  const isDocumentError = isPendingProvincialCode ? provincialStaticQuery.isError : isSaijError;
+  const documentError = isPendingProvincialCode ? provincialStaticQuery.error : saijError;
+  const refetchDocument = isPendingProvincialCode ? () => provincialStaticQuery.refetch() : refetchSaij;
+  const documentStateGuid = isPendingProvincialCode ? provincialDocumentGuid : saijGuid;
   const { width, height } = useWindowDimensions();
   const [activeSection, setActiveSection] = useState<string>("texto");
   const [sectionVisualKey, setSectionVisualKey] = useState<string>("texto");
@@ -1333,23 +1707,14 @@ export const DetailScreen = () => {
   const wholeDocumentShareBusyRef = useRef(false);
 
   const cancelDocumentOpenAndGoBack = useCallback(() => {
-    const normalizedEffectiveGuid = String(effectiveGuid || "").trim();
+    const normalizedEffectiveGuid = String(saijGuid || "").trim();
     if (normalizedEffectiveGuid) {
       queryClient.cancelQueries({ queryKey: ["saij-document", normalizedEffectiveGuid], exact: true }).catch(() => {
         // best effort cancel on leave
       });
     }
-    if (isPendingProvincialCode) {
-      queryClient
-        .cancelQueries({
-          queryKey: ["saij-provincial-code-resolve", String(pendingProvince || "").trim(), String(pendingCodeKey || "").trim()],
-        })
-        .catch(() => {
-          // best effort cancel on leave
-        });
-    }
     router.back();
-  }, [effectiveGuid, isPendingProvincialCode, pendingCodeKey, pendingProvince, queryClient]);
+  }, [saijGuid, queryClient]);
 
   const setArticleScrubbing = (value: boolean) => {
     isScrubbingArticlesRef.current = value;
@@ -1433,26 +1798,26 @@ export const DetailScreen = () => {
         scrollRef.current.scrollTo({ y: 0, animated: false });
       }
     });
-  }, [effectiveGuid || guidParam, pendingCodeKey, pendingProvince]);
+  }, [documentStateGuid || guidParam, pendingCodeKey, pendingProvince]);
 
   useEffect(() => {
     let cancelled = false;
     const loadFavoriteState = async () => {
-      if (!effectiveGuid) {
+      if (!documentStateGuid) {
         if (!cancelled) setIsFavorite(false);
         return;
       }
-      const value = await isFavoriteGuid(effectiveGuid);
+      const value = await isFavoriteGuid(documentStateGuid);
       if (!cancelled) setIsFavorite(value);
     };
     loadFavoriteState();
     return () => {
       cancelled = true;
     };
-  }, [effectiveGuid]);
+  }, [documentStateGuid]);
 
   useEffect(() => {
-    if (!document?.guid) {
+    if (!activeDocument?.guid) {
       setIsTextSectionReady(false);
       return;
     }
@@ -1462,7 +1827,17 @@ export const DetailScreen = () => {
       return;
     }
     setIsTextSectionReady(true);
-  }, [document?.guid, activeSection]);
+  }, [activeDocument?.guid, activeSection]);
+
+  useEffect(() => {
+    if (!activeDocument?.guid) return;
+    void persistRecentOpenedDocument({
+      guid: activeDocument.guid,
+      title: activeDocument.title || "Documento",
+      subtitle: typeof activeDocument.subtitle === "string" ? activeDocument.subtitle : null,
+      contentType: activeDocument.contentType || "legislacion",
+    });
+  }, [activeDocument?.guid, activeDocument?.title, activeDocument?.subtitle, activeDocument?.contentType]);
 
 
   if (!guidParam) {
@@ -1473,135 +1848,15 @@ export const DetailScreen = () => {
     );
   }
 
-  if (isPendingProvincialCode) {
-    const pendingNotFoundMessage = pendingManualHint
-      ? `No pudimos abrir ese codigo ahora.\n\nIntente busqueda manual: ${pendingManualHint}.`
-      : "No pudimos abrir ese codigo ahora.";
-    const pendingErrorMessage =
-      (!effectiveGuid && resolveProvincialQuery.isError && (resolveProvincialQuery.error as Error | null)?.message) ||
-      (effectiveGuid && isError && (error as Error | null)?.message) ||
-      pendingNotFoundMessage;
-
-    if (!pendingProvince || !pendingEntry) {
-      return (
-        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-          <ErrorState message="No se encontro el codigo provincial." onRetry={() => router.back()} />
-        </SafeAreaView>
-      );
-    }
-
-    if (!effectiveGuid || isLoading || (effectiveGuid && !document && !isError)) {
-      return (
-        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-          <View
-            style={[
-              styles.fixedHeaderWrap,
-              {
-                backgroundColor: appColors.background,
-                borderBottomColor: appColors.border,
-              },
-            ]}
-          >
-            <View style={styles.headerMainRow}>
-              <View style={styles.headerTextWrap}>
-                <Text
-                  style={[
-                    styles.headerTitle,
-                    {
-                      color: appColors.text,
-                      fontSize: readingTypography.lawTitleSize,
-                      lineHeight: readingTypography.lawTitleLineHeight,
-                    },
-                  ]}
-                >
-                  {pendingDisplayTitle}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
-            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
-              <MetadataRow label="Provincia" value={pendingProvince} />
-              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
-            </View>
-
-            <View style={styles.sectionTabs}>
-              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
-                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
-              </View>
-            </View>
-
-            <LoadingState
-              message={!effectiveGuid ? "Abriendo codigo..." : "Cargando documento..."}
-              onCancel={cancelDocumentOpenAndGoBack}
-            />
-          </ScrollView>
-        </SafeAreaView>
-      );
-    }
-
-    if (isError || !document) {
-      return (
-        <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-          <View
-            style={[
-              styles.fixedHeaderWrap,
-              {
-                backgroundColor: appColors.background,
-                borderBottomColor: appColors.border,
-              },
-            ]}
-          >
-            <View style={styles.headerMainRow}>
-              <View style={styles.headerTextWrap}>
-                <Text
-                  style={[
-                    styles.headerTitle,
-                    {
-                      color: appColors.text,
-                      fontSize: readingTypography.lawTitleSize,
-                      lineHeight: readingTypography.lawTitleLineHeight,
-                    },
-                  ]}
-                >
-                  {pendingDisplayTitle}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <ScrollView contentContainerStyle={[styles.container, { paddingTop: spacing.md }]} keyboardShouldPersistTaps="handled">
-            <View style={[styles.metaCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-              <MetadataRow label="Tipo" value="Legislacion/ Codigo provincial" />
-              <MetadataRow label="Provincia" value={pendingProvince} />
-              {pendingDisplayReference ? <MetadataRow label="Referencia" value={pendingDisplayReference} /> : null}
-            </View>
-
-            <View style={styles.sectionTabs}>
-              <View style={[styles.sectionTab, styles.sectionTabActive, { borderColor: appColors.primaryStrong }]}>
-                <Text style={[styles.sectionTabText, styles.sectionTabTextActive, { color: appColors.primaryStrong }]}>Texto</Text>
-              </View>
-            </View>
-
-            <ErrorState
-              message={pendingErrorMessage}
-              onRetry={() => {
-                if (!effectiveGuid) {
-                  resolveProvincialQuery.refetch();
-                  return;
-                }
-                refetch();
-              }}
-            />
-          </ScrollView>
-        </SafeAreaView>
-      );
-    }
+  if (isPendingProvincialCode && (!pendingProvince || !pendingEntry)) {
+    return (
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
+        <ErrorState message="No se encontro el codigo provincial." onRetry={() => router.back()} />
+      </SafeAreaView>
+    );
   }
 
-  if (isLoading) {
+  if (isDocumentLoading) {
     return (
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
         <LoadingState message="Cargando documento..." onCancel={cancelDocumentOpenAndGoBack} />
@@ -1609,17 +1864,19 @@ export const DetailScreen = () => {
     );
   }
 
-  if (isError || !document) {
+  if (isDocumentError || !activeDocument) {
     return (
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: appColors.background }]}>
-        <ErrorState message={(error as Error)?.message || "No se pudo cargar el documento."} onRetry={refetch} />
+        <ErrorState message={(documentError as Error)?.message || "No se pudo cargar el documento."} onRetry={refetchDocument} />
       </SafeAreaView>
     );
   }
 
-  if (isCivilAndCommercialCodeDocument(document)) {
-    return <CivilCodeSimpleReader document={document} />;
+  if (!isPendingProvincialCode && isCivilAndCommercialCodeDocument(activeDocument)) {
+    return <CivilCodeSimpleReader document={activeDocument} />;
   }
+
+  const document = activeDocument;
 
   const {
     attachmentUrl,
@@ -1629,6 +1886,7 @@ export const DetailScreen = () => {
     observacionesItems,
     relatedFallos,
     relatedContentItems,
+    antecedentesNormativosText,
     metadataDateRaw,
     metadataDate,
     contentWidth,
@@ -1661,9 +1919,14 @@ export const DetailScreen = () => {
     sanitizedHtml,
   } = (() => {
     const attachmentUrlValue = document.attachment?.url || document.attachment?.fallbackUrl || null;
-    const attachmentLabelValue = document.attachment?.fileName
-      ? `Ver adjunto (${cleanText(document.attachment.fileName)})`
-      : "Ver archivo adjunto";
+    const attachmentName = cleanText(document.attachment?.fileName || "");
+    const attachmentLabelValue = (() => {
+      if (!attachmentName) return "Ver archivo adjunto";
+      const lower = attachmentName.toLowerCase();
+      if (lower === "texact.htm" || lower === "norma.htm") return "Ver texto oficial en Infoleg";
+      if (lower.endsWith(".pdf")) return `Ver PDF oficial (${attachmentName})`;
+      return `Ver adjunto (${attachmentName})`;
+    })();
     const normasQueModificaRaw = Array.isArray(document.normasQueModifica) ? document.normasQueModifica : [];
     const normasComplementariasRaw = Array.isArray(document.normasComplementarias) ? document.normasComplementarias : [];
     const observacionesRaw = Array.isArray(document.observaciones) ? document.observaciones : [];
@@ -1716,6 +1979,9 @@ export const DetailScreen = () => {
             sourceUrl: null,
             url: null,
           }));
+    const antecedentesNormativosTextValue = cleanContentText(
+      typeof document.metadata?.antecedentesNormativos === "string" ? document.metadata.antecedentesNormativos : null
+    );
     const leadTextValue =
       cleanContentText(document.headerText) || extractLeadTextBeforeFirstArticle(extractedRelatedValue.mainText);
     const baseTypeLabelValue = getContentTypeLabel(document.contentType);
@@ -1801,6 +2067,7 @@ export const DetailScreen = () => {
       observacionesItems: dedupeRelatedByTitle(observacionesRaw as RelatedContentItem[]),
       relatedFallos: relatedFallosValue,
       relatedContentItems: relatedContentItemsValue,
+      antecedentesNormativosText: antecedentesNormativosTextValue,
       metadataDateRaw: metadataDateRawValue,
       metadataDate: metadataDateValue,
       contentWidth: contentWidthValue,
@@ -1837,11 +2104,11 @@ export const DetailScreen = () => {
   const sectionItems =
     document.contentType === "legislacion"
       ? [
-          { key: "encabezado", label: "Encab.", count: null, visible: !!leadText },
           { key: "texto", label: "Texto", count: null, visible: true },
           { key: "normasQueModifica", label: "Modifica", count: normasQueModifica.length, visible: true },
           { key: "normasComplementarias", label: "Compl.", count: normasComplementarias.length, visible: true },
-          { key: "observaciones", label: "Obs.", count: observacionesItems.length, visible: true },
+          { key: "antecedentesNormativos", label: "Anteced.", count: null, visible: true },
+          { key: "observaciones", label: "Obs.", count: observacionesItems.length, visible: observacionesItems.length > 0 },
         ].filter((item) => item.visible)
       : [
           { key: "texto", label: "Texto", count: null, visible: true },
@@ -1861,7 +2128,12 @@ export const DetailScreen = () => {
   const visibleSectionKeys = new Set(sectionItems.map((item) => item.key));
   const selectedSection = visibleSectionKeys.has(activeSection) ? activeSection : "texto";
   const visualSelectedSection = visibleSectionKeys.has(sectionVisualKey) ? sectionVisualKey : selectedSection;
-  const documentArticles = Array.isArray(document.articles) ? document.articles : [];
+  const documentArticles: any[] = Array.isArray(document.articles) ? (document.articles as any[]) : [];
+  const tocLabels: string[] = Array.isArray(document.toc)
+    ? (document.toc as any[])
+        .map((item: any): string => cleanText(String(item?.label || "")))
+        .filter((label: string) => /^(anexo|titulo|capitulo|seccion|libro|parte)\b/i.test(normalizeHeadingToken(label)))
+    : [];
   const shouldPrepareArticleCaches =
     document.contentType === "legislacion" && selectedSection === "texto" && isTextSectionReady;
   const searchableArticles = shouldPrepareArticleCaches ? documentArticles : [];
@@ -1875,7 +2147,7 @@ export const DetailScreen = () => {
   const isContinuousTextRail = scrubberMode === "scroll";
   const rightRailContentInset = isContinuousTextRail ? (isComfortableDetail ? 0 : 16) : 0;
   if (articleShareCacheRef.current.source !== documentArticles) {
-    const nextItems = documentArticles.map((article, index) => {
+    const nextItems = documentArticles.map((article: any, index: number) => {
       const displayNumber = normalizeArticleNumberDisplay(article.number, index + 1);
       const parsedTitle = parseArticleTitleContext(article.title);
       const articleBodyRaw = stripRepeatedArticleLead(
@@ -1900,7 +2172,7 @@ export const DetailScreen = () => {
     articleShareCacheRef.current = {
       source: documentArticles,
       items: nextItems,
-      keySet: new Set(nextItems.map((item) => item.key)),
+      keySet: new Set(nextItems.map((item: any) => item.key)),
     };
   }
   const articleShareItems = articleShareCacheRef.current.items;
@@ -1909,7 +2181,8 @@ export const DetailScreen = () => {
     (count, key) => (selectedArticleShareKeys[key] && articleShareKeySet.has(key) ? count + 1 : count),
     0
   );
-  const normalizedSearchQuery = deferredDocSearchQuery.trim().toLowerCase();
+  const trimmedDocSearchQuery = deferredDocSearchQuery.trim();
+  const normalizedSearchQuery = normalizeContentComparableText(trimmedDocSearchQuery);
   if (
     articleSearchCacheRef.current.source !== documentArticles ||
     articleSearchCacheRef.current.query !== normalizedSearchQuery
@@ -1917,8 +2190,8 @@ export const DetailScreen = () => {
     let nextMatches: number[] = [];
     if (normalizedSearchQuery && documentArticles.length) {
       nextMatches = [];
-      documentArticles.forEach((article, index) => {
-        const haystack = `${article.number || ""} ${article.title || ""} ${article.text || ""}`.toLowerCase();
+      documentArticles.forEach((article: any, index: number) => {
+        const haystack = normalizeContentComparableText(`${article.number || ""} ${article.title || ""} ${article.text || ""}`);
         if (haystack.includes(normalizedSearchQuery)) nextMatches.push(index);
       });
     }
@@ -2211,17 +2484,37 @@ export const DetailScreen = () => {
 
   const openStickySectionIndex = () => {
     if (selectedSection !== "texto") return;
-    const entries = getSortedStickyEntries();
+    let entries = getSortedStickyEntries();
+    if (!entries.length && tocLabels.length > 0) {
+      entries = tocLabels.map((label: string, index: number) => ({ y: -(index + 1), label, headings: [label] }));
+    }
     if (!entries.length) return;
+
+    const collectExpandedAncestorsForCurrent = (nodes: StickyIndexNode[], currentNormalized: string) => {
+      const expanded: Record<string, boolean> = {};
+      if (!currentNormalized) return expanded;
+
+      const visit = (node: StickyIndexNode): boolean => {
+        const selfMatch =
+          node.normalizedLabel.length > 0 &&
+          (currentNormalized.includes(node.normalizedLabel) || node.normalizedLabel.includes(currentNormalized));
+        let descendantMatch = false;
+        node.children.forEach((child) => {
+          if (visit(child)) descendantMatch = true;
+        });
+        if (descendantMatch) expanded[node.key] = true;
+        return selfMatch || descendantMatch;
+      };
+
+      nodes.forEach((node) => {
+        visit(node);
+      });
+      return expanded;
+    };
 
     if (!articleStickyDirtyRef.current && stickyIndexTree.length > 0) {
       const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
-      const autoExpanded: Record<string, boolean> = {};
-      stickyIndexTree.forEach((node) => {
-        if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
-          autoExpanded[node.key] = true;
-        }
-      });
+      const autoExpanded = collectExpandedAncestorsForCurrent(stickyIndexTree, currentNormalized);
       setExpandedStickyNodeKeys(autoExpanded);
       setIsStickyIndexOpen(true);
       return;
@@ -2230,14 +2523,7 @@ export const DetailScreen = () => {
     const tree = buildStickyIndexTree(entries);
     if (!tree.length) return;
     const currentNormalized = normalizeHeadingToken(stickySectionLabel || "");
-    const autoExpanded: Record<string, boolean> = {};
-
-    // Simple one-level match: expand only the root nodes that match current section
-    tree.forEach((node) => {
-      if (currentNormalized && currentNormalized.includes(node.normalizedLabel)) {
-        autoExpanded[node.key] = true;
-      }
-    });
+    const autoExpanded = collectExpandedAncestorsForCurrent(tree, currentNormalized);
 
     setExpandedStickyNodeKeys(autoExpanded);
     setStickyIndexTree(tree);
@@ -2250,6 +2536,22 @@ export const DetailScreen = () => {
 
   const jumpToStickyEntry = (entry: { y: number; label: string }) => {
     setIsStickyIndexOpen(false);
+    if (entry.y < 0) {
+      const labelTokens = normalizeContentComparableText(entry.label)
+        .split(" ")
+        .filter((token) => token.length > 2)
+        .slice(0, 5);
+      if (labelTokens.length > 0) {
+        const matchedIndex = searchableArticles.findIndex((article: any) => {
+          const haystack = normalizeContentComparableText(`${article?.title || ""} ${article?.text || ""}`);
+          return labelTokens.every((token) => haystack.includes(token));
+        });
+        if (matchedIndex >= 0) {
+          jumpToArticleByIndex(matchedIndex);
+          return;
+        }
+      }
+    }
     jumpToY(entry.y, true, jumpTopOffset);
   };
 
@@ -2351,7 +2653,7 @@ export const DetailScreen = () => {
   };
 
   const renderHighlightedInline = (value: string, keyPrefix: string) =>
-    getHighlightedParts(value, normalizedSearchQuery).map((part, index) => (
+    getHighlightedParts(value, trimmedDocSearchQuery).map((part, index) => (
       <Text key={`${keyPrefix}-${index}`} style={part.hit ? styles.searchHighlight : undefined}>
         {part.text}
       </Text>
@@ -2505,7 +2807,7 @@ export const DetailScreen = () => {
     }
 
     const cleanedTitle = fallo.title
-      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¹Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±\s]/g, " ")
+      .replace(/[^A-Za-z0-9ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â­ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂºÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¹ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const titleTokens = cleanedTitle.split(" ").filter((token) => token.length > 2);
@@ -2715,7 +3017,7 @@ export const DetailScreen = () => {
 
     const safeFileName = sanitizeShareFileToken(fileBaseName) || sanitizeShareFileToken(title) || "norma";
     const fileUri = `${exportDir}${safeFileName}-${Date.now()}.txt`;
-    const fileContent = `ÿ${normalizedContent}`;
+    const fileContent = `ÃƒÂ¿${normalizedContent}`;
 
     await FileSystem.writeAsStringAsync(fileUri, fileContent, { encoding: FileSystem.EncodingType.UTF8 });
     const fileInfo = await FileSystem.getInfoAsync(fileUri);
@@ -3021,21 +3323,73 @@ export const DetailScreen = () => {
       return <ContentUnavailableCard reason={document.contentUnavailableReason} />;
     }
 
-    if (sanitizedHtml) {
-      return (
-        <RenderHTML
-          contentWidth={contentWidth}
-          source={{ html: sanitizedHtml }}
-          baseStyle={{ color: colors.text, fontSize: bodyFontSize, lineHeight: bodyLineHeight }}
-        />
-      );
-    }
-
     if (document.articles && document.articles.length > 0) {
       let previousHeadings: string[] = [];
+      const preliminaryText = cleanContentText(leadText || "");
+      const preliminaryLines =
+        typeof preliminaryText === "string"
+          ? preliminaryText
+              .split("\n")
+              .map((line) => cleanText(line))
+              .filter((line) => line.length > 0)
+          : [];
+      const isHeadingLine = (value: string) => /^(?:parte|libro|titulo|capitulo|seccion|anexo)\b/i.test(normalizeHeadingToken(value));
+      const preliminaryHeadingLines: string[] = [];
+      let firstContentIndex = preliminaryLines.length;
+      for (let i = 0; i < preliminaryLines.length; i += 1) {
+        if (isHeadingLine(preliminaryLines[i])) {
+          preliminaryHeadingLines.push(preliminaryLines[i]);
+          continue;
+        }
+        firstContentIndex = i;
+        break;
+      }
+      const preliminaryBody = preliminaryLines.slice(firstContentIndex).join("\n\n").trim();
+      const shouldShowPreliminaryText =
+        typeof preliminaryText === "string" &&
+        preliminaryText.length > 40 &&
+        !/^(?:art(?:[i\u00ED]culo|\.?)\s*[a-z]?\s*\d+)/i.test(preliminaryText);
       return (
         <View style={styles.articles}>
-          {document.articles.map((article, index) => {
+          {shouldShowPreliminaryText ? (
+            <View style={styles.articleBlock}>
+              <View
+                style={[
+                  styles.articleCard,
+                  {
+                    backgroundColor: isDarkMode ? appColors.card : readingTypography.articleCardBackground,
+                    borderColor: appColors.border,
+                  },
+                ]}
+              >
+                {preliminaryHeadingLines.map((headingLine, headingIndex) => (
+                  <Text
+                    key={`preliminary-heading-${headingIndex}`}
+                    style={[
+                      styles.sectionHeading,
+                      {
+                        fontSize: Math.max(12.5, headingFontSize),
+                        lineHeight: headingLineHeight,
+                        color: readingLabelColor,
+                        marginTop: headingIndex === 0 ? 0 : undefined,
+                      },
+                    ]}
+                  >
+                    {headingLine}
+                  </Text>
+                ))}
+                {(preliminaryBody || (!preliminaryHeadingLines.length && preliminaryText)) ? (
+                  renderHighlightedBlockWithParagraphs(
+                    preliminaryBody || preliminaryText,
+                    [styles.contentText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
+                    "preliminary-text",
+                    true
+                  )
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+          {document.articles.map((article: any, index: number) => {
             const articleText =
               cleanContentText(article.text) ||
               (typeof article.text === "string" ? article.text.trim() : String(article.text ?? ""));
@@ -3048,9 +3402,14 @@ export const DetailScreen = () => {
               articleTextRaw,
               parsedTitle.articleLabel
             );
-            const articleLeadTitle = `ARTICULO ${displayArticleNumber}${
-              safeInlineLabel ? `. ${safeInlineLabel}` : "."
-            }`;
+            const articleLeadNumber = `ARTICULO ${displayArticleNumber}`;
+            const articleLeadInlineTitle = safeInlineLabel || parsedTitle.articleLabel || null;
+            const articleLeadTitle = `${articleLeadNumber}${articleLeadInlineTitle ? `. ${articleLeadInlineTitle}` : "."}`;
+            const articleBodyDisplay = String(articleTextWithoutDuplicateLabel || "")
+              .replace(/\n{2,}/g, "\n\n")
+              .replace(/([^\n])\n(?=[^\n])/g, "$1 ")
+              .replace(/[ \t]{2,}/g, " ")
+              .trim();
             const articleNormasQueModifica = Array.isArray(article.normasQueModifica) ? article.normasQueModifica : [];
             const articleNormasComplementarias = Array.isArray(article.normasComplementarias) ? article.normasComplementarias : [];
             const articleObservaciones = Array.isArray(article.observaciones) ? article.observaciones : [];
@@ -3127,7 +3486,10 @@ export const DetailScreen = () => {
                         { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor },
                       ]}
                     >
-                      {articleLeadTitle}
+                      <Text style={styles.articleLeadNumber}>{articleLeadNumber}</Text>
+                      {articleLeadInlineTitle ? (
+                        <Text style={styles.articleInlineTitle}> {articleLeadInlineTitle}</Text>
+                      ) : null}
                     </Text>
                     <View style={styles.articleLeadActions}>
                       <Pressable
@@ -3171,7 +3533,7 @@ export const DetailScreen = () => {
                       { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor },
                     ]}
                   >
-                    {renderHighlightedInline(articleTextWithoutDuplicateLabel, `${articleKey}-body`)}
+                    {renderHighlightedInline(articleBodyDisplay, `${articleKey}-body`)}
                   </Text>
                   {articlePanels.length > 0 ? (
                     <View style={styles.articlePanelContainer}>
@@ -3223,6 +3585,16 @@ export const DetailScreen = () => {
             );
           })}
         </View>
+      );
+    }
+
+    if (sanitizedHtml && !extractedRelated.mainText) {
+      return (
+        <RenderHTML
+          contentWidth={contentWidth}
+          source={{ html: sanitizedHtml }}
+          baseStyle={{ color: colors.text, fontSize: bodyFontSize, lineHeight: bodyLineHeight }}
+        />
       );
     }
 
@@ -3646,7 +4018,7 @@ export const DetailScreen = () => {
             </Pressable>
           </View>
         ) : null}
-        {selectedSection === "texto" && stickySectionLabel ? (
+        {selectedSection === "texto" && (stickySectionLabel || tocLabels.length > 0) ? (
           <Pressable
             style={({ pressed }) => [
               styles.stickySectionWrap,
@@ -3666,7 +4038,7 @@ export const DetailScreen = () => {
                 { fontSize: Math.max(13, bodyFontSize - 0.2), color: appColors.primaryStrong },
               ]}
             >
-              {stickySectionLabel}
+              {stickySectionLabel || "Indice de titulos y capitulos"}
             </Text>
             <Text style={[styles.stickySectionHint, { color: appColors.primaryStrong }]}>Tocar para abrir indice rapido</Text>
           </Pressable>
@@ -3772,25 +4144,9 @@ export const DetailScreen = () => {
           />
         </View>
 
-        {attachmentUrl ? (
-          <Pressable
-            style={[
-              styles.attachmentButton,
-              {
-                backgroundColor: appColors.card,
-                borderColor: appColors.primaryStrong,
-              },
-            ]}
-            onPress={() => Linking.openURL(attachmentUrl)}
-            unstable_pressDelay={0}
-              hitSlop={TOUCH_HIT_SLOP}
+        {null}
 
-          >
-            <Text style={[styles.attachmentButtonText, { color: appColors.primaryStrong }]}>{attachmentLabel}</Text>
-          </Pressable>
-        ) : null}
-
-        <View style={styles.sectionTabs}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sectionTabs}>
           {sectionItems.map((item) => (
             <Pressable
               key={item.key}
@@ -3806,7 +4162,6 @@ export const DetailScreen = () => {
               onPress={() => setActiveSectionSafe(item.key)}
               unstable_pressDelay={0}
               hitSlop={TOUCH_HIT_SLOP}
-
             >
               <Text
                 style={[
@@ -3820,17 +4175,7 @@ export const DetailScreen = () => {
               </Text>
             </Pressable>
           ))}
-        </View>
-
-        {selectedSection === "encabezado" && leadText ? (
-          <View style={styles.articleCard}>
-            {renderHighlightedBlock(
-              leadText,
-              [styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight }],
-              "lead-text"
-            )}
-          </View>
-        ) : null}
+        </ScrollView>
 
         {selectedSection === "texto"
           ? isTextSectionReady
@@ -3888,6 +4233,28 @@ export const DetailScreen = () => {
           </View>
         ) : null}
 
+        {selectedSection === "antecedentesNormativos" ? (
+          <View style={styles.relatedSection}>
+            <Text style={styles.relatedTitle}>Antecedentes normativos</Text>
+            {antecedentesNormativosText ? (
+              <View style={styles.articleCard}>
+                {renderHighlightedBlockWithParagraphs(
+                  antecedentesNormativosText,
+                  [styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingBodyColor }],
+                  "antecedentes-text",
+                  true
+                )}
+              </View>
+            ) : (
+              <View style={styles.articleCard}>
+                <Text style={[styles.articleText, { fontSize: bodyFontSize, lineHeight: bodyLineHeight, color: readingSecondaryColor }]}>
+                  No hay antecedentes normativos disponibles para esta norma.
+                </Text>
+              </View>
+            )}
+          </View>
+        ) : null}
+
         {selectedSection === "observaciones" && observacionesItems.length > 0 ? (
           <View style={styles.relatedSection}>
             <Text style={styles.relatedTitle}>Observaciones</Text>
@@ -3941,7 +4308,7 @@ export const DetailScreen = () => {
         {selectedSection === "fallosAplica" && relatedFallos.length > 0 ? (
           <View style={styles.relatedSection}>
             <Text style={styles.relatedTitle}>Fallos a los que aplica</Text>
-            {relatedFallos.map((fallo, index) => (
+            {relatedFallos.map((fallo: any, index: number) => (
               <Pressable
                 key={`fallo-aplica-${index}-${fallo.title}`}
                 style={[styles.relatedLinkButton, { backgroundColor: appColors.card, borderColor: appColors.border }]}
@@ -4204,8 +4571,9 @@ const styles = StyleSheet.create({
   },
   sectionTabs: {
     flexDirection: "row",
-    flexWrap: "wrap",
+    flexWrap: "nowrap",
     gap: spacing.xs,
+    paddingRight: spacing.xs,
   },
   sectionTab: {
     borderWidth: 1,
@@ -4581,6 +4949,14 @@ const styles = StyleSheet.create({
     color: readingTypography.bodyTextColor,
     letterSpacing: 0.1,
   },
+  articleLeadNumber: {
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  articleInlineTitle: {
+    fontWeight: "700",
+    letterSpacing: 0.1,
+  },
   articleLeadRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -4853,6 +5229,8 @@ const styles = StyleSheet.create({
     color: "#000",
   },
 });
+
+
 
 
 

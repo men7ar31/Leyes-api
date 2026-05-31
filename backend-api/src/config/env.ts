@@ -13,5 +13,8 @@ export const env = {
   port: Number(process.env.PORT ?? 4000),
   mongoUri: required(process.env.MONGO_URI, 'mongodb://localhost:27017/leyes-app'),
   saijBaseUrl: required(process.env.SAIJ_BASE_URL, 'https://www.saij.gob.ar'),
+  legalSource: (process.env.LEGAL_SOURCE ?? 'saij').toLowerCase(),
+  infolegBaseUrl: required(process.env.INFOLEG_BASE_URL, 'https://servicios.infoleg.gob.ar/infolegInternet'),
+  infolegTimeoutMs: Number(process.env.INFOLEG_REQUEST_TIMEOUT_MS ?? 30000),
   logLevel: process.env.LOG_LEVEL ?? 'info',
 };

@@ -2,7 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export interface NormCacheDocument extends Document {
   guid: string;
-  source: 'saij';
+  source: 'saij' | 'infoleg' | 'provincial_codes';
   extractorVersion?: number;
   contentType: string;
   numeroNorma?: string | null;

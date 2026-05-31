@@ -47,7 +47,7 @@ export const FavoritesScreen = () => {
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
-          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 15000 }),
+          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 30000 }),
           staleTime: 1000 * 60 * 60,
           gcTime: 1000 * 60 * 60 * 4,
         })

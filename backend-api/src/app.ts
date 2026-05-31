@@ -4,8 +4,10 @@ import helmet from 'helmet';
 import { json, urlencoded } from 'express';
 import healthRouter from './modules/health/health.routes';
 import saijRouter from './modules/saij/saij.routes';
+import provincialCodesRouter from './modules/provincial-codes/provincialCodes.routes';
 import { notFoundMiddleware } from './middlewares/notFound.middleware';
 import { errorMiddleware } from './middlewares/error.middleware';
+import { env } from './config/env';
 
 export const createApp = () => {
   const app = express();
@@ -20,12 +22,14 @@ export const createApp = () => {
       ok: true,
       service: 'leyes-api',
       status: 'running',
-      routes: ['/api/health', '/api/saij/search', '/api/saij/document/:guid'],
+      legalSource: env.legalSource,
+      routes: ['/api/health', '/api/saij/search', '/api/saij/document/:guid', '/api/provincial-codes/document'],
     });
   });
 
   app.use('/api/health', healthRouter);
   app.use('/api/saij', saijRouter);
+  app.use('/api/provincial-codes', provincialCodesRouter);
 
   app.use(notFoundMiddleware);
   app.use(errorMiddleware);

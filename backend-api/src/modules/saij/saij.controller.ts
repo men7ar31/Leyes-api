@@ -1,13 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { SearchRequestSchema } from './saij.types';
-import { SaijService } from './saij.service';
+import { legalSourceRouter } from '../legal-source/legalSourceRouter';
 
 export const SaijController = {
   async search(req: Request, res: Response, next: NextFunction) {
     try {
-      console.log('BODY SEARCH:', req.body);
       const payload = SearchRequestSchema.parse(req.body);
-      const result = await SaijService.search(payload);
+      const result = await legalSourceRouter.search(payload);
       res.json(result);
     } catch (error) {
       next(error);
@@ -18,7 +17,7 @@ export const SaijController = {
     try {
       const { guid } = req.params;
       const debug = req.query.debug === 'true' || req.query.debug === '1';
-      const result = await SaijService.getDocumentByGuid(guid, { debug });
+      const result = await legalSourceRouter.getDocument(guid, { debug });
       res.json(result);
     } catch (error) {
       next(error);
@@ -28,7 +27,7 @@ export const SaijController = {
   async debugFriendly(req: Request, res: Response, next: NextFunction) {
     try {
       const { guid } = req.params;
-      const result = await SaijService.debugFriendlyUrl(guid);
+      const result = await legalSourceRouter.debugDocument(guid);
       res.json(result);
     } catch (error) {
       next(error);

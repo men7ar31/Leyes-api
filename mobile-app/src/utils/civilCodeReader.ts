@@ -62,7 +62,7 @@ const normalizeLoose = (value?: unknown) =>
 const collapseText = (value?: string | null) => String(value || "").replace(/\s+/g, " ").trim();
 const stripLeadingArticleBodyDecoration = (value?: string | null) =>
   String(value || "")
-    .replace(/^[\s\u00BA\u00B0]*[-.:;–—•·]+\s*/, "")
+    .replace(/^[\s\u00BA\u00B0]*[-.:;â€“â€”â€¢Â·]+\s*/, "")
     .trimStart();
 
 const ARTICLE_INLINE_TITLE_VERB_PATTERN =
@@ -235,21 +235,44 @@ const parseArticleTitleContext = (title?: string | null) => {
     return { headings: [] as string[], articleLabel: null as string | null };
   }
 
-  const canonicalTitle = collapseText(cleanCivilCodeReaderText(title))
-    .replace(/\u00b7/g, "·")
-    .replace(/\u2022/g, "·");
-
-  const parts = canonicalTitle
-    .split(/\s*(?:·|\|)\s*/g)
-    .map((part) => collapseText(part))
-    .filter(Boolean);
+  const canonicalTitle = collapseText(cleanCivilCodeReaderText(title)).replace(/\u00b7|\u2022/g, "·");
+  const parts = canonicalTitle.split(/\s*(?:·|\|)\s*/g).map((part) => collapseText(part)).filter(Boolean);
 
   if (!parts.length) {
     return { headings: [] as string[], articleLabel: null as string | null };
   }
 
-  const headings = parts.filter((part) => isSectionHeadingLine(part) && !isParagraphHeadingLine(part));
-  const articleParts = parts.filter((part) => !isSectionHeadingLine(part) && !isParagraphHeadingLine(part));
+  const looksLikeHeadingDescriptor = (value: string) => {
+    const clean = collapseText(value);
+    if (!clean) return false;
+    if (clean.length > 72) return false;
+    if (/^(?:art(?:iculo)?\.?\s*\d+)/i.test(clean)) return false;
+    if (/[,:;!?]/.test(clean)) return false;
+    const normalized = normalizeLoose(clean);
+    if (!normalized) return false;
+    if (ARTICLE_INLINE_TITLE_VERB_PATTERN.test(normalized)) return false;
+    return true;
+  };
+
+  const headings: string[] = [];
+  const articleParts: string[] = [];
+  let pendingHeadingIndex = -1;
+
+  parts.forEach((part) => {
+    if (isSectionHeadingLine(part) && !isParagraphHeadingLine(part)) {
+      headings.push(part);
+      pendingHeadingIndex = headings.length - 1;
+      return;
+    }
+    if (pendingHeadingIndex >= 0 && looksLikeHeadingDescriptor(part)) {
+      headings[pendingHeadingIndex] = collapseText(`${headings[pendingHeadingIndex]} ${part}`);
+      pendingHeadingIndex = -1;
+      return;
+    }
+    pendingHeadingIndex = -1;
+    articleParts.push(part);
+  });
+
   const articleLabel = articleParts.length > 0 ? articleParts[articleParts.length - 1] : null;
 
   return { headings, articleLabel };
@@ -407,7 +430,7 @@ const stripRepeatedArticleLead = (body: string, articleNumber: string, inlineLab
 
   const escapedArticleNumber = escapeRegExp(articleNumber).replace(/\s+/g, "\\s*");
   const articleLeadPattern = new RegExp(
-    `^(?:art(?:[ií]culo)?\\.?\\s*${escapedArticleNumber}\\s*(?:[-.:;\\u2013\\u2014]+\\s*)?)`,
+    `^(?:art(?:[iÃ­]culo)?\\.?\\s*${escapedArticleNumber}\\s*(?:[-.:;\\u2013\\u2014]+\\s*)?)`,
     "i"
   );
   next = next.replace(articleLeadPattern, "").trimStart();
@@ -431,7 +454,7 @@ const buildArticleLabel = (articleNumber?: string | null, fallbackIndex?: number
   articleNumber ? `Articulo ${articleNumber}` : `Articulo ${fallbackIndex || 1}`;
 
 const normalizeArticleNumber = (value?: string | null, fallbackIndex?: number) => {
-  const raw = collapseText(String(value || "").replace(/[º°]/g, ""));
+  const raw = collapseText(String(value || "").replace(/[ÂºÂ°]/g, ""));
   if (!raw) return fallbackIndex ? String(fallbackIndex) : "";
 
   const cleaned = raw
@@ -550,7 +573,7 @@ const splitContentTextIntoSections = (text: string) => {
   const cleaned = cleanCivilCodeReaderText(text);
   if (!cleaned) return [] as CivilCodeSimpleSection[];
 
-  const articlePattern = /(?:^|\n)\s*(?:art(?:[ií]culo)?\.?)\s*(\d+(?:\s+[a-z]+)?[a-z]?)/gi;
+  const articlePattern = /(?:^|\n)\s*(?:art(?:[iÃ­]culo)?\.?)\s*(\d+(?:\s+[a-z]+)?[a-z]?)/gi;
   const matches = Array.from(cleaned.matchAll(articlePattern));
 
   if (!matches.length) {
@@ -596,7 +619,7 @@ const splitContentTextIntoSections = (text: string) => {
 
     const articleNumber = normalizeArticleNumber(match[1], index + 1) || String(index + 1);
     const articlePrefixPattern = new RegExp(
-      `^(?:art(?:[ií]culo)?\\.?)\\s*${escapeRegExp(articleNumber)}(?:\\s*[.:;-])?\\s*`,
+      `^(?:art(?:[iÃ­]culo)?\\.?)\\s*${escapeRegExp(articleNumber)}(?:\\s*[.:;-])?\\s*`,
       "i"
     );
     const bodyWithoutPrefix = block.replace(articlePrefixPattern, "").trimStart();
@@ -739,3 +762,4 @@ export const buildCivilCodeReaderModel = (document: SaijDocument): CivilCodeRead
 };
 
 export const normalizeCivilCodeSearchText = (value?: string | null) => normalizeLoose(value);
+
