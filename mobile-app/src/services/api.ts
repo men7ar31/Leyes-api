@@ -4,7 +4,7 @@ type ApiRequestOptions = RequestInit & { timeoutMs?: number };
 const DEFAULT_HEADERS = {
   "Content-Type": "application/json",
 };
-const REQUEST_TIMEOUT_MS = 20000;
+const REQUEST_TIMEOUT_MS = 35000;
 
 const getBaseUrl = () => {
   const base = process.env.EXPO_PUBLIC_API_URL;

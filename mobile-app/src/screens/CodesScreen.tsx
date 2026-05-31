@@ -1,14 +1,13 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { RefreshCw } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { radius, spacing, typography } from "../constants/theme";
-import { PROVINCIAL_CODES_CATALOG, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
-import { getStaticProvincialCodeHit } from "../constants/provincialCodeGuidMap";
+import { getMainProvincialCodes, type ProvincialCodeCatalogEntry } from "../constants/provincialCodesCatalog";
 import { useSaijSearch } from "../hooks/useSaijSearch";
-import { getSaijDocument, resolveProvincialCode } from "../services/saijApi";
+import { getSaijDocument } from "../services/saijApi";
 import { useAppTheme } from "../theme/appTheme";
 import { AppHeader } from "../components/AppHeader";
 import { CodeCard } from "../components/CodeCard";
@@ -90,18 +89,6 @@ const shouldExcludeNationalCode = (hit: { title?: string | null; subtitle?: stri
 const getCatalogEntryKey = (province: string, entry: ProvincialCodeCatalogEntry) =>
   [normalize(province), normalize(entry.area), normalize(entry.reference), normalize(entry.numeroNorma || "")].join("|");
 
-const getManualLawSearchHint = (entry: ProvincialCodeCatalogEntry) => {
-  const fromNumeroNorma = String(entry.numeroNorma || "")
-    .replace(/[^\d]/g, "")
-    .trim();
-  if (fromNumeroNorma) return `Ley ${fromNumeroNorma}`;
-
-  const fromReference = String(entry.reference || "").match(/\d{2,7}/)?.[0] || "";
-  if (fromReference) return `Ley ${fromReference}`;
-
-  return null;
-};
-
 export const CodesScreen = () => {
   const { colors } = useAppTheme();
   const queryClient = useQueryClient();
@@ -109,7 +96,6 @@ export const CodesScreen = () => {
   const [selectedProvince, setSelectedProvince] = useState("");
   const [isProvinceListOpen, setIsProvinceListOpen] = useState(true);
   const [pendingCodeKey, setPendingCodeKey] = useState<string | null>(null);
-  const [provincialGuidMap, setProvincialGuidMap] = useState<Record<string, string>>({});
   const openingGuidRef = useRef<string | null>(null);
 
   const {
@@ -127,12 +113,8 @@ export const CodesScreen = () => {
     enabled: scope === "nacional",
   });
 
-  const canLoadProvincialList = scope === "provincial" && selectedProvince.trim().length > 0;
-  const canShowProvincialCodes = canLoadProvincialList && !isProvinceListOpen;
-  const provincialCatalog = useMemo(
-    () => (selectedProvince ? PROVINCIAL_CODES_CATALOG[selectedProvince] || [] : []),
-    [selectedProvince]
-  );
+  const canShowProvincialCodes = scope === "provincial" && selectedProvince.trim().length > 0 && !isProvinceListOpen;
+  const provincialCatalog = useMemo(() => (selectedProvince ? getMainProvincialCodes(selectedProvince) : []), [selectedProvince]);
 
   const nationalCodes = useMemo(() => {
     const byGuid = new Map<string, (typeof nationalRawItems)[number]>();
@@ -155,11 +137,6 @@ export const CodesScreen = () => {
     return Array.from(byTitle.values()).sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "es"));
   }, [nationalRawItems]);
 
-  const resolveQueryKeyForEntry = useCallback(
-    (province: string, entry: ProvincialCodeCatalogEntry) => ["saij-provincial-code-resolve", getCatalogEntryKey(province, entry)],
-    []
-  );
-
   const prefetchCode = useCallback(
     (guid: string) => {
       const normalizedGuid = String(guid || "").trim();
@@ -169,7 +146,7 @@ export const CodesScreen = () => {
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", normalizedGuid],
-          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 15000 }),
+          queryFn: () => getSaijDocument(normalizedGuid, { timeoutMs: 30000 }),
           staleTime: 1000 * 60 * 60,
           gcTime: 1000 * 60 * 60 * 4,
         })
@@ -208,26 +185,6 @@ export const CodesScreen = () => {
     setPendingCodeKey(null);
   }, []);
 
-  useEffect(() => {
-    if (!canShowProvincialCodes || !selectedProvince || provincialCatalog.length < 1) return;
-    setProvincialGuidMap((current) => {
-      let changed = false;
-      const next = { ...current };
-      provincialCatalog.forEach((entry) => {
-        const rowKey = getCatalogEntryKey(selectedProvince, entry);
-        const cachedResolved =
-          getStaticProvincialCodeHit(selectedProvince, entry) ||
-          queryClient.getQueryData<Awaited<ReturnType<typeof resolveProvincialCode>>>(resolveQueryKeyForEntry(selectedProvince, entry)) ||
-          null;
-        const guid = String(cachedResolved?.guid || "").trim();
-        if (!guid || next[rowKey] === guid) return;
-        next[rowKey] = guid;
-        changed = true;
-      });
-      return changed ? next : current;
-    });
-  }, [canShowProvincialCodes, provincialCatalog, queryClient, resolveQueryKeyForEntry, selectedProvince]);
-
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: colors.background }]}> 
       <AppHeader title="Codigos" subtitle="Nacionales y provinciales" />
@@ -241,7 +198,6 @@ export const CodesScreen = () => {
           value={scope}
           onChange={(value) => {
             invalidatePendingProvincialOpen();
-            setProvincialGuidMap({});
             setScope(value);
             if (value === "provincial") setIsProvinceListOpen(true);
           }}
@@ -316,7 +272,6 @@ export const CodesScreen = () => {
                       active={selectedProvince === province.name}
                       onPress={() => {
                         invalidatePendingProvincialOpen();
-                        setProvincialGuidMap({});
                         setSelectedProvince(province.name);
                         setIsProvinceListOpen(false);
                       }}
@@ -328,48 +283,39 @@ export const CodesScreen = () => {
 
             {canShowProvincialCodes ? (
               <View style={styles.codesWrap}>
-                {provincialCatalog.length === 0 ? (
-                  <EmptyState message="Sin codigos para esta provincia" />
-                ) : (
-                  provincialCatalog.map((entry) => {
-                    const rowKey = getCatalogEntryKey(selectedProvince, entry);
-                    const resolvedGuid =
-                      provincialGuidMap[rowKey] ||
-                      String(getStaticProvincialCodeHit(selectedProvince, entry)?.guid || "").trim();
-                    const manualHint = getManualLawSearchHint(entry);
-                    return (
-                      <CodeCard
-                        key={rowKey}
-                        title={entry.area}
-                        subtitle={entry.reference}
-                        active={pendingCodeKey === rowKey}
-                        onPressIn={() => setPendingCodeKey(rowKey)}
-                        onPress={() => {
-                          if (resolvedGuid) prefetchCode(resolvedGuid);
-                          router.push({
-                            pathname: "/detail/[guid]",
-                            params: {
-                              guid: "__provincial_pending__",
-                              province: selectedProvince,
-                              codeKey: rowKey,
-                              pendingTitle: entry.area,
-                              pendingReference: entry.reference,
-                              pendingHint: manualHint || "",
-                              resolvedGuid,
-                              fromCodes: "1",
-                            },
-                          });
-                          startTransition(() => {
-                            setPendingCodeKey(rowKey);
-                          });
-                          setTimeout(() => {
-                            setPendingCodeKey((current) => (current === rowKey ? null : current));
-                          }, 220);
-                        }}
-                      />
-                    );
-                  })
-                )}
+                {provincialCatalog.length === 0 ? <EmptyState message="Sin codigos para esta provincia" /> : null}
+                {provincialCatalog.map((entry) => {
+                  const rowKey = getCatalogEntryKey(selectedProvince, entry);
+                  const subtitleParts = [entry.reference, entry.notes].filter(Boolean);
+                  return (
+                    <CodeCard
+                      key={rowKey}
+                      title={entry.area}
+                      subtitle={subtitleParts.join(" · ")}
+                      active={pendingCodeKey === rowKey}
+                      onPressIn={() => setPendingCodeKey(rowKey)}
+                      onPress={() => {
+                        router.push({
+                          pathname: "/detail/[guid]",
+                          params: {
+                            guid: "__provincial_pending__",
+                            province: selectedProvince,
+                            codeKey: rowKey,
+                            pendingTitle: entry.area,
+                            pendingReference: entry.reference,
+                            fromCodes: "1",
+                          },
+                        });
+                        startTransition(() => {
+                          setPendingCodeKey(rowKey);
+                        });
+                        setTimeout(() => {
+                          setPendingCodeKey((current) => (current === rowKey ? null : current));
+                        }, 220);
+                      }}
+                    />
+                  );
+                })}
               </View>
             ) : null}
           </View>

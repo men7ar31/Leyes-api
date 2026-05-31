@@ -48,6 +48,7 @@ const SUPPORT_LINKEDIN_URL = "https://www.linkedin.com/in/esteban-nicolas-medina
 type FormState = {
   textoEnNorma: string;
   numeroNorma: string;
+  legislationSearchMode: "mixto" | "texto" | "numero";
   contentType: SaijSearchRequest["contentType"];
   legislationSubtype: SaijLegislationSubtype;
   jurisprudenceSubtype: JurisprudenceSubtype;
@@ -103,7 +104,8 @@ const getDateTimestamp = (value?: string | null) => {
 const initialState: FormState = {
   textoEnNorma: "",
   numeroNorma: "",
-  contentType: "todo",
+  legislationSearchMode: "mixto",
+  contentType: "legislacion",
   legislationSubtype: "todas",
   jurisprudenceSubtype: "todas",
   doctrinaSubtype: "todas",
@@ -178,15 +180,15 @@ const isJurisprudenceContentType = (value: SaijSearchRequest["contentType"]) =>
 const getJurisprudenceAutoFacets = (subtype: JurisprudenceSubtype): AutoFacetValues => {
   switch (subtype) {
     case "corte_suprema_nacional":
-      return { facetOrganismo: "Organismo/Corte Suprema de Justicia de la Nación" };
+      return { facetOrganismo: "Organismo/Corte Suprema de Justicia de la NaciÃ³n" };
     case "nacional":
-      return { facetJurisdiccion: "Jurisdicción/Nacional" };
+      return { facetJurisdiccion: "JurisdicciÃ³n/Nacional" };
     case "federal":
-      return { facetJurisdiccion: "Jurisdicción/Federal" };
+      return { facetJurisdiccion: "JurisdicciÃ³n/Federal" };
     case "provincial":
-      return { facetJurisdiccion: "Jurisdicción/Local" };
+      return { facetJurisdiccion: "JurisdicciÃ³n/Local" };
     case "internacional":
-      return { facetJurisdiccion: "Jurisdicción/Internacional" };
+      return { facetJurisdiccion: "JurisdicciÃ³n/Internacional" };
     case "derecho_constitucional":
       return { facetTema: "Tema/Derecho constitucional" };
     case "derecho_civil":
@@ -202,7 +204,7 @@ const getJurisprudenceAutoFacets = (subtype: JurisprudenceSubtype): AutoFacetVal
     case "derecho_procesal":
       return { facetTema: "Tema/Derecho procesal" };
     case "tribunales_etica":
-      return { facetTema: "Tema/Tribunales de ética" };
+      return { facetTema: "Tema/Tribunales de Ã©tica" };
     default:
       return {};
   }
@@ -240,13 +242,13 @@ const getDoctrinaAutoFacets = (subtype: DoctrinaSubtype): AutoFacetValues => {
 const getDictamenAutoFacets = (subtype: DictamenSubtype): AutoFacetValues => {
   switch (subtype) {
     case "dictamenes_mpf":
-      return { facetOrganismo: "Organismo/Ministerio Público Fiscal" };
+      return { facetOrganismo: "Organismo/Ministerio PÃºblico Fiscal" };
     case "dictamenes_inadi":
       return { facetOrganismo: "Organismo/INADI" };
     case "dictamenes_ptn":
-      return { facetOrganismo: "Organismo/Procuración del Tesoro de la Nación" };
+      return { facetOrganismo: "Organismo/ProcuraciÃ³n del Tesoro de la NaciÃ³n" };
     case "resoluciones_aaip":
-      return { facetOrganismo: "Organismo/Agencia de Acceso a la Información Pública" };
+      return { facetOrganismo: "Organismo/Agencia de Acceso a la InformaciÃ³n PÃºblica" };
     default:
       return {};
   }
@@ -264,7 +266,8 @@ export const SearchScreen = () => {
   const [activeResultGuid, setActiveResultGuid] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SearchSortMode>("relevance");
   const [collapseToken, setCollapseToken] = useState(0);
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [hasChosenContentType, setHasChosenContentType] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [expandedSupportItem, setExpandedSupportItem] = useState<"que-es" | "contacto" | "faq" | null>(null);
   const [isRefineOpen, setIsRefineOpen] = useState(false);
@@ -326,8 +329,10 @@ export const SearchScreen = () => {
 
   const filters = useMemo<SaijSearchFilters>(() => {
     const next: SaijSearchFilters = {};
-    if (appliedState.textoEnNorma.trim()) next.textoEnNorma = appliedState.textoEnNorma.trim();
-    if (appliedState.numeroNorma.trim()) next.numeroNorma = appliedState.numeroNorma.trim();
+    const textValue = appliedState.textoEnNorma.trim();
+    const numberValue = appliedState.numeroNorma.trim();
+    if (textValue) next.textoEnNorma = textValue;
+    if (numberValue) next.numeroNorma = numberValue;
 
     if (appliedState.contentType === "legislacion" && appliedState.legislationSubtype !== "todas") {
       next.tipoNorma = appliedState.legislationSubtype;
@@ -407,7 +412,7 @@ export const SearchScreen = () => {
       queryClient
         .prefetchQuery({
           queryKey: ["saij-document", key],
-          queryFn: () => getSaijDocument(key, { timeoutMs: 15000 }),
+          queryFn: () => getSaijDocument(key, { timeoutMs: 30000 }),
           staleTime: 1000 * 60 * 60,
           gcTime: 1000 * 60 * 60 * 4,
         })
@@ -420,6 +425,7 @@ export const SearchScreen = () => {
 
   const provinceRequired =
     formState.jurisdictionKind === "provincial" && formState.province.trim().length === 0;
+  const showSearchInputs = hasChosenContentType || hasSearched;
 
   const showRefiners = hasSearched;
 
@@ -450,7 +456,9 @@ export const SearchScreen = () => {
   const clearAllFilters = () => {
     setFormState(initialState);
     setAppliedState(initialState);
+    setHasChosenContentType(false);
     setHasSearched(false);
+    setIsFiltersOpen(true);
     setIsRefineOpen(false);
     setActiveRefineSection(null);
   };
@@ -701,7 +709,7 @@ export const SearchScreen = () => {
       );
     }
     if (isLoading && items.length === 0) {
-      return <FullScreenLoader message="Buscando en SAIJ..." />;
+      return <FullScreenLoader message="Buscando en Infoleg..." />;
     }
     if (isError && items.length === 0) {
       return <ErrorState message={(error as Error)?.message || "Fallo la busqueda."} onRetry={refetch} />;
@@ -737,13 +745,6 @@ export const SearchScreen = () => {
         {loadMoreNode}
         <Text style={[styles.legalText, { color: appColors.muted }]}>
           App NO oficial: La informacion se obtiene de{" "}
-          <Text
-            style={[styles.legalLink, { color: appColors.primaryStrong }]}
-            onPress={() => openExternalLink(SAIJ_HOME_URL)}
-          >
-            SAIJ
-          </Text>
-          {" / "}
           <Text
             style={[styles.legalLink, { color: appColors.primaryStrong }]}
             onPress={() => openExternalLink(INFOLEG_HOME_URL)}
@@ -974,103 +975,96 @@ export const SearchScreen = () => {
         ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
         ListHeaderComponent={
           <View style={styles.headerContent}>
-            <SearchBar
-              value={formState.textoEnNorma}
-              onChangeText={(textoEnNorma) => setFormState((prev) => ({ ...prev, textoEnNorma }))}
-              placeholder="Buscar leyes, articulos o palabras clave"
-              onFilterPress={() => setIsFiltersOpen((prev) => !prev)}
-              filterActive={isFiltersOpen}
-              onSubmitEditing={() => Keyboard.dismiss()}
-            />
-
-            <View style={[styles.inlineFieldCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-              <Text style={[styles.inlineFieldLabel, { color: appColors.muted }]}>Numero de ley, decreto o resolucion</Text>
-              <TextInput
-                style={[styles.inlineFieldInput, { color: appColors.text }]}
-                value={formState.numeroNorma}
-                onChangeText={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
-                placeholder="Ej: 26994, 20744, 70/2023"
-                placeholderTextColor={appColors.muted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="default"
-                returnKeyType="search"
-                blurOnSubmit
-                onSubmitEditing={() => Keyboard.dismiss()}
+            <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+              <SearchFilters
+                showContentType
+                showAdvanced={false}
+                contentType={formState.contentType}
+                onChangeContentType={(contentType) => {
+                  setHasChosenContentType(true);
+                  setFormState((prev) => ({
+                    ...prev,
+                    contentType,
+                    legislationSubtype: contentType === "todo" ? "todas" : prev.legislationSubtype,
+                    facetFecha: "",
+                    facetTema: "",
+                    facetEstadoVigencia: "",
+                    facetOrganismo: "",
+                  }));
+                }}
+                legislationSubtype={formState.legislationSubtype}
+                onChangeLegislationSubtype={(legislationSubtype) => setFormState((prev) => ({ ...prev, legislationSubtype }))}
+                jurisprudenceSubtype={formState.jurisprudenceSubtype}
+                onChangeJurisprudenceSubtype={(jurisprudenceSubtype) => setFormState((prev) => ({ ...prev, jurisprudenceSubtype }))}
+                doctrinaSubtype={formState.doctrinaSubtype}
+                onChangeDoctrinaSubtype={(doctrinaSubtype) => setFormState((prev) => ({ ...prev, doctrinaSubtype }))}
+                dictamenSubtype={formState.dictamenSubtype}
+                onChangeDictamenSubtype={(dictamenSubtype) => setFormState((prev) => ({ ...prev, dictamenSubtype }))}
+                jurisdictionKind={formState.jurisdictionKind}
+                onChangeJurisdictionKind={(jurisdictionKind) => setFormState((prev) => ({ ...prev, jurisdictionKind }))}
+                province={formState.province}
+                onChangeProvince={(province) => setFormState((prev) => ({ ...prev, province }))}
+                collapseToken={collapseToken}
               />
             </View>
 
-            {isFiltersOpen ? (
-              <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
-                <SearchFilters
-                  contentType={formState.contentType}
-                  onChangeContentType={(contentType) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      contentType,
-                      legislationSubtype: contentType === "legislacion" ? prev.legislationSubtype : "todas",
-                      jurisprudenceSubtype: contentType === "jurisprudencia" ? prev.jurisprudenceSubtype : "todas",
-                      doctrinaSubtype: contentType === "doctrina" ? prev.doctrinaSubtype : "todas",
-                      dictamenSubtype: contentType === "dictamen" ? prev.dictamenSubtype : "todas",
-                      facetFecha: "",
-                      facetTema: "",
-                      facetEstadoVigencia: "",
-                      facetOrganismo: "",
-                    }))
-                  }
-                  legislationSubtype={formState.legislationSubtype}
-                  onChangeLegislationSubtype={(legislationSubtype) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      legislationSubtype,
-                      facetFecha: "",
-                      facetTema: "",
-                      facetEstadoVigencia: "",
-                      facetOrganismo: "",
-                    }))
-                  }
-                  jurisprudenceSubtype={formState.jurisprudenceSubtype}
-                  onChangeJurisprudenceSubtype={(jurisprudenceSubtype) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      jurisprudenceSubtype,
-                      facetFecha: "",
-                      facetTema: "",
-                      facetEstadoVigencia: "",
-                      facetOrganismo: "",
-                    }))
-                  }
-                  doctrinaSubtype={formState.doctrinaSubtype}
-                  onChangeDoctrinaSubtype={(doctrinaSubtype) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      doctrinaSubtype,
-                      facetFecha: "",
-                      facetTema: "",
-                      facetEstadoVigencia: "",
-                      facetOrganismo: "",
-                    }))
-                  }
-                  dictamenSubtype={formState.dictamenSubtype}
-                  onChangeDictamenSubtype={(dictamenSubtype) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      dictamenSubtype,
-                      facetFecha: "",
-                      facetTema: "",
-                      facetEstadoVigencia: "",
-                      facetOrganismo: "",
-                    }))
-                  }
-                  jurisdictionKind={formState.jurisdictionKind}
-                  onChangeJurisdictionKind={(jurisdictionKind) =>
-                    setFormState((prev) => ({ ...prev, jurisdictionKind }))
-                  }
-                  province={formState.province}
-                  onChangeProvince={(province) => setFormState((prev) => ({ ...prev, province }))}
-                  collapseToken={collapseToken}
+            {showSearchInputs ? (
+              <>
+                <SearchBar
+                  value={formState.textoEnNorma}
+                  onChangeText={(textoEnNorma) => setFormState((prev) => ({ ...prev, textoEnNorma }))}
+                  placeholder="Buscar leyes, articulos o palabras clave"
+                  onFilterPress={undefined}
+                  filterActive={false}
+                  onSubmitEditing={onSearch}
                 />
-              </View>
+
+                <View style={[styles.inlineFieldCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+                  <Text style={[styles.inlineFieldLabel, { color: appColors.muted }]}>Numero de ley, decreto o resolucion</Text>
+                  <TextInput
+                    style={[styles.inlineFieldInput, { color: appColors.text }]}
+                    value={formState.numeroNorma}
+                    onChangeText={(numeroNorma) => setFormState((prev) => ({ ...prev, numeroNorma }))}
+                    placeholder="Ej: 26994, 20744, 70/2023"
+                    placeholderTextColor={appColors.muted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="default"
+                    returnKeyType="search"
+                    blurOnSubmit
+                    onSubmitEditing={onSearch}
+                  />
+                </View>
+
+                <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
+                  <SearchFilters
+                    showContentType={false}
+                    showAdvanced
+                    contentType={formState.contentType}
+                    onChangeContentType={(contentType) => {
+                      setHasChosenContentType(true);
+                      setFormState((prev) => ({
+                        ...prev,
+                        contentType,
+                        legislationSubtype: contentType === "todo" ? "todas" : prev.legislationSubtype,
+                      }));
+                    }}
+                    legislationSubtype={formState.legislationSubtype}
+                    onChangeLegislationSubtype={(legislationSubtype) => setFormState((prev) => ({ ...prev, legislationSubtype }))}
+                    jurisprudenceSubtype={formState.jurisprudenceSubtype}
+                    onChangeJurisprudenceSubtype={(jurisprudenceSubtype) => setFormState((prev) => ({ ...prev, jurisprudenceSubtype }))}
+                    doctrinaSubtype={formState.doctrinaSubtype}
+                    onChangeDoctrinaSubtype={(doctrinaSubtype) => setFormState((prev) => ({ ...prev, doctrinaSubtype }))}
+                    dictamenSubtype={formState.dictamenSubtype}
+                    onChangeDictamenSubtype={(dictamenSubtype) => setFormState((prev) => ({ ...prev, dictamenSubtype }))}
+                    jurisdictionKind={formState.jurisdictionKind}
+                    onChangeJurisdictionKind={(jurisdictionKind) => setFormState((prev) => ({ ...prev, jurisdictionKind }))}
+                    province={formState.province}
+                    onChangeProvince={(province) => setFormState((prev) => ({ ...prev, province }))}
+                    collapseToken={collapseToken}
+                  />
+                </View>
+              </>
             ) : null}
 
             {showRefiners ? (
@@ -1099,12 +1093,12 @@ export const SearchScreen = () => {
                       onPress={() => toggleRefineSection("anio")}
                     >
                       <Text style={[styles.refineButtonText, { color: appColors.text }]}>
-                        Años {appliedState.facetFecha ? `· ${getLeafLabel(appliedState.facetFecha)}` : ""}
+                        AÃ±os {appliedState.facetFecha ? `Â· ${getLeafLabel(appliedState.facetFecha)}` : ""}
                       </Text>
                     </Pressable>
                     {activeRefineSection === "anio" ? (
                       <FacetGroup
-                        title="Años disponibles"
+                        title="AÃ±os disponibles"
                         options={fechaOptions}
                         selected={appliedState.facetFecha}
                         onSelect={(value) =>
@@ -1124,7 +1118,7 @@ export const SearchScreen = () => {
                       onPress={() => toggleRefineSection("tema")}
                     >
                       <Text style={[styles.refineButtonText, { color: appColors.text }]}>
-                        Tema {appliedState.facetTema ? `· ${getLeafLabel(appliedState.facetTema)}` : ""}
+                        Tema {appliedState.facetTema ? `Â· ${getLeafLabel(appliedState.facetTema)}` : ""}
                       </Text>
                     </Pressable>
                     {activeRefineSection === "tema" ? (
@@ -1149,7 +1143,7 @@ export const SearchScreen = () => {
                       onPress={() => toggleRefineSection("estado")}
                     >
                       <Text style={[styles.refineButtonText, { color: appColors.text }]}> 
-                        Estado de vigencia {appliedState.facetEstadoVigencia ? `· ${getLeafLabel(appliedState.facetEstadoVigencia)}` : ""}
+                        Estado de vigencia {appliedState.facetEstadoVigencia ? `Â· ${getLeafLabel(appliedState.facetEstadoVigencia)}` : ""}
                       </Text>
                     </Pressable>
                     {activeRefineSection === "estado" ? (
@@ -1174,7 +1168,7 @@ export const SearchScreen = () => {
                       onPress={() => toggleRefineSection("organismo")}
                     >
                       <Text style={[styles.refineButtonText, { color: appColors.text }]}> 
-                        Organismo {appliedState.facetOrganismo ? `· ${getLeafLabel(appliedState.facetOrganismo)}` : ""}
+                        Organismo {appliedState.facetOrganismo ? `Â· ${getLeafLabel(appliedState.facetOrganismo)}` : ""}
                       </Text>
                     </Pressable>
                     {activeRefineSection === "organismo" ? (
@@ -1205,35 +1199,37 @@ export const SearchScreen = () => {
               </View>
             ) : null}
 
-            {provinceRequired ? (
+            {showSearchInputs && provinceRequired ? (
               <Text style={[styles.warning, { color: appColors.danger }]}>Ingresa una provincia para jurisdiccion provincial.</Text>
             ) : null}
 
-            <View style={styles.actionsRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.primaryAction,
-                  { backgroundColor: appColors.primaryStrong, borderColor: appColors.primaryStrong },
-                  provinceRequired ? styles.disabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={onSearch}
-                disabled={provinceRequired}
-              >
-                <Text style={[styles.primaryActionText, { color: appColors.white }]}>Buscar</Text>
-              </Pressable>
+            {showSearchInputs ? (
+              <View style={styles.actionsRow}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.primaryAction,
+                    { backgroundColor: appColors.primaryStrong, borderColor: appColors.primaryStrong },
+                    provinceRequired ? styles.disabled : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                  onPress={onSearch}
+                  disabled={provinceRequired}
+                >
+                  <Text style={[styles.primaryActionText, { color: appColors.white }]}>Buscar</Text>
+                </Pressable>
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.secondaryAction,
-                  { backgroundColor: appColors.card, borderColor: appColors.border },
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={clearAllFilters}
-              >
-                <Text style={[styles.secondaryActionText, { color: appColors.text }]}>Borrar filtros</Text>
-              </Pressable>
-            </View>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.secondaryAction,
+                    { backgroundColor: appColors.card, borderColor: appColors.border },
+                    pressed ? styles.pressed : null,
+                  ]}
+                  onPress={clearAllFilters}
+                >
+                  <Text style={[styles.secondaryActionText, { color: appColors.text }]}>Borrar filtros</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
             {!hasSearched && recentSearches.length > 0 ? (
               <View style={[styles.filtersCard, { backgroundColor: appColors.card, borderColor: appColors.border }]}>
@@ -1433,6 +1429,41 @@ const styles = StyleSheet.create({
     fontSize: typography.body,
     fontWeight: "500",
     paddingVertical: 0,
+  },
+  chips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
+  searchModeWrap: {
+    gap: spacing.xs,
+  },
+  searchModeChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
+  searchModeChip: {
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+  },
+  searchModeChipText: {
+    fontSize: typography.small,
+    fontWeight: "700",
+  },
+  searchModeFilterBtn: {
+    minHeight: 40,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  searchModeFilterBtnText: {
+    fontSize: typography.small,
+    fontWeight: "700",
   },
   refineToggle: {
     flexDirection: "row",
