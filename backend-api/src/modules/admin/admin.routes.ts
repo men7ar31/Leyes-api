@@ -13,7 +13,7 @@ router.get('/saij/proxy-status', (_req, res) => {
 
 router.get('/saij/proxy-test', async (_req, res) => {
   try {
-    const result = await saijHttpClient.proxyTestIpify();
+    const result = await saijHttpClient.proxyTestSaijFlow();
     res.json(result);
   } catch (error: any) {
     res.status(502).json({

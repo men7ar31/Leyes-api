@@ -1,5 +1,4 @@
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import { env } from '../../config/env';
 import { HttpError } from '../../utils/httpError';
@@ -28,6 +27,8 @@ type SessionContext = {
   sessionReady: boolean;
   sessionInitInFlight: Promise<void> | null;
   proxy: SaijProxySelection | null;
+  lastBootstrapStatus: number | null;
+  lastBootstrapCookiesReceived: boolean;
 };
 
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -94,6 +95,17 @@ const sanitizeProxyAgentUrl = (proxyUrl?: string | null): string | null => {
   } catch {
     return 'invalid_proxy_url';
   }
+};
+
+const toSetCookieArray = (headers: AxiosResponse['headers'] | undefined): string[] => {
+  const setCookieHeader = (headers as any)?.getSetCookie?.() ?? (headers as any)?.['set-cookie'] ?? (headers as any)?.['Set-Cookie'];
+  if (Array.isArray(setCookieHeader)) {
+    return setCookieHeader.map((item) => String(item)).filter(Boolean);
+  }
+  if (typeof setCookieHeader === 'string' && setCookieHeader.trim().length > 0) {
+    return [setCookieHeader];
+  }
+  return [];
 };
 
 const isTlsLikeError = (error: unknown): boolean => {
@@ -219,17 +231,14 @@ export class SaijHttpClient {
       try {
         await this.ensureSession(context, { requestName: options.requestName, attempt, url });
 
-        const response = await context.http.get(url, {
+        const { response } = await this.requestGetWithCookies(context, url, {
           validateStatus: () => true,
           timeout: options.timeoutMs ?? env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
           responseType: options.responseType,
           headers: {
             Accept: options.accept ?? BASE_BROWSER_HEADERS.Accept,
           },
-          transformResponse:
-            options.responseType === 'text'
-              ? [(raw) => raw]
-              : undefined,
+          transformResponse: options.responseType === 'text' ? [(raw) => raw] : undefined,
         });
 
         const contentType = String(response.headers['content-type'] ?? '');
@@ -375,30 +384,26 @@ export class SaijHttpClient {
     });
   }
 
-  async proxyTestIpify(): Promise<{
+  async proxyTestSaijFlow(): Promise<{
     ok: true;
-    ip: string;
     proxyId: string | null;
     proxyHost: string | null;
     proxyPort: number | null;
     proxyAgentUrlSanitized: string | null;
-    diagnostics: {
-      proxyEnabled: boolean;
-      axiosProxyFalse: boolean;
-      hasHttpsAgent: boolean;
-      hasHttpAgent: boolean;
-      wrappedWithCookieJarSupport: boolean;
-      hasCookieJar: boolean;
-    };
+    bootstrapStatus: number;
+    cookiesReceived: boolean;
+    minimalSearchStatus: number;
+    minimalSearchContentType: string;
   }> {
     const useProxy = saijProxyPool.isEnabled();
     const proxy = useProxy ? saijProxyPool.acquireProxy() : null;
     const context = this.getOrCreateSession(proxy);
+    const searchUrlPath = '/busqueda?r=&o=0&p=1&f=&s=&v=colapsada';
 
     logger.info(
       {
         requestName: 'proxy-test',
-        url: 'https://api.ipify.org',
+        url: searchUrlPath,
         proxyEnabled: useProxy,
         proxyId: proxy?.proxyId ?? null,
         proxyHost: proxy?.host ?? null,
@@ -407,20 +412,22 @@ export class SaijHttpClient {
         axiosProxyFalse: context.http.defaults.proxy === false,
         hasHttpsAgent: Boolean((context.http.defaults as any)?.httpsAgent),
         hasHttpAgent: Boolean((context.http.defaults as any)?.httpAgent),
-        wrappedWithCookieJarSupport: true,
-        hasCookieJar: Boolean((context.http.defaults as any)?.jar),
+        wrappedWithCookieJarSupport: false,
+        hasCookieJar: false,
       },
       'SAIJ proxy test request config'
     );
 
     try {
-      const response = await context.http.get('https://api.ipify.org', {
+      await this.resetSession(context, 'proxy_test_start');
+
+      await this.ensureSession(context, { requestName: 'proxy-test', attempt: 1, url: SAIJ_HOME_URL });
+
+      const { response } = await this.requestGetWithCookies(context, searchUrlPath, {
         validateStatus: () => true,
         timeout: env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
-        responseType: 'text',
-        transformResponse: [(raw) => raw],
         headers: {
-          Accept: 'text/plain',
+          Accept: 'application/json, text/plain, */*',
         },
       });
 
@@ -432,28 +439,27 @@ export class SaijHttpClient {
         });
       }
 
-      const ip = String(response.data || '').trim();
-      if (!ip) {
-        throw new HttpError(502, 'saij_proxy_test_failed', 'proxy-test returned empty body');
+      const contentType = String(response.headers['content-type'] ?? '');
+      if (contentType.includes('text/html')) {
+        throw new HttpError(502, 'saij_proxy_test_failed', 'proxy-test returned HTML for SAIJ search', {
+          status: response.status,
+          contentType,
+          dataPreview: previewResponseData(response.data),
+        });
       }
 
       if (proxy) saijProxyPool.markSuccess(proxy.proxyId);
 
       return {
         ok: true,
-        ip,
         proxyId: proxy?.proxyId ?? null,
         proxyHost: proxy?.host ?? null,
         proxyPort: proxy?.port ?? null,
         proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy?.agentUrl || null),
-        diagnostics: {
-          proxyEnabled: useProxy,
-          axiosProxyFalse: context.http.defaults.proxy === false,
-          hasHttpsAgent: Boolean((context.http.defaults as any)?.httpsAgent),
-          hasHttpAgent: Boolean((context.http.defaults as any)?.httpAgent),
-          wrappedWithCookieJarSupport: true,
-          hasCookieJar: Boolean((context.http.defaults as any)?.jar),
-        },
+        bootstrapStatus: context.lastBootstrapStatus ?? 0,
+        cookiesReceived: context.lastBootstrapCookiesReceived,
+        minimalSearchStatus: response.status,
+        minimalSearchContentType: contentType,
       };
     } catch (error) {
       const failureType = classifyProxyFailure(error);
@@ -462,7 +468,7 @@ export class SaijHttpClient {
       logger.error(
         {
           requestName: 'proxy-test',
-          url: 'https://api.ipify.org',
+          url: searchUrlPath,
           proxyEnabled: useProxy,
           proxyId: proxy?.proxyId ?? null,
           proxyHost: proxy?.host ?? null,
@@ -502,6 +508,58 @@ export class SaijHttpClient {
     }
   }
 
+  private async requestGetWithCookies(
+    context: SessionContext,
+    requestUrl: string,
+    config: AxiosRequestConfig
+  ): Promise<{ response: AxiosResponse; cookiesReceived: boolean }> {
+    const absoluteUrl = this.toAbsoluteUrl(requestUrl);
+    const cookieHeader = await this.getCookieHeader(context.jar, absoluteUrl);
+    const headers = {
+      ...(config.headers || {}),
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+    };
+
+    const response = await context.http.get(requestUrl, {
+      ...config,
+      headers,
+    });
+
+    const responseUrl = this.resolveResponseUrl(response, requestUrl);
+    const responseAbsoluteUrl = this.toAbsoluteUrl(responseUrl);
+    const cookiesReceived = await this.persistResponseCookies(context.jar, responseAbsoluteUrl, response);
+    return { response, cookiesReceived };
+  }
+
+  private toAbsoluteUrl(inputUrl: string): string {
+    if (isAbsoluteUrl(inputUrl)) return inputUrl;
+    return `${env.saijBaseUrl}${inputUrl.startsWith('/') ? inputUrl : `/${inputUrl}`}`;
+  }
+
+  private async getCookieHeader(jar: CookieJar, targetUrl: string): Promise<string> {
+    return await new Promise((resolve, reject) => {
+      jar.getCookieString(targetUrl, (error, cookies) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(String(cookies || ''));
+      });
+    });
+  }
+
+  private async persistResponseCookies(jar: CookieJar, targetUrl: string, response: AxiosResponse): Promise<boolean> {
+    const setCookies = toSetCookieArray(response.headers);
+    if (setCookies.length < 1) return false;
+
+    for (const rawCookie of setCookies) {
+      await new Promise<void>((resolve) => {
+        jar.setCookie(rawCookie, targetUrl, { ignoreError: true }, () => resolve());
+      });
+    }
+    return true;
+  }
+
   private async executeDirect(url: string, options: SaijRequestOptions): Promise<SaijRequestResult> {
     const context = this.getOrCreateSession(null);
     await this.ensureSession(context, { requestName: options.requestName, attempt: 1, url });
@@ -511,17 +569,14 @@ export class SaijHttpClient {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const response = await context.http.get(url, {
+        const { response } = await this.requestGetWithCookies(context, url, {
           validateStatus: () => true,
           timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           responseType: options.responseType,
           headers: {
             Accept: options.accept ?? BASE_BROWSER_HEADERS.Accept,
           },
-          transformResponse:
-            options.responseType === 'text'
-              ? [(raw) => raw]
-              : undefined,
+          transformResponse: options.responseType === 'text' ? [(raw) => raw] : undefined,
         });
 
         const contentType = String(response.headers['content-type'] ?? '');
@@ -585,20 +640,17 @@ export class SaijHttpClient {
     throw new HttpError(502, 'saij_error', 'Fallo al consultar SAIJ');
   }
 
-  private createHttpClient(jar: CookieJar, proxy: SaijProxySelection | null): AxiosInstance {
+  private createHttpClient(proxy: SaijProxySelection | null): AxiosInstance {
     if (proxy) {
       const proxyAgent = new HttpsProxyAgent(proxy.agentUrl);
-      const baseClient = axios.create({
+      const client = axios.create({
         baseURL: env.saijBaseUrl,
         timeout: env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
-        withCredentials: true,
-        jar,
         headers: BASE_BROWSER_HEADERS,
         proxy: false,
         httpAgent: proxyAgent,
         httpsAgent: proxyAgent,
       });
-      const wrappedClient = wrapper(baseClient);
       logger.info(
         {
           proxyEnabled: true,
@@ -606,37 +658,34 @@ export class SaijHttpClient {
           proxyHost: proxy.host,
           proxyPort: proxy.port,
           proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
-          axiosProxyFalse: wrappedClient.defaults.proxy === false,
-          hasHttpsAgent: Boolean((wrappedClient.defaults as any)?.httpsAgent),
-          hasHttpAgent: Boolean((wrappedClient.defaults as any)?.httpAgent),
-          wrappedWithCookieJarSupport: true,
-          hasCookieJar: Boolean((wrappedClient.defaults as any)?.jar),
+          axiosProxyFalse: client.defaults.proxy === false,
+          hasHttpsAgent: Boolean((client.defaults as any)?.httpsAgent),
+          hasHttpAgent: Boolean((client.defaults as any)?.httpAgent),
+          wrappedWithCookieJarSupport: false,
+          hasCookieJar: false,
         },
         'SAIJ axios proxy client created'
       );
-      return wrappedClient;
+      return client;
     }
 
-    const baseClient = axios.create({
+    const client = axios.create({
       baseURL: env.saijBaseUrl,
       timeout: DEFAULT_TIMEOUT_MS,
-      withCredentials: true,
-      jar,
       headers: BASE_BROWSER_HEADERS,
     });
-    const wrappedClient = wrapper(baseClient);
     logger.info(
       {
         proxyEnabled: false,
-        axiosProxyFalse: wrappedClient.defaults.proxy === false,
-        hasHttpsAgent: Boolean((wrappedClient.defaults as any)?.httpsAgent),
-        hasHttpAgent: Boolean((wrappedClient.defaults as any)?.httpAgent),
-        wrappedWithCookieJarSupport: true,
-        hasCookieJar: Boolean((wrappedClient.defaults as any)?.jar),
+        axiosProxyFalse: client.defaults.proxy === false,
+        hasHttpsAgent: Boolean((client.defaults as any)?.httpsAgent),
+        hasHttpAgent: Boolean((client.defaults as any)?.httpAgent),
+        wrappedWithCookieJarSupport: false,
+        hasCookieJar: false,
       },
       'SAIJ axios direct client created'
     );
-    return wrappedClient;
+    return client;
   }
 
   private getOrCreateSession(proxy: SaijProxySelection | null): SessionContext {
@@ -648,10 +697,12 @@ export class SaijHttpClient {
     const context: SessionContext = {
       key,
       jar,
-      http: this.createHttpClient(jar, proxy),
+      http: this.createHttpClient(proxy),
       sessionReady: false,
       sessionInitInFlight: null,
       proxy,
+      lastBootstrapStatus: null,
+      lastBootstrapCookiesReceived: false,
     };
     this.sessions.set(key, context);
     return context;
@@ -682,7 +733,7 @@ export class SaijHttpClient {
     context: SessionContext,
     metadata: { requestName: string; attempt: number; url: string }
   ): Promise<void> {
-    const homeResponse = await context.http.get('/', {
+    const { response: homeResponse, cookiesReceived } = await this.requestGetWithCookies(context, '/', {
       validateStatus: () => true,
       timeout: context.proxy ? env.saijProxyTimeoutMs : DEFAULT_TIMEOUT_MS,
       responseType: 'text',
@@ -708,9 +759,13 @@ export class SaijHttpClient {
         url: resolvedUrl,
         status: homeResponse.status,
         contentType,
+        cookiesReceived,
       },
       'SAIJ session bootstrap response'
     );
+
+    context.lastBootstrapStatus = homeResponse.status;
+    context.lastBootstrapCookiesReceived = cookiesReceived;
 
     if (homeResponse.status >= 400) {
       throw new HttpError(502, 'saij_session_init_failed', 'No se pudo iniciar sesion con SAIJ', {
@@ -730,8 +785,10 @@ export class SaijHttpClient {
 
   private async resetSession(context: SessionContext, reason: string): Promise<void> {
     context.jar = new CookieJar();
-    context.http = this.createHttpClient(context.jar, context.proxy);
+    context.http = this.createHttpClient(context.proxy);
     context.sessionReady = false;
+    context.lastBootstrapStatus = null;
+    context.lastBootstrapCookiesReceived = false;
 
     logger.warn(
       {
