@@ -47,18 +47,26 @@ const normalizeLoose = (value?: string | null) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const normalizeSearchContentType = (value?: string | null) => {
+  const ct = normalizeLoose(value);
+  if (ct === 'fallos') return 'fallo';
+  if (ct === 'sumarios') return 'sumario';
+  if (ct === 'doctrinas') return 'doctrina';
+  return ct || 'legislacion';
+};
+
 const isProvincialCodeTipoNorma = (value?: string | null) => {
   const tipo = normalizeLoose(value);
   return tipo === 'codigo_provincial' || tipo === 'codigos_provinciales';
 };
 
 const isSaijOnlyContentType = (contentType?: string | null) => {
-  const ct = normalizeLoose(contentType);
+  const ct = normalizeSearchContentType(contentType);
   return ct === 'jurisprudencia' || ct === 'fallo' || ct === 'sumario' || ct === 'doctrina' || ct === 'dictamen';
 };
 
 const isLegislationLikeContentType = (contentType?: string | null) => {
-  const ct = normalizeLoose(contentType);
+  const ct = normalizeSearchContentType(contentType);
   return ct === 'legislacion' || ct === 'todo' || ct === '';
 };
 
@@ -159,7 +167,7 @@ const getErrorStatus = (error: unknown) => {
 };
 
 const isObservedSaijSearchType = (contentType?: string | null) => {
-  const ct = normalizeLoose(contentType);
+  const ct = normalizeSearchContentType(contentType);
   return ct === 'jurisprudencia' || ct === 'fallo' || ct === 'sumario' || ct === 'doctrina';
 };
 
@@ -253,10 +261,15 @@ const buildSearchCacheKey = (input: SaijSearchRequest) =>
 
 export const legalSourceRouter = {
   async search(input: SaijSearchRequest): Promise<SaijSearchResponse> {
+    const normalizedContentType = normalizeSearchContentType(input.contentType) as SaijSearchRequest['contentType'];
+    const normalizedInput: SaijSearchRequest = {
+      ...input,
+      contentType: normalizedContentType,
+    };
     const startedAt = Date.now();
-    const jurisdiction = resolveJurisdictionLabel(input);
-    const contentType = input.contentType;
-    const cacheKey = buildSearchCacheKey(input);
+    const jurisdiction = resolveJurisdictionLabel(normalizedInput);
+    const contentType = normalizedInput.contentType;
+    const cacheKey = buildSearchCacheKey(normalizedInput);
     const observedSaijSearchType = isObservedSaijSearchType(contentType);
 
     logRouteEvent({
@@ -295,7 +308,7 @@ export const legalSourceRouter = {
       }
     }
 
-    const isProvincialCodeSearch = isProvincialCodeTipoNorma(input.filters?.tipoNorma);
+    const isProvincialCodeSearch = isProvincialCodeTipoNorma(normalizedInput.filters?.tipoNorma);
 
     if (isSaijOnlyContentType(contentType)) {
       if (observedSaijSearchType) {
@@ -310,8 +323,8 @@ export const legalSourceRouter = {
         });
       }
       try {
-        const response = await SaijService.search(input);
-        if (!input.debug) await CacheService.saveSearch(cacheKey, input, response, SEARCH_CACHE_TTL_SECONDS);
+        const response = await SaijService.search(normalizedInput);
+        if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, response, SEARCH_CACHE_TTL_SECONDS);
         logRouteEvent({
           action: 'search',
           status: 'success',
@@ -367,9 +380,9 @@ export const legalSourceRouter = {
     if (isProvincialCodeSearch) {
       let saijFailed = false;
       try {
-        const saijResponse = await SaijService.search(input);
+        const saijResponse = await SaijService.search(normalizedInput);
         if (hasUsefulSearchResults(saijResponse)) {
-          if (!input.debug) await CacheService.saveSearch(cacheKey, input, saijResponse, SEARCH_CACHE_TTL_SECONDS);
+          if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, saijResponse, SEARCH_CACHE_TTL_SECONDS);
           logRouteEvent({
             action: 'search',
             status: 'success',
@@ -401,8 +414,8 @@ export const legalSourceRouter = {
       }
 
       try {
-        const infolegResponse = await infolegService.search(input);
-        if (!input.debug) await CacheService.saveSearch(cacheKey, input, infolegResponse, SEARCH_CACHE_TTL_SECONDS);
+        const infolegResponse = await infolegService.search(normalizedInput);
+        if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, infolegResponse, SEARCH_CACHE_TTL_SECONDS);
         logRouteEvent({
           action: 'search',
           status: 'success',
@@ -431,11 +444,11 @@ export const legalSourceRouter = {
       }
     }
 
-    if (isNationalLegislationSearch(input)) {
+    if (isNationalLegislationSearch(normalizedInput)) {
       try {
-        const infolegResponse = await infolegService.search(input);
+        const infolegResponse = await infolegService.search(normalizedInput);
         if (hasUsefulSearchResults(infolegResponse)) {
-          if (!input.debug) await CacheService.saveSearch(cacheKey, input, infolegResponse, SEARCH_CACHE_TTL_SECONDS);
+          if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, infolegResponse, SEARCH_CACHE_TTL_SECONDS);
           logRouteEvent({
             action: 'search',
             status: 'success',
@@ -467,8 +480,8 @@ export const legalSourceRouter = {
       }
 
       try {
-        const saijResponse = await SaijService.search(input);
-        if (!input.debug) await CacheService.saveSearch(cacheKey, input, saijResponse, SEARCH_CACHE_TTL_SECONDS);
+        const saijResponse = await SaijService.search(normalizedInput);
+        if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, saijResponse, SEARCH_CACHE_TTL_SECONDS);
         logRouteEvent({
           action: 'search',
           status: 'success',
@@ -501,8 +514,8 @@ export const legalSourceRouter = {
       }
     }
 
-    const defaultResponse = await SaijService.search(input);
-    if (!input.debug) await CacheService.saveSearch(cacheKey, input, defaultResponse, SEARCH_CACHE_TTL_SECONDS);
+    const defaultResponse = await SaijService.search(normalizedInput);
+    if (!input.debug) await CacheService.saveSearch(cacheKey, normalizedInput, defaultResponse, SEARCH_CACHE_TTL_SECONDS);
     logRouteEvent({
       action: 'search',
       status: 'success',
