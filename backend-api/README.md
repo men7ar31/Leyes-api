@@ -29,6 +29,7 @@ API intermediaria entre la app mobile y fuentes legales publicas. Provee busqued
 - `POST /api/saij/search` - busqueda unificada (routing inteligente de fuentes).
 - `GET /api/saij/document/:guid` - detalle unificado con cache y fallback.
 - `POST /api/provincial-codes/document` - extraccion dedicada de codigos provinciales.
+- `GET /api/admin/saij/proxy-status` - endpoint opcional de estado de proxies (solo si `ENABLE_ADMIN_DEBUG_ROUTES=true`).
 
 ## Estrategia de fuentes
 - `Mongo/cache` - primera capa para search/document cuando hay datos vigentes.
@@ -44,6 +45,37 @@ API intermediaria entre la app mobile y fuentes legales publicas. Provee busqued
 - `src/modules/infoleg/` - modulo Infoleg (busqueda y detalle).
 - `src/modules/provincial-codes/` - scraping dedicado de codigos provinciales.
 - `src/modules/legal-source/` - router inteligente de fuentes legales.
+- `src/modules/admin/` - endpoints de debug admin opcionales.
 - `src/modules/health/` - ruta de health.
 - `src/middlewares/` - manejo de errores y 404.
 - `src/utils/` - logger y utilidades.
+
+## Proxy opcional para SAIJ
+- Los proxies aplican solo a SAIJ (`saijHttpClient`).
+- Infoleg y `provincial-codes` no usan proxy.
+- Variables:
+  - `SAIJ_PROXY_ENABLED=false`
+  - `SAIJ_PROXY_LIST=`
+  - `SAIJ_PROXY_MAX_ATTEMPTS=5`
+  - `SAIJ_PROXY_COOLDOWN_MS=300000`
+  - `SAIJ_PROXY_TIMEOUT_MS=15000`
+  - `ENABLE_ADMIN_DEBUG_ROUTES=false`
+- Formato de proxy en lista: `usuario:password@host:port` (separados por coma).
+
+## Prueba manual recomendada
+1. Configurar en `.env`:
+   - `SAIJ_PROXY_ENABLED=true`
+   - `SAIJ_PROXY_LIST=usuario:password@host:port,usuario:password@host2:port2`
+2. Ejecutar:
+   ```bash
+   npm run build
+   ```
+3. Reiniciar servicio (por ejemplo con pm2):
+   ```bash
+   pm2 restart leyes-api
+   ```
+4. Probar:
+   - `GET /api/health`
+   - `POST /api/saij/search` con `contentType` en `jurisprudencia|fallo|sumario|doctrina`
+   - `GET /api/saij/document/:guid`
+   - `GET /api/admin/saij/proxy-status` (solo si `ENABLE_ADMIN_DEBUG_ROUTES=true`)
