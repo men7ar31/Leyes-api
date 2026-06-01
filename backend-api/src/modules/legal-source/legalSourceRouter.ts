@@ -22,6 +22,20 @@ type RouteLogInput = {
   errorCode?: string | null;
 };
 
+type SaijSearchObservabilityEvent = {
+  contentType: string;
+  jurisdiccion: string;
+  attemptedEndpoint: string;
+  sourceUsed: SourceUsed;
+  executesSaijSearch: boolean;
+  status: 'start' | 'success' | 'empty' | 'error';
+  is403?: boolean;
+  resultCount?: number;
+  totalCount?: number;
+  durationMs?: number;
+  errorCode?: string | null;
+};
+
 const SEARCH_CACHE_TTL_SECONDS = Math.max(60, Math.floor(SEARCH_CACHE_TTL_MS / 1000));
 const DOCUMENT_CACHE_TTL_MS_LOCAL = DOCUMENT_CACHE_TTL_MS;
 
@@ -138,6 +152,37 @@ const getErrorCode = (error: unknown) => {
   return code || null;
 };
 
+const getErrorStatus = (error: unknown) => {
+  const err = error as any;
+  const status = Number(err?.statusCode || err?.status || err?.details?.status || err?.response?.status || 0);
+  return Number.isFinite(status) && status > 0 ? status : null;
+};
+
+const isObservedSaijSearchType = (contentType?: string | null) => {
+  const ct = normalizeLoose(contentType);
+  return ct === 'jurisprudencia' || ct === 'fallo' || ct === 'sumario' || ct === 'doctrina';
+};
+
+const logSaijSearchObservability = (event: SaijSearchObservabilityEvent) => {
+  logger.info(
+    {
+      routerEndpoint: '/api/saij/search',
+      attemptedEndpoint: event.attemptedEndpoint,
+      contentType: event.contentType,
+      jurisdiccion: event.jurisdiccion,
+      sourceUsed: event.sourceUsed,
+      executesSaijSearch: event.executesSaijSearch,
+      is403: event.is403 ?? false,
+      status: event.status,
+      resultCount: event.resultCount ?? null,
+      totalCount: event.totalCount ?? null,
+      durationMs: event.durationMs ?? null,
+      errorCode: event.errorCode ?? null,
+    },
+    'SAIJ search observability'
+  );
+};
+
 const logRouteEvent = (input: RouteLogInput) => {
   logger.info(
     {
@@ -208,9 +253,11 @@ const buildSearchCacheKey = (input: SaijSearchRequest) =>
 
 export const legalSourceRouter = {
   async search(input: SaijSearchRequest): Promise<SaijSearchResponse> {
+    const startedAt = Date.now();
     const jurisdiction = resolveJurisdictionLabel(input);
     const contentType = input.contentType;
     const cacheKey = buildSearchCacheKey(input);
+    const observedSaijSearchType = isObservedSaijSearchType(contentType);
 
     logRouteEvent({
       action: 'search',
@@ -230,6 +277,20 @@ export const legalSourceRouter = {
           jurisdiccion: jurisdiction,
           sourceUsed: 'cache',
         });
+        if (observedSaijSearchType) {
+          const response = cached as SaijSearchResponse;
+          logSaijSearchObservability({
+            contentType,
+            jurisdiccion: jurisdiction,
+            attemptedEndpoint: 'cache:legal-router-search',
+            sourceUsed: 'cache',
+            executesSaijSearch: false,
+            status: Array.isArray(response.hits) && response.hits.length > 0 ? 'success' : 'empty',
+            resultCount: Array.isArray(response.hits) ? response.hits.length : 0,
+            totalCount: Number(response.total || 0),
+            durationMs: Date.now() - startedAt,
+          });
+        }
         return cached as SaijSearchResponse;
       }
     }
@@ -237,6 +298,17 @@ export const legalSourceRouter = {
     const isProvincialCodeSearch = isProvincialCodeTipoNorma(input.filters?.tipoNorma);
 
     if (isSaijOnlyContentType(contentType)) {
+      if (observedSaijSearchType) {
+        logSaijSearchObservability({
+          contentType,
+          jurisdiccion: jurisdiction,
+          attemptedEndpoint: 'saij:/busqueda',
+          sourceUsed: 'saij',
+          executesSaijSearch: true,
+          status: 'start',
+          durationMs: Date.now() - startedAt,
+        });
+      }
       try {
         const response = await SaijService.search(input);
         if (!input.debug) await CacheService.saveSearch(cacheKey, input, response, SEARCH_CACHE_TTL_SECONDS);
@@ -247,6 +319,21 @@ export const legalSourceRouter = {
           jurisdiccion: jurisdiction,
           sourceUsed: 'saij',
         });
+        if (observedSaijSearchType) {
+          const resultCount = Array.isArray(response.hits) ? response.hits.length : 0;
+          const totalCount = Number(response.total || 0);
+          logSaijSearchObservability({
+            contentType,
+            jurisdiccion: jurisdiction,
+            attemptedEndpoint: 'saij:/busqueda',
+            sourceUsed: 'saij',
+            executesSaijSearch: true,
+            status: resultCount > 0 || totalCount > 0 ? 'success' : 'empty',
+            resultCount,
+            totalCount,
+            durationMs: Date.now() - startedAt,
+          });
+        }
         return response;
       } catch (error) {
         logRouteEvent({
@@ -257,6 +344,19 @@ export const legalSourceRouter = {
           sourceUsed: 'saij',
           errorCode: getErrorCode(error),
         });
+        if (observedSaijSearchType) {
+          logSaijSearchObservability({
+            contentType,
+            jurisdiccion: jurisdiction,
+            attemptedEndpoint: 'saij:/busqueda',
+            sourceUsed: 'saij',
+            executesSaijSearch: true,
+            status: 'error',
+            is403: getErrorStatus(error) === 403,
+            errorCode: getErrorCode(error),
+            durationMs: Date.now() - startedAt,
+          });
+        }
         if (isSaijUnavailableError(error)) {
           throw new HttpError(503, 'saij_unavailable', 'SAIJ no está disponible temporalmente');
         }
