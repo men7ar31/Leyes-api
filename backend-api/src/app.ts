@@ -29,7 +29,7 @@ export const createApp = () => {
         '/api/saij/search',
         '/api/saij/document/:guid',
         '/api/provincial-codes/document',
-        ...(env.enableAdminDebugRoutes ? ['/api/admin/saij/proxy-status'] : []),
+        ...(env.enableAdminDebugRoutes ? ['/api/admin/saij/proxy-status', '/api/admin/saij/proxy-test'] : []),
       ],
     });
   });

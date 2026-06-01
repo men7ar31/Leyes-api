@@ -33,6 +33,7 @@ type SessionContext = {
 const DEFAULT_TIMEOUT_MS = 15000;
 const SAIJ_HOME_URL = 'https://www.saij.gob.ar/';
 const HTML_ERROR_PREVIEW_LIMIT = 300;
+const ERROR_RESPONSE_PREVIEW_LIMIT = 500;
 
 const BASE_BROWSER_HEADERS = {
   'User-Agent':
@@ -70,6 +71,77 @@ const extractErrorCode = (error: unknown): string | undefined => {
   return code ? String(code) : undefined;
 };
 
+const previewResponseData = (data: unknown): string | null => {
+  if (data === null || data === undefined) return null;
+  if (typeof data === 'string') return data.slice(0, ERROR_RESPONSE_PREVIEW_LIMIT);
+  try {
+    return JSON.stringify(data).slice(0, ERROR_RESPONSE_PREVIEW_LIMIT);
+  } catch {
+    return String(data).slice(0, ERROR_RESPONSE_PREVIEW_LIMIT);
+  }
+};
+
+const sanitizeProxyAgentUrl = (proxyUrl?: string | null): string | null => {
+  const value = String(proxyUrl || '').trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const protocol = parsed.protocol || 'http:';
+    const host = parsed.hostname || '';
+    const port = parsed.port || '';
+    if (!host || !port) return `${protocol}//${host}`;
+    return `${protocol}//***:***@${host}:${port}`;
+  } catch {
+    return 'invalid_proxy_url';
+  }
+};
+
+const isTlsLikeError = (error: unknown): boolean => {
+  const err = error as any;
+  const code = String(err?.code || '').toUpperCase();
+  const message = String(err?.message || '').toLowerCase();
+  return (
+    code.includes('TLS') ||
+    code.includes('SSL') ||
+    code.includes('CERT') ||
+    code === 'EPROTO' ||
+    code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' ||
+    code === 'SELF_SIGNED_CERT_IN_CHAIN' ||
+    code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+    message.includes('tls') ||
+    message.includes('ssl') ||
+    message.includes('certificate') ||
+    message.includes('handshake')
+  );
+};
+
+const classifyProxyFailure = (error: unknown): string => {
+  const status = extractStatusFromError(error);
+  if (status === 407) return 'proxy_auth_required';
+  if (status === 403) return 'forbidden';
+  const code = String(extractErrorCode(error) || '').toUpperCase();
+  if (code === 'ECONNREFUSED') return 'econnrefused';
+  if (code === 'ETIMEDOUT' || code === 'ECONNABORTED' || code === 'SAIJ_TIMEOUT') return 'etimedout';
+  if (code === 'ECONNRESET') return 'econnreset';
+  if (isTlsLikeError(error)) return 'tls_ssl_error';
+  return 'unknown';
+};
+
+const extractOriginalErrorObservability = (error: unknown) => {
+  const err = error as any;
+  return {
+    errorName: err?.name ?? null,
+    errorCode: extractErrorCode(error) ?? null,
+    errorMessage: err?.message ?? null,
+    errorCause: err?.cause ? String(err.cause) : null,
+    errorConstructorName: err?.constructor?.name ?? null,
+    errorStack: err?.stack ?? null,
+    responseStatus: extractStatusFromError(error) ?? null,
+    responseHeaders: err?.response?.headers ?? null,
+    responseDataPreview: previewResponseData(err?.response?.data),
+  };
+};
+
 const isProxyRetryableError = (error: unknown): boolean => {
   const status = extractStatusFromError(error);
   if (status === 403) return true;
@@ -94,11 +166,13 @@ const isProxyRetryableError = (error: unknown): boolean => {
 
 const getRetryReason = (error: unknown): string => {
   const status = extractStatusFromError(error);
+  if (status === 407) return 'proxy_auth_required';
   if (status === 403) return 'forbidden';
   const code = String(extractErrorCode(error) || '').toUpperCase();
   if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || code === 'SAIJ_TIMEOUT') return 'timeout';
   if (code === 'ECONNRESET') return 'econnreset';
   if (code === 'ECONNREFUSED') return 'econnrefused';
+  if (isTlsLikeError(error)) return 'tls_ssl_error';
   if (code) return code.toLowerCase();
   return 'unknown';
 };
@@ -134,6 +208,8 @@ export class SaijHttpClient {
           proxyEnabled: true,
           proxyId: proxy.proxyId,
           proxyHost: proxy.host,
+          proxyPort: proxy.port,
+          proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
           attempt,
           url,
         },
@@ -165,6 +241,8 @@ export class SaijHttpClient {
             proxyEnabled: true,
             proxyId: proxy.proxyId,
             proxyHost: proxy.host,
+            proxyPort: proxy.port,
+            proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
             attempt,
             url: effectiveUrl,
             status: response.status,
@@ -178,6 +256,15 @@ export class SaijHttpClient {
             status: response.status,
             errorCode: '403',
             message: 'forbidden',
+            proxyHost: proxy.host,
+            proxyPort: proxy.port,
+            responseHeaders: response.headers,
+            responseDataPreview: previewResponseData(response.data),
+            errorName: null,
+            errorCause: null,
+            errorConstructorName: null,
+            errorStack: null,
+            failureType: 'forbidden',
           });
 
           await this.resetSession(context, 'proxy_403_response');
@@ -188,10 +275,14 @@ export class SaijHttpClient {
               proxyEnabled: true,
               proxyId: proxy.proxyId,
               proxyHost: proxy.host,
+              proxyPort: proxy.port,
+              proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
               attempt,
               status: response.status,
               retryReason: 'forbidden',
               proxyBlockedUntil: getProxyBlockedUntil(proxy.proxyId),
+              responseHeaders: response.headers,
+              responseDataPreview: previewResponseData(response.data),
             },
             'SAIJ proxy received 403'
           );
@@ -211,10 +302,38 @@ export class SaijHttpClient {
         lastError = error;
 
         const retryReason = getRetryReason(error);
+        const failureType = classifyProxyFailure(error);
+        const originalError = extractOriginalErrorObservability(error);
+
+        logger.error(
+          {
+            requestName: options.requestName,
+            proxyEnabled: true,
+            proxyId: proxy.proxyId,
+            proxyHost: proxy.host,
+            proxyPort: proxy.port,
+            proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
+            attempt,
+            url,
+            failureType,
+            ...originalError,
+          },
+          'SAIJ proxy original error'
+        );
+
         saijProxyPool.markFailure(proxy.proxyId, {
           status: extractStatusFromError(error),
           errorCode: extractErrorCode(error),
           message: (error as any)?.message,
+          proxyHost: proxy.host,
+          proxyPort: proxy.port,
+          errorName: originalError.errorName,
+          errorCause: originalError.errorCause,
+          errorConstructorName: originalError.errorConstructorName,
+          errorStack: originalError.errorStack,
+          responseHeaders: originalError.responseHeaders,
+          responseDataPreview: originalError.responseDataPreview,
+          failureType,
         });
 
         await this.resetSession(context, `proxy_error_${retryReason}`);
@@ -225,12 +344,15 @@ export class SaijHttpClient {
             proxyEnabled: true,
             proxyId: proxy.proxyId,
             proxyHost: proxy.host,
+            proxyPort: proxy.port,
+            proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
             attempt,
             url,
             status: extractStatusFromError(error),
-            errorCode: extractErrorCode(error),
             retryReason,
+            failureType,
             proxyBlockedUntil: getProxyBlockedUntil(proxy.proxyId),
+            ...originalError,
           },
           'SAIJ proxy request failed'
         );
@@ -248,8 +370,136 @@ export class SaijHttpClient {
     throw new HttpError(503, 'saij_proxy_pool_exhausted', 'No se pudo acceder a SAIJ usando los proxies configurados', {
       lastErrorCode: extractErrorCode(lastError),
       lastErrorStatus: extractStatusFromError(lastError),
+      lastError: extractOriginalErrorObservability(lastError),
       proxyEnabled: true,
     });
+  }
+
+  async proxyTestIpify(): Promise<{
+    ok: true;
+    ip: string;
+    proxyId: string | null;
+    proxyHost: string | null;
+    proxyPort: number | null;
+    proxyAgentUrlSanitized: string | null;
+    diagnostics: {
+      proxyEnabled: boolean;
+      axiosProxyFalse: boolean;
+      hasHttpsAgent: boolean;
+      hasHttpAgent: boolean;
+      wrappedWithCookieJarSupport: boolean;
+      hasCookieJar: boolean;
+    };
+  }> {
+    const useProxy = saijProxyPool.isEnabled();
+    const proxy = useProxy ? saijProxyPool.acquireProxy() : null;
+    const context = this.getOrCreateSession(proxy);
+
+    logger.info(
+      {
+        requestName: 'proxy-test',
+        url: 'https://api.ipify.org',
+        proxyEnabled: useProxy,
+        proxyId: proxy?.proxyId ?? null,
+        proxyHost: proxy?.host ?? null,
+        proxyPort: proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy?.agentUrl || null),
+        axiosProxyFalse: context.http.defaults.proxy === false,
+        hasHttpsAgent: Boolean((context.http.defaults as any)?.httpsAgent),
+        hasHttpAgent: Boolean((context.http.defaults as any)?.httpAgent),
+        wrappedWithCookieJarSupport: true,
+        hasCookieJar: Boolean((context.http.defaults as any)?.jar),
+      },
+      'SAIJ proxy test request config'
+    );
+
+    try {
+      const response = await context.http.get('https://api.ipify.org', {
+        validateStatus: () => true,
+        timeout: env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+        responseType: 'text',
+        transformResponse: [(raw) => raw],
+        headers: {
+          Accept: 'text/plain',
+        },
+      });
+
+      if (response.status >= 400) {
+        throw new HttpError(502, 'saij_proxy_test_failed', 'proxy-test returned non-success status', {
+          status: response.status,
+          headers: response.headers,
+          dataPreview: previewResponseData(response.data),
+        });
+      }
+
+      const ip = String(response.data || '').trim();
+      if (!ip) {
+        throw new HttpError(502, 'saij_proxy_test_failed', 'proxy-test returned empty body');
+      }
+
+      if (proxy) saijProxyPool.markSuccess(proxy.proxyId);
+
+      return {
+        ok: true,
+        ip,
+        proxyId: proxy?.proxyId ?? null,
+        proxyHost: proxy?.host ?? null,
+        proxyPort: proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy?.agentUrl || null),
+        diagnostics: {
+          proxyEnabled: useProxy,
+          axiosProxyFalse: context.http.defaults.proxy === false,
+          hasHttpsAgent: Boolean((context.http.defaults as any)?.httpsAgent),
+          hasHttpAgent: Boolean((context.http.defaults as any)?.httpAgent),
+          wrappedWithCookieJarSupport: true,
+          hasCookieJar: Boolean((context.http.defaults as any)?.jar),
+        },
+      };
+    } catch (error) {
+      const failureType = classifyProxyFailure(error);
+      const originalError = extractOriginalErrorObservability(error);
+
+      logger.error(
+        {
+          requestName: 'proxy-test',
+          url: 'https://api.ipify.org',
+          proxyEnabled: useProxy,
+          proxyId: proxy?.proxyId ?? null,
+          proxyHost: proxy?.host ?? null,
+          proxyPort: proxy?.port ?? null,
+          proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy?.agentUrl || null),
+          failureType,
+          ...originalError,
+        },
+        'SAIJ proxy test original error'
+      );
+
+      if (proxy) {
+        saijProxyPool.markFailure(proxy.proxyId, {
+          status: extractStatusFromError(error),
+          errorCode: extractErrorCode(error),
+          message: (error as any)?.message,
+          proxyHost: proxy.host,
+          proxyPort: proxy.port,
+          errorName: originalError.errorName,
+          errorCause: originalError.errorCause,
+          errorConstructorName: originalError.errorConstructorName,
+          errorStack: originalError.errorStack,
+          responseHeaders: originalError.responseHeaders,
+          responseDataPreview: originalError.responseDataPreview,
+          failureType,
+        });
+      }
+
+      throw new HttpError(502, 'saij_proxy_test_failed', 'Proxy test failed', {
+        proxyId: proxy?.proxyId ?? null,
+        proxyHost: proxy?.host ?? null,
+        proxyPort: proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy?.agentUrl || null),
+        failureType,
+        ...originalError,
+      });
+    }
   }
 
   private async executeDirect(url: string, options: SaijRequestOptions): Promise<SaijRequestResult> {
@@ -338,29 +588,55 @@ export class SaijHttpClient {
   private createHttpClient(jar: CookieJar, proxy: SaijProxySelection | null): AxiosInstance {
     if (proxy) {
       const proxyAgent = new HttpsProxyAgent(proxy.agentUrl);
-      return wrapper(
-        axios.create({
-          baseURL: env.saijBaseUrl,
-          timeout: env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
-          withCredentials: true,
-          jar,
-          headers: BASE_BROWSER_HEADERS,
-          proxy: false,
-          httpAgent: proxyAgent,
-          httpsAgent: proxyAgent,
-        })
-      );
-    }
-
-    return wrapper(
-      axios.create({
+      const baseClient = axios.create({
         baseURL: env.saijBaseUrl,
-        timeout: DEFAULT_TIMEOUT_MS,
+        timeout: env.saijProxyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
         withCredentials: true,
         jar,
         headers: BASE_BROWSER_HEADERS,
-      })
+        proxy: false,
+        httpAgent: proxyAgent,
+        httpsAgent: proxyAgent,
+      });
+      const wrappedClient = wrapper(baseClient);
+      logger.info(
+        {
+          proxyEnabled: true,
+          proxyId: proxy.proxyId,
+          proxyHost: proxy.host,
+          proxyPort: proxy.port,
+          proxyAgentUrlSanitized: sanitizeProxyAgentUrl(proxy.agentUrl),
+          axiosProxyFalse: wrappedClient.defaults.proxy === false,
+          hasHttpsAgent: Boolean((wrappedClient.defaults as any)?.httpsAgent),
+          hasHttpAgent: Boolean((wrappedClient.defaults as any)?.httpAgent),
+          wrappedWithCookieJarSupport: true,
+          hasCookieJar: Boolean((wrappedClient.defaults as any)?.jar),
+        },
+        'SAIJ axios proxy client created'
+      );
+      return wrappedClient;
+    }
+
+    const baseClient = axios.create({
+      baseURL: env.saijBaseUrl,
+      timeout: DEFAULT_TIMEOUT_MS,
+      withCredentials: true,
+      jar,
+      headers: BASE_BROWSER_HEADERS,
+    });
+    const wrappedClient = wrapper(baseClient);
+    logger.info(
+      {
+        proxyEnabled: false,
+        axiosProxyFalse: wrappedClient.defaults.proxy === false,
+        hasHttpsAgent: Boolean((wrappedClient.defaults as any)?.httpsAgent),
+        hasHttpAgent: Boolean((wrappedClient.defaults as any)?.httpAgent),
+        wrappedWithCookieJarSupport: true,
+        hasCookieJar: Boolean((wrappedClient.defaults as any)?.jar),
+      },
+      'SAIJ axios direct client created'
     );
+    return wrappedClient;
   }
 
   private getOrCreateSession(proxy: SaijProxySelection | null): SessionContext {
@@ -426,6 +702,8 @@ export class SaijHttpClient {
         proxyEnabled: Boolean(context.proxy),
         proxyId: context.proxy?.proxyId ?? null,
         proxyHost: context.proxy?.host ?? null,
+        proxyPort: context.proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(context.proxy?.agentUrl || null),
         attempt: metadata.attempt,
         url: resolvedUrl,
         status: homeResponse.status,
@@ -442,6 +720,8 @@ export class SaijHttpClient {
         proxyEnabled: Boolean(context.proxy),
         proxyId: context.proxy?.proxyId ?? null,
         proxyHost: context.proxy?.host ?? null,
+        proxyPort: context.proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(context.proxy?.agentUrl || null),
       });
     }
 
@@ -459,6 +739,8 @@ export class SaijHttpClient {
         proxyEnabled: Boolean(context.proxy),
         proxyId: context.proxy?.proxyId ?? null,
         proxyHost: context.proxy?.host ?? null,
+        proxyPort: context.proxy?.port ?? null,
+        proxyAgentUrlSanitized: sanitizeProxyAgentUrl(context.proxy?.agentUrl || null),
       },
       'SAIJ session reset'
     );
