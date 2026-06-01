@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+const normalizeContentTypeAlias = (value: unknown) => {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return value;
+  if (raw === 'fallos') return 'fallo';
+  if (raw === 'sumarios') return 'sumario';
+  if (raw === 'doctrinas') return 'doctrina';
+  return raw;
+};
+
 export const ContentTypeEnum = z.enum([
   'legislacion',
   'jurisprudencia',
@@ -10,6 +19,8 @@ export const ContentTypeEnum = z.enum([
   'todo',
 ]);
 export type SaijContentType = z.infer<typeof ContentTypeEnum>;
+
+const ContentTypeSchema = z.preprocess(normalizeContentTypeAlias, ContentTypeEnum);
 
 export const JurisdiccionSchema = z.object({
   kind: z.enum(['todas', 'nacional', 'internacional', 'provincial']).default('todas'),
@@ -38,7 +49,7 @@ export const SearchFiltersSchema = z.object({
 export type SaijSearchFilters = z.infer<typeof SearchFiltersSchema>;
 
 export const SearchRequestSchema = z.object({
-  contentType: ContentTypeEnum.default('legislacion'),
+  contentType: ContentTypeSchema.default('legislacion'),
   filters: SearchFiltersSchema.default({}),
   offset: z.number().int().min(0).default(0),
   pageSize: z.number().int().min(1).max(50).default(20),

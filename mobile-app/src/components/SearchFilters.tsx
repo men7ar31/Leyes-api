@@ -70,14 +70,12 @@ const contentOptions: Array<{
   value: SaijSearchRequest["contentType"];
   subtype: SaijLegislationSubtype;
 }> = [
-  { label: "Todo", value: "todo", subtype: "todas" },
   { label: "Legislacion", value: "legislacion", subtype: "todas" },
-  { label: "Leyes", value: "legislacion", subtype: "leyes_nacionales_vigentes" },
-  { label: "Decretos", value: "legislacion", subtype: "decretos_nacionales_vigentes" },
-  { label: "Codigos", value: "legislacion", subtype: "codigo_nacional" },
-  { label: "Constituciones", value: "legislacion", subtype: "constitucion_nacional" },
-  { label: "Resoluciones", value: "legislacion", subtype: "resolucion_afip" },
-  { label: "Tratados", value: "legislacion", subtype: "leyes_ratificatorias_tratados" },
+  { label: "Jurisprudencia", value: "jurisprudencia", subtype: "todas" },
+  { label: "Fallos", value: "fallo", subtype: "todas" },
+  { label: "Sumarios", value: "sumario", subtype: "todas" },
+  { label: "Doctrina", value: "doctrina", subtype: "todas" },
+  { label: "Codigo provincial", value: "legislacion", subtype: "codigo_provincial" },
 ];
 
 const jurisdictionOptions: Array<{ label: string; value: JurisdictionKind }> = [
