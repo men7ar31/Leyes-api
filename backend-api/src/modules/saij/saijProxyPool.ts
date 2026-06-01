@@ -2,7 +2,16 @@ import { env } from '../../config/env';
 import { HttpError } from '../../utils/httpError';
 import { logger } from '../../utils/logger';
 
-type ProxyFailureReason = 'forbidden' | 'timeout' | 'econnreset' | 'etimedout' | 'econnrefused' | 'network_error' | 'unknown';
+type ProxyFailureReason =
+  | 'forbidden'
+  | 'proxy_auth_required'
+  | 'timeout'
+  | 'econnreset'
+  | 'etimedout'
+  | 'econnrefused'
+  | 'tls_ssl_error'
+  | 'network_error'
+  | 'unknown';
 
 type SaijProxyConfig = {
   id: string;
@@ -35,11 +44,28 @@ const isRetryableNetworkCode = (code?: string | null) => {
 };
 
 const parseProxyFailureReason = (input: { status?: number; errorCode?: string | null; message?: string | null }): ProxyFailureReason => {
+  if (input.status === 407) return 'proxy_auth_required';
   if (input.status === 403) return 'forbidden';
   const code = String(input.errorCode || '').trim().toUpperCase();
+  const message = String(input.message || '').toLowerCase();
   if (code === 'ECONNABORTED' || code === 'ETIMEDOUT') return 'timeout';
   if (code === 'ECONNRESET') return 'econnreset';
   if (code === 'ECONNREFUSED') return 'econnrefused';
+  if (
+    code.includes('TLS') ||
+    code.includes('SSL') ||
+    code.includes('CERT') ||
+    code === 'EPROTO' ||
+    code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' ||
+    code === 'SELF_SIGNED_CERT_IN_CHAIN' ||
+    code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+    message.includes('tls') ||
+    message.includes('ssl') ||
+    message.includes('certificate') ||
+    message.includes('handshake')
+  ) {
+    return 'tls_ssl_error';
+  }
   if (isRetryableNetworkCode(code)) return 'network_error';
   return 'unknown';
 };
@@ -172,11 +198,21 @@ class SaijProxyPool {
       status?: number;
       errorCode?: string | null;
       message?: string | null;
+      errorName?: string | null;
+      errorCause?: string | null;
+      errorConstructorName?: string | null;
+      errorStack?: string | null;
+      responseHeaders?: unknown;
+      responseDataPreview?: string | null;
+      proxyHost?: string | null;
+      proxyPort?: number | null;
+      failureType?: string | null;
     }
   ) {
     const state = this.stateByProxyId.get(proxyId);
     if (!state) return;
-    const reason = parseProxyFailureReason(input);
+    const proxyConfig = this.proxies.find((proxy) => proxy.id === proxyId);
+    const reason = (input.failureType as ProxyFailureReason | null) || parseProxyFailureReason(input);
     state.failCount += 1;
     state.lastError = input.message || input.errorCode || reason;
     state.lastUsedAt = Date.now();
@@ -184,6 +220,27 @@ class SaijProxyPool {
     if (shouldBlockProxy(reason)) {
       state.blockedUntil = Date.now() + this.cooldownMs;
     }
+
+    logger.warn(
+      {
+        proxyEnabled: this.enabled,
+        proxyId,
+        proxyHost: input.proxyHost || proxyConfig?.host || null,
+        proxyPort: input.proxyPort || proxyConfig?.port || null,
+        status: input.status ?? null,
+        errorCode: input.errorCode ?? null,
+        errorName: input.errorName ?? null,
+        errorMessage: input.message ?? null,
+        errorCause: input.errorCause ?? null,
+        errorConstructorName: input.errorConstructorName ?? null,
+        errorStack: input.errorStack ?? null,
+        responseHeaders: input.responseHeaders ?? null,
+        responseDataPreview: input.responseDataPreview ?? null,
+        failureType: reason,
+        proxyBlockedUntil: state.blockedUntil ? new Date(state.blockedUntil).toISOString() : null,
+      },
+      'SAIJ proxy marked as failed'
+    );
   }
 
   getSanitizedStats() {
